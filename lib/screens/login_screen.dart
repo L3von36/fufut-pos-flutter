@@ -176,7 +176,7 @@ class _LoginScreenState extends State<LoginScreen> {
           Text('COFFEE · POS',
               style: TextStyle(
                   fontFamily: kFontBody,
-                  fontSize: 9.0,
+                  fontSize: 11.5,
                   fontWeight: FontWeight.w500,
                   color: Colors.white.withValues(alpha: 0.7),
                   letterSpacing: 2.6)),
@@ -188,7 +188,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 textAlign: TextAlign.center,
                 style: TextStyle(
                     fontFamily: kFontBody,
-                    fontSize: 10.0,
+                    fontSize: 12.0,
                     height: 1.55,
                     color: Colors.white.withValues(alpha: 0.6))),
           ],
@@ -219,7 +219,7 @@ class _LoginScreenState extends State<LoginScreen> {
             const SizedBox(height: 4),
             Text('Sign in to your account',
                 style:
-                    TextStyle(fontFamily: kFontBody, fontSize: 10.9, color: pal.muted)),
+                    TextStyle(fontFamily: kFontBody, fontSize: 13.0, color: pal.muted)),
             const SizedBox(height: 24),
             const _FieldLabel(icon: Icons.person_outline, text: 'Staff ID or Email'),
             const SizedBox(height: 6),
@@ -260,7 +260,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   Expanded(
                     child: Text(_error!,
                         style: TextStyle(
-                            fontFamily: kFontBody, fontSize: 10.0, color: pal.danger)),
+                            fontFamily: kFontBody, fontSize: 12.0, color: pal.danger)),
                   ),
                 ],
               ),
@@ -287,7 +287,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     _busy ? 'Signing in...' : 'Sign In',
                     style: const TextStyle(
                         fontFamily: kFontBody,
-                        fontSize: 11.8,
+                        fontSize: 14.0,
                         fontWeight: FontWeight.w600)),
               ),
             ),
@@ -297,7 +297,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 textAlign: TextAlign.center,
                 style: TextStyle(
                     fontFamily: kFontBody,
-                    fontSize: 9.0,
+                    fontSize: 11.5,
                     letterSpacing: 0.5,
                     color: pal.muted)),
             const SizedBox(height: 8),
@@ -311,7 +311,7 @@ class _LoginScreenState extends State<LoginScreen> {
               collapsedIconColor: pal.muted,
               title: Text('Server',
                   style: TextStyle(
-                      fontFamily: kFontBody, fontSize: 10.5, color: pal.muted)),
+                      fontFamily: kFontBody, fontSize: 12.5, color: pal.muted)),
               children: [
                 TextField(
                   controller: _server,
@@ -328,7 +328,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 'leave the floor.',
                 textAlign: TextAlign.center,
                 style: TextStyle(
-                    fontFamily: kFontBody, fontSize: 9.2, color: pal.faint)),
+                    fontFamily: kFontBody, fontSize: 11.5, color: pal.faint)),
           ],
         ),
         ),
@@ -353,7 +353,7 @@ class _FieldLabel extends StatelessWidget {
         Text(text.toUpperCase(),
             style: TextStyle(
                 fontFamily: kFontBody,
-                fontSize: 9.6,
+                fontSize: 11.5,
                 fontWeight: FontWeight.w600,
                 letterSpacing: 0.5,
                 color: pal.muted)),

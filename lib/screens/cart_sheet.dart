@@ -60,13 +60,13 @@ class CartPill extends StatelessWidget {
                     clipBehavior: Clip.none,
                     children: [
                       const Icon(Icons.shopping_cart_outlined,
-                          size: 24, color: Colors.white),
+                          size: 26, color: Colors.white),
                       Positioned(
-                        right: -6,
-                        top: -6,
+                        right: -7,
+                        top: -7,
                         child: Container(
-                          width: 20,
-                          height: 20,
+                          width: 22,
+                          height: 22,
                           alignment: Alignment.center,
                           decoration: const BoxDecoration(
                             shape: BoxShape.circle,
@@ -75,8 +75,8 @@ class CartPill extends StatelessWidget {
                           child: Text('${cart.itemCount}',
                               style: const TextStyle(
                                   fontFamily: kFontBody,
-                                  fontSize: 9.6,
-                                  fontWeight: FontWeight.w700,
+                                  fontSize: 10.5,
+                                  fontWeight: FontWeight.w800,
                                   color: Color(0xFF073735))),
                         ),
                       ),
@@ -87,20 +87,20 @@ class CartPill extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Text('${cart.itemCount} ITEMS',
+                      Text(cart.itemCount == 1 ? '1 ITEM' : '${cart.itemCount} ITEMS',
                           style: TextStyle(
                               fontFamily: kFontBody,
-                              fontSize: 9.0,
-                              fontWeight: FontWeight.w600,
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w700,
                               letterSpacing: 0.8,
-                              color: Colors.white.withValues(alpha: 0.7))),
+                              color: Colors.white.withValues(alpha: 0.72))),
                       Text(money(cart.grandTotal()),
-                          style: T.price.copyWith(color: Colors.white)),
+                          style: T.price.copyWith(fontSize: 15.5, color: Colors.white)),
                     ],
                   ),
                   const SizedBox(width: 12),
                   const Icon(Icons.keyboard_arrow_up,
-                      size: 18, color: Colors.white70),
+                      size: 20, color: Colors.white70),
                 ],
               ),
             ),
@@ -158,47 +158,88 @@ class _CartPanelState extends State<CartPanel> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           if (!widget.docked) const SheetHandle(),
+          const SizedBox(height: 4),
           Row(
             children: [
               Expanded(
-                child: Text('Current Order',
-                    style: TextStyle(
-                        fontFamily: kFontBody,
-                        fontSize: 14.1,
-                        fontWeight: FontWeight.w600,
-                        color: pal.heading)),
+                child: Row(
+                  children: [
+                    Flexible(
+                      child: Text('Current Order',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              fontFamily: kFontBody,
+                              fontSize: 17,
+                              fontWeight: FontWeight.w800,
+                              color: pal.heading)),
+                    ),
+                    if (cart.isNotEmpty) ...[
+                      const SizedBox(width: 8),
+                      Flexible(
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 9, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: pal.tintBg,
+                            borderRadius: BorderRadius.circular(99),
+                          ),
+                          child: Text('${cart.itemCount} items',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                  fontFamily: kFontMono,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w700,
+                                  color: pal.primary)),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
               ),
-              TextButton(
+              TextButton.icon(
                 onPressed: cart.isEmpty
                     ? null
                     : () => _confirmClear(context, cart),
                 style: TextButton.styleFrom(
                     padding: const EdgeInsets.symmetric(horizontal: 8),
-                    minimumSize: const Size(44, 32)),
-                child: Text('Clear All',
+                    minimumSize: const Size(44, 40)),
+                icon: Icon(Icons.delete_outline_rounded,
+                    size: 16,
+                    color: cart.isEmpty ? pal.faint : pal.danger),
+                label: Text('Clear',
                     style: TextStyle(
                         fontFamily: kFontBody,
-                        fontSize: 10.0,
-                        fontWeight: FontWeight.w600,
-                        color: pal.danger)),
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w700,
+                        color: cart.isEmpty ? pal.faint : pal.danger)),
               ),
             ],
           ),
           Flexible(
             child: cart.isEmpty
                 ? Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 32),
+                    padding: const EdgeInsets.symmetric(vertical: 36),
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(Icons.room_service_outlined,
-                            size: 28, color: pal.faint),
-                        const SizedBox(height: 10),
+                        Container(
+                          width: 64,
+                          height: 64,
+                          decoration: BoxDecoration(
+                            color: pal.sunken,
+                            shape: BoxShape.circle,
+                          ),
+                          child: Icon(Icons.room_service_outlined,
+                              size: 30, color: pal.faint),
+                        ),
+                        const SizedBox(height: 12),
                         Text('Nothing on this order yet',
                             style: TextStyle(
                                 fontFamily: kFontBody,
-                                fontSize: 11.3,
-                                fontWeight: FontWeight.w600,
+                                fontSize: 14,
+                                fontWeight: FontWeight.w700,
                                 color: pal.heading)),
                         const SizedBox(height: 4),
                         Text(
@@ -206,7 +247,7 @@ class _CartPanelState extends State<CartPanel> {
                           textAlign: TextAlign.center,
                           style: TextStyle(
                               fontFamily: kFontBody,
-                              fontSize: 10.0,
+                              fontSize: 12.5,
                               color: pal.muted),
                         ),
                       ],
@@ -223,42 +264,61 @@ class _CartPanelState extends State<CartPanel> {
                   ),
           ),
           if (cart.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            _moneyRow('Subtotal', money(cart.subtotal),
-                style: TextStyle(
-                    fontFamily: kFontBody, fontSize: 10.5, color: pal.muted)),
-            const SizedBox(height: 4),
-            Container(
-              padding: const EdgeInsets.only(top: 6),
-              decoration:
-                  BoxDecoration(border: Border(top: BorderSide(color: pal.border))),
-              child: _moneyRow(
-                  'Total', money(cart.grandTotal()),
-                  style: T.price.copyWith(color: pal.heading)),
-            ),
             const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+              decoration: BoxDecoration(
+                color: pal.sunken,
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Column(
+                children: [
+                  _moneyRow('Subtotal', money(cart.subtotal),
+                      style: TextStyle(
+                          fontFamily: kFontBody,
+                          fontSize: 13,
+                          color: pal.muted)),
+                  if (cart.orderType == 'delivery' && cart.deliveryFee > 0) ...[
+                    const SizedBox(height: 4),
+                    _moneyRow('Delivery', money(cart.deliveryFee),
+                        style: TextStyle(
+                            fontFamily: kFontBody,
+                            fontSize: 13,
+                            color: pal.muted)),
+                  ],
+                  const SizedBox(height: 5),
+                  _moneyRow('Total', money(cart.grandTotal()),
+                      style: T.price.copyWith(fontSize: 17.5, color: pal.heading)),
+                ],
+              ),
+            ),
+            const SizedBox(height: 14),
             // Dine-in: kitchen first, then checkout. Takeaway/delivery:
             // payment first — the web's settle-first flip.
-            FilledButton(
+            FilledButton.icon(
               onPressed: _sending ? null : (dineIn ? _sendToKitchen : _openReview),
-              style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(46)),
-              child: Text(dineIn
+              style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(54)),
+              icon: Icon(dineIn ? Icons.local_fire_department_rounded : Icons.payments_outlined,
+                  size: 20),
+              label: Text(dineIn
                   ? 'Send to Kitchen'
                   : 'Take Payment — ${money(cart.grandTotal())}'),
             ),
-            const SizedBox(height: 8),
-            OutlinedButton(
+            const SizedBox(height: 9),
+            OutlinedButton.icon(
               onPressed: _sending ? null : (dineIn ? _openReview : _sendToKitchen),
-              style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(46)),
-              child: Text(dineIn ? 'Checkout' : 'Send to Kitchen'),
+              style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(54)),
+              icon: Icon(dineIn ? Icons.payments_outlined : Icons.local_fire_department_rounded,
+                  size: 19),
+              label: Text(dineIn ? 'Checkout' : 'Send to Kitchen'),
             ),
-            const SizedBox(height: 6),
+            const SizedBox(height: 8),
             Text(
               dineIn
                   ? 'Send to Kitchen opens a tab for this table — settle it when they leave.'
                   : 'Take Payment settles the bill immediately; the kitchen copy fires with it.',
               textAlign: TextAlign.center,
-              style: TextStyle(fontFamily: kFontBody, fontSize: 9.2, color: pal.muted),
+              style: TextStyle(fontFamily: kFontBody, fontSize: 11, color: pal.muted),
             ),
           ],
         ],
@@ -308,8 +368,8 @@ class _CartPanelState extends State<CartPanel> {
           title: Text('Order details',
               style: TextStyle(
                   fontFamily: kFontBody,
-                  fontSize: 10.9,
-                  fontWeight: FontWeight.w600,
+                  fontSize: 13.5,
+                  fontWeight: FontWeight.w700,
                   color: pal.body)),
           subtitle: Text(
             cart.orderType == 'dine-in'
@@ -318,7 +378,7 @@ class _CartPanelState extends State<CartPanel> {
                     : 'Dine-in · Table ${cart.tableNum}')
                 : '${cart.orderType == 'takeaway' ? 'Takeaway' : 'Delivery'}'
                     '${cart.customerName.isEmpty ? '' : ' · ${cart.customerName}'}',
-            style: TextStyle(fontFamily: kFontBody, fontSize: 9.6, color: pal.muted),
+            style: TextStyle(fontFamily: kFontBody, fontSize: 11.5, color: pal.muted),
           ),
           children: [
             OrderContextEditor(cart: cart, tables: _tables),
@@ -357,16 +417,16 @@ class _CartPanelState extends State<CartPanel> {
               const SheetHandle(),
               const Text('🗑️',
                   textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 28)),
-              const SizedBox(height: 8),
+                  style: TextStyle(fontSize: 34)),
+              const SizedBox(height: 10),
               Text('Clear All Items?',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                       fontFamily: kFontBody,
-                      fontSize: 13.4,
-                      fontWeight: FontWeight.w700,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w800,
                       color: pal.heading)),
-              const SizedBox(height: 16),
+              const SizedBox(height: 18),
               FilledButton(
                 onPressed: () {
                   cart.clear();
@@ -374,14 +434,14 @@ class _CartPanelState extends State<CartPanel> {
                 },
                 style: FilledButton.styleFrom(
                     backgroundColor: pal.danger,
-                    minimumSize: const Size.fromHeight(46)),
+                    minimumSize: const Size.fromHeight(52)),
                 child: const Text('Yes, Clear All'),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 9),
               OutlinedButton(
                 onPressed: () => Navigator.pop(sheetCtx),
                 style: OutlinedButton.styleFrom(
-                    minimumSize: const Size.fromHeight(46)),
+                    minimumSize: const Size.fromHeight(52)),
                 child: const Text('Keep Items'),
               ),
             ],
@@ -462,6 +522,7 @@ class _CartPanelState extends State<CartPanel> {
         notes: cart.notes,
       );
       cart.clear();
+      HapticFeedback.mediumImpact();
       navigator.pop();
       showInfoOn(messenger, 'Order ${shortId(id)} sent to kitchen!');
     } on ApiError catch (e) {
@@ -516,11 +577,11 @@ class _CartLineTile extends StatelessWidget {
     final cart = context.read<CartState>();
     final pal = Pal.of(context);
     return Container(
-      margin: const EdgeInsets.only(bottom: 6),
-      padding: const EdgeInsets.fromLTRB(10, 8, 8, 8),
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
       decoration: BoxDecoration(
         color: pal.sunken,
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(12),
         border: Border.all(color: pal.border),
       ),
       child: Row(
@@ -532,29 +593,29 @@ class _CartLineTile extends StatelessWidget {
                 Text(line.name,
                     style: TextStyle(
                         fontFamily: kFontBody,
-                        fontSize: 10.9,
-                        fontWeight: FontWeight.w600,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
                         color: pal.heading)),
                 if (line.selectedModifiers.isNotEmpty) ...[
-                  const SizedBox(height: 1),
+                  const SizedBox(height: 2),
                   Text(
                     line.selectedModifiers.map((m) => m.name).join(', '),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                        fontFamily: kFontBody, fontSize: 9.2, color: pal.muted),
+                        fontFamily: kFontBody, fontSize: 11, color: pal.muted),
                   ),
                 ],
-                const SizedBox(height: 1),
+                const SizedBox(height: 2),
                 Row(
                   children: [
                     Text(money(line.unitPrice),
-                        style: T.mono.copyWith(fontSize: 9.2, color: pal.muted)),
+                        style: T.mono.copyWith(fontSize: 11, color: pal.muted)),
                     if (showCourse) ...[
-                      const SizedBox(width: 6),
+                      const SizedBox(width: 7),
                       Container(
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 5, vertical: 1),
+                            horizontal: 6, vertical: 1),
                         decoration: BoxDecoration(
                           color: pal.tintBg,
                           borderRadius: BorderRadius.circular(99),
@@ -562,8 +623,8 @@ class _CartLineTile extends StatelessWidget {
                         child: Text(line.course.toUpperCase(),
                             style: TextStyle(
                                 fontFamily: kFontBody,
-                                fontSize: 7.9,
-                                fontWeight: FontWeight.w600,
+                                fontSize: 9.5,
+                                fontWeight: FontWeight.w700,
                                 letterSpacing: 0.4,
                                 color: pal.primary)),
                       ),
@@ -574,31 +635,31 @@ class _CartLineTile extends StatelessWidget {
             ),
           ),
           _RoundStepper(
-            icon: Icons.remove,
+            icon: Icons.remove_rounded,
             onTap: () => cart.decrementQty(line),
           ),
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 6),
+            padding: const EdgeInsets.symmetric(horizontal: 8),
             child: Text('${line.qty}',
-                style: T.price.copyWith(fontSize: 11.8)),
+                style: T.price.copyWith(fontSize: 14.5)),
           ),
           _RoundStepper(
-            icon: Icons.add,
+            icon: Icons.add_rounded,
             onTap: () => cart.incrementQty(line),
           ),
-          const SizedBox(width: 6),
+          const SizedBox(width: 8),
           SizedBox(
-            width: 62,
+            width: 70,
             child: Text(money(line.lineTotal),
                 textAlign: TextAlign.end,
                 style: T.mono.copyWith(
-                    fontSize: 10.5,
-                    fontWeight: FontWeight.w600,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
                     color: pal.heading)),
           ),
-          const SizedBox(width: 4),
+          const SizedBox(width: 6),
           _RoundStepper(
-            icon: Icons.close,
+            icon: Icons.close_rounded,
             danger: true,
             onTap: onRemove,
           ),
@@ -608,7 +669,7 @@ class _CartLineTile extends StatelessWidget {
   }
 }
 
-/// 44px circular stepper button — 1.5px border, primary fill on press.
+/// 36px circular stepper button — 1.5px border, primary fill on press.
 class _RoundStepper extends StatelessWidget {
   final IconData icon;
   final VoidCallback onTap;
@@ -627,13 +688,13 @@ class _RoundStepper extends StatelessWidget {
         onTap: onTap,
         customBorder: const CircleBorder(),
         child: Ink(
-          width: 32,
-          height: 32,
+          width: 36,
+          height: 36,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             border: Border.all(color: pal.borderStrong, width: 1.5),
           ),
-          child: Icon(icon, size: 15, color: danger ? pal.danger : pal.body),
+          child: Icon(icon, size: 17, color: danger ? pal.danger : pal.body),
         ),
       ),
     );
@@ -697,9 +758,9 @@ class OrderContextEditorState extends State<OrderContextEditor> {
         Text('ORDER FOR',
             style: TextStyle(
                 fontFamily: kFontBody,
-                fontSize: 8.5,
-                fontWeight: FontWeight.w600,
-                letterSpacing: 0.8,
+                fontSize: 10.5,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.9,
                 color: pal.muted)),
         const SizedBox(height: 6),
         SegmentedButton<String>(
@@ -844,12 +905,12 @@ class _TableChip extends StatelessWidget {
       onTap: onTap,
       borderRadius: BorderRadius.circular(10),
       child: Container(
-        constraints: const BoxConstraints(minHeight: 40, minWidth: 44),
+        constraints: const BoxConstraints(minHeight: 46, minWidth: 48),
         alignment: Alignment.center,
-        padding: const EdgeInsets.symmetric(horizontal: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 12),
         decoration: BoxDecoration(
           color: selected ? pal.primary : pal.surface,
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(12),
           border: Border.all(
               color: selected ? pal.primary : pal.borderStrong, width: 1.5),
         ),
@@ -858,14 +919,14 @@ class _TableChip extends StatelessWidget {
           children: [
             Text(number,
                 style: TextStyle(
-                    fontFamily: kFontBody,
-                    fontSize: 10.9,
-                    fontWeight: FontWeight.w600,
+                    fontFamily: kFontMono,
+                    fontSize: 13.5,
+                    fontWeight: FontWeight.w700,
                     color: selected ? Colors.white : pal.body)),
             if (occupied) ...[
-              const SizedBox(width: 4),
+              const SizedBox(width: 5),
               Icon(Icons.circle,
-                  size: 6,
+                  size: 7,
                   color: selected
                       ? Colors.white70
                       : Pal.of(context).warning),

@@ -64,7 +64,7 @@ class _ReviewSheetState extends State<ReviewSheet> {
                   child: Text('Review Order',
                       style: TextStyle(
                           fontFamily: kFontBody,
-                          fontSize: 14.1,
+                          fontSize: 16.5,
                           fontWeight: FontWeight.w700,
                           color: pal.heading)),
                 ),
@@ -78,7 +78,7 @@ class _ReviewSheetState extends State<ReviewSheet> {
                   child: Text('${cart.itemCount}',
                       style: const TextStyle(
                           fontFamily: kFontBody,
-                          fontSize: 10.0,
+                          fontSize: 12.0,
                           fontWeight: FontWeight.w700,
                           color: Colors.white)),
                 ),
@@ -109,7 +109,7 @@ class _ReviewSheetState extends State<ReviewSheet> {
                 Text('Total',
                     style: TextStyle(
                         fontFamily: kFontBody,
-                        fontSize: 12.2,
+                        fontSize: 14.0,
                         fontWeight: FontWeight.w600,
                         color: pal.heading)),
                 Text(money(cart.grandTotal()),
@@ -259,12 +259,12 @@ class _ReviewLine extends StatelessWidget {
                 Text(line.name,
                     style: TextStyle(
                         fontFamily: kFontBody,
-                        fontSize: 11.3,
+                        fontSize: 13.5,
                         fontWeight: FontWeight.w600,
                         color: pal.heading)),
                 Text('${money(line.unitPrice)} each',
                     style:
-                        T.mono.copyWith(fontSize: 9.2, color: pal.muted)),
+                        T.mono.copyWith(fontSize: 11.5, color: pal.muted)),
               ],
             ),
           ),
@@ -275,7 +275,7 @@ class _ReviewLine extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 6),
             child: Text('${line.qty}',
-                style: T.price.copyWith(fontSize: 11.8)),
+                style: T.price.copyWith(fontSize: 14.0)),
           ),
           _MiniStepper(
             icon: Icons.add,
@@ -287,7 +287,7 @@ class _ReviewLine extends StatelessWidget {
             child: Text(money(line.lineTotal),
                 textAlign: TextAlign.end,
                 style: T.mono.copyWith(
-                    fontSize: 10.5,
+                    fontSize: 12.5,
                     fontWeight: FontWeight.w600,
                     color: pal.heading)),
           ),
@@ -419,13 +419,13 @@ class _PaymentSheetState extends State<PaymentSheet> {
                   child: Text('Payment',
                       style: TextStyle(
                           fontFamily: kFontBody,
-                          fontSize: 14.1,
+                          fontSize: 16.5,
                           fontWeight: FontWeight.w700,
                           color: pal.heading)),
                 ),
                 Text(money(_total),
                     style: T.price.copyWith(
-                        fontSize: 13.4, color: pal.primary)),
+                        fontSize: 16.0, color: pal.primary)),
               ],
             ),
             const SizedBox(height: 12),
@@ -470,7 +470,7 @@ class _PaymentSheetState extends State<PaymentSheet> {
                       textAlign: TextAlign.center,
                       style: TextStyle(
                           fontFamily: kFontBody,
-                          fontSize: 10.0,
+                          fontSize: 12.0,
                           color: pal.muted),
                     ),
                   ],
@@ -488,7 +488,7 @@ class _PaymentSheetState extends State<PaymentSheet> {
                 child: Text('Process Payment — ${money(_total)}',
                     style: const TextStyle(
                         fontFamily: kFontBody,
-                        fontSize: 12.2,
+                        fontSize: 14.0,
                         fontWeight: FontWeight.w600)),
               ),
             ),
@@ -513,7 +513,7 @@ class _PaymentSheetState extends State<PaymentSheet> {
             Text('Amount Due',
                 style: TextStyle(
                     fontFamily: kFontBody,
-                    fontSize: 10.9,
+                    fontSize: 13.0,
                     fontWeight: FontWeight.w600,
                     color: pal.body)),
             Text(money(_total),
@@ -544,7 +544,7 @@ class _PaymentSheetState extends State<PaymentSheet> {
               ),
               child: Text(moneyGroup(quick).replaceFirst('ETB ', ''),
                   style: T.mono.copyWith(
-                      fontSize: 10.9, fontWeight: FontWeight.w600)),
+                      fontSize: 13.0, fontWeight: FontWeight.w600)),
             ),
         ],
       ),
@@ -563,7 +563,7 @@ class _PaymentSheetState extends State<PaymentSheet> {
         child: Text('Exact (${money(_total)})',
             style: const TextStyle(
                 fontFamily: kFontBody,
-                fontSize: 10.9,
+                fontSize: 13.0,
                 fontWeight: FontWeight.w600)),
       ),
       const SizedBox(height: 8),
@@ -592,7 +592,7 @@ class _PaymentSheetState extends State<PaymentSheet> {
               Text('CHANGE DUE',
                   style: TextStyle(
                       fontFamily: kFontBody,
-                      fontSize: 10.0,
+                      fontSize: 12.0,
                       fontWeight: FontWeight.w600,
                       letterSpacing: 0.8,
                       color: pal.muted)),
@@ -616,7 +616,7 @@ class _PaymentSheetState extends State<PaymentSheet> {
               Text('STILL NEED',
                   style: TextStyle(
                       fontFamily: kFontBody,
-                      fontSize: 10.0,
+                      fontSize: 12.0,
                       fontWeight: FontWeight.w600,
                       letterSpacing: 0.8,
                       color: pal.muted)),
@@ -708,7 +708,7 @@ class _MethodCard extends StatelessWidget {
                       maxLines: 2,
                       style: TextStyle(
                           fontFamily: kFontBody,
-                          fontSize: 9.2,
+                          fontSize: 11.5,
                           fontWeight: FontWeight.w600,
                           color: active ? pal.primary : pal.body)),
                 ],
@@ -781,7 +781,7 @@ class SuccessSheet extends StatelessWidget {
                 const SizedBox(height: 4),
                 Text('Order ${shortId(orderId)}',
                     style: T.mono.copyWith(
-                        fontSize: 14.1,
+                        fontSize: 16.5,
                         fontWeight: FontWeight.w600,
                         color: pal.primary)),
               ],

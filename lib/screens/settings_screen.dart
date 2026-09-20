@@ -64,7 +64,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     Text(user?.displayName ?? 'Signed out',
                         style: TextStyle(
                             fontFamily: kFontBody,
-                            fontSize: 11.8,
+                            fontSize: 14.0,
                             fontWeight: FontWeight.w700,
                             color: pal.heading)),
                     const SizedBox(height: 2),
@@ -74,14 +74,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           : '',
                       style: TextStyle(
                           fontFamily: kFontBody,
-                          fontSize: 9.7,
+                          fontSize: 11.5,
                           color: pal.muted),
                     ),
                     if (user?.email != null && user!.email!.isNotEmpty)
                       Text(user.email!,
                           style: TextStyle(
                               fontFamily: kFontBody,
-                              fontSize: 9.2,
+                              fontSize: 11.5,
                               color: pal.faint)),
                   ],
                 ),
@@ -105,14 +105,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
               Text('API server',
                   style: TextStyle(
                       fontFamily: kFontBody,
-                      fontSize: 10.9,
+                      fontSize: 13.0,
                       fontWeight: FontWeight.w600,
                       color: pal.heading)),
               const SizedBox(height: 4),
               Text(
                 'The fufut-api Worker every request goes through.',
                 style: TextStyle(
-                    fontFamily: kFontBody, fontSize: 9.2, color: pal.faint),
+                    fontFamily: kFontBody, fontSize: 11.5, color: pal.faint),
               ),
               const SizedBox(height: 10),
               if (_editingServer) ...[
@@ -151,7 +151,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       child: Text(
                         app.baseUrl,
                         style: T.mono.copyWith(
-                            fontSize: 9.7, color: pal.primary),
+                            fontSize: 11.5, color: pal.primary),
                       ),
                     ),
                     TextButton(
@@ -179,7 +179,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               Text('FU FUT POS',
                   style: TextStyle(
                       fontFamily: kFontBody,
-                      fontSize: 10.9,
+                      fontSize: 13.0,
                       fontWeight: FontWeight.w600,
                       color: pal.heading)),
               const SizedBox(height: 4),
@@ -190,7 +190,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 'the floor plan and every ticket are shared.',
                 style: TextStyle(
                     fontFamily: kFontBody,
-                    fontSize: 9.7,
+                    fontSize: 11.5,
                     height: 1.55,
                     color: pal.muted),
               ),

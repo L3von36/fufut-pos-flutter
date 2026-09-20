@@ -181,7 +181,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   onRefresh: _load,
                   child: ListView(
                     physics: const AlwaysScrollableScrollPhysics(),
-                    padding: const EdgeInsets.fromLTRB(14, 12, 14, 110),
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 110),
                     children: [
                       if (_offline)
                         _OfflineBanner(onRetry: _load),
@@ -222,7 +222,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   Widget _buildCategoryChips(Pal pal) {
     return SizedBox(
-      height: 44,
+      height: 54,
       child: ListView(
         scrollDirection: Axis.horizontal,
         // Hidden-scrollbar look: the web just hides overflow; a thin
@@ -248,21 +248,22 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   Widget _buildSearchBar(Pal pal) {
     return Container(
-      padding: const EdgeInsets.fromLTRB(14, 4, 6, 4),
+      height: 50,
+      padding: const EdgeInsets.fromLTRB(16, 4, 6, 4),
       decoration: BoxDecoration(
         color: pal.surface,
         border: Border.all(color: pal.border, width: 1.5),
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(14),
       ),
       child: Row(
         children: [
-          Icon(Icons.search, size: 18, color: pal.muted),
-          const SizedBox(width: 8),
+          Icon(Icons.search_rounded, size: 21, color: pal.muted),
+          const SizedBox(width: 10),
           Expanded(
             child: TextField(
               controller: _search,
               onChanged: (v) => setState(() => _query = v),
-              style: TextStyle(fontFamily: kFontBody, fontSize: 11.3, color: pal.heading),
+              style: TextStyle(fontFamily: kFontBody, fontSize: 14, color: pal.heading),
               decoration: const InputDecoration(
                 hintText: 'Search menu items...',
                 isDense: true,
@@ -276,7 +277,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
           ),
           if (_query.isNotEmpty)
             IconButton(
-              icon: Icon(Icons.close, size: 16, color: pal.muted),
+              icon: Icon(Icons.close_rounded, size: 18, color: pal.muted),
               onPressed: () {
                 _search.clear();
                 setState(() => _query = '');
@@ -287,7 +288,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
             onPressed: _toggleDensity,
             icon: Icon(
               _listMode ? Icons.grid_view_outlined : Icons.view_list_outlined,
-              size: 18,
+              size: 21,
               color: pal.muted,
             ),
           ),
@@ -307,9 +308,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
           onTap: () => setState(() => _course = value),
           borderRadius: BorderRadius.circular(99),
           child: Container(
-            constraints: const BoxConstraints(minHeight: 32, minWidth: 72),
+            constraints: const BoxConstraints(minHeight: 38, minWidth: 76),
             alignment: Alignment.center,
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
             decoration: BoxDecoration(
               color: active ? pal.primary : pal.surface,
               borderRadius: BorderRadius.circular(99),
@@ -319,8 +320,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
             child: Text(label,
                 style: TextStyle(
                     fontFamily: kFontBody,
-                    fontSize: 10.0,
-                    fontWeight: FontWeight.w500,
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w600,
                     color: active ? Colors.white : pal.body)),
           ),
         ),
@@ -332,9 +333,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
         Text('COURSE',
             style: TextStyle(
                 fontFamily: kFontBody,
-                fontSize: 8.5,
-                fontWeight: FontWeight.w600,
-                letterSpacing: 0.8,
+                fontSize: 10.0,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.9,
                 color: pal.muted)),
         const SizedBox(width: 10),
         Expanded(
@@ -375,8 +376,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
       final tileW = (w - gap * gapCount - 0) / cols;
       // Photo 16:10 plus a compact info block; overlay tiles are photo-only.
       final aspect = overlay
-          ? 1.05
-          : tileW / (tileW * 0.625 + 64);
+          ? 0.98
+          : tileW / (tileW * 0.625 + 78);
       return GridView.builder(
         shrinkWrap: true,
         physics: const NeverScrollableScrollPhysics(),
@@ -410,11 +411,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
         onLongPress: item.available ? () => _openQtySheet(item) : null,
         borderRadius: BorderRadius.circular(12),
         child: Container(
-          constraints: const BoxConstraints(minHeight: 52),
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          constraints: const BoxConstraints(minHeight: 60),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           decoration: BoxDecoration(
             color: pal.surface,
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.circular(14),
             border: Border.all(
                 color: inCart > 0 ? pal.primary : pal.border,
                 width: inCart > 0 ? 1.5 : 1),
@@ -425,7 +426,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 child: Text(item.name,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: T.cardName.copyWith(fontSize: 11.3, color: pal.heading)),
+                    style: T.cardName.copyWith(fontSize: 14, color: pal.heading)),
               ),
               if (inCart > 0) ...[
                 const SizedBox(width: 8),
@@ -433,7 +434,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 const SizedBox(width: 8),
               ],
               Text(money(item.price),
-                  style: T.price.copyWith(fontSize: 11.3, color: pal.primary)),
+                  style: T.price.copyWith(fontSize: 13.5, color: pal.primary)),
               const SizedBox(width: 10),
               _AddButton(onTap: item.available ? () => _add(item, 1) : null),
             ],
@@ -471,23 +472,24 @@ class _RegisterScreenState extends State<RegisterScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const SheetHandle(),
+              const SizedBox(height: 6),
               Text('How many?',
                   style: TextStyle(
                       fontFamily: kFontBody,
-                      fontSize: 13.4,
-                      fontWeight: FontWeight.w600,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w800,
                       color: pal.heading)),
               const SizedBox(height: 4),
               Text(item.name,
-                  style: TextStyle(fontFamily: kFontBody, fontSize: 10.5, color: pal.muted)),
-              const SizedBox(height: 14),
+                  style: TextStyle(fontFamily: kFontBody, fontSize: 12.5, color: pal.muted)),
+              const SizedBox(height: 16),
               GridView.count(
                 crossAxisCount: 4,
                 shrinkWrap: true,
                 physics: const NeverScrollableScrollPhysics(),
-                mainAxisSpacing: 8,
-                crossAxisSpacing: 8,
-                childAspectRatio: 1.6,
+                mainAxisSpacing: 9,
+                crossAxisSpacing: 9,
+                childAspectRatio: 1.5,
                 children: [
                   for (final n in const [2, 3, 4, 5, 6, 8, 10, 12])
                     OutlinedButton(
@@ -499,9 +501,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
                         side: BorderSide(color: pal.border, width: 1.5),
                         foregroundColor: pal.heading,
                         shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10)),
+                            borderRadius: BorderRadius.circular(12)),
                       ),
-                      child: Text('$n', style: T.price.copyWith(fontSize: 13.4)),
+                      child: Text('$n', style: T.price.copyWith(fontSize: 16.5)),
                     ),
                 ],
               ),
@@ -549,16 +551,17 @@ class _RegisterScreenState extends State<RegisterScreen> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 const SheetHandle(),
+                const SizedBox(height: 6),
                 Text(item.name,
                     style: TextStyle(
                         fontFamily: kFontBody,
-                        fontSize: 13.4,
-                        fontWeight: FontWeight.w700,
+                        fontSize: 17,
+                        fontWeight: FontWeight.w800,
                         color: pal.heading)),
                 const SizedBox(height: 4),
                 Text('Choose options',
                     style: TextStyle(
-                        fontFamily: kFontBody, fontSize: 10.5, color: pal.muted)),
+                        fontFamily: kFontBody, fontSize: 12.5, color: pal.muted)),
                 const SizedBox(height: 12),
                 for (var i = 0; i < item.modifiers.length; i++)
                   InkWell(
@@ -567,14 +570,14 @@ class _RegisterScreenState extends State<RegisterScreen> {
                           ? selected.remove(i)
                           : selected.add(i);
                     }),
-                    borderRadius: BorderRadius.circular(10),
+                    borderRadius: BorderRadius.circular(12),
                     child: Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      padding: const EdgeInsets.symmetric(vertical: 10),
                       child: Row(
                         children: [
                           Container(
-                            width: 20,
-                            height: 20,
+                            width: 24,
+                            height: 24,
                             decoration: BoxDecoration(
                               shape: BoxShape.circle,
                               color: selected.contains(i)
@@ -587,27 +590,27 @@ class _RegisterScreenState extends State<RegisterScreen> {
                                   width: 1.5),
                             ),
                             child: selected.contains(i)
-                                ? const Icon(Icons.check,
-                                    size: 13, color: Colors.white)
+                                ? const Icon(Icons.check_rounded,
+                                    size: 15, color: Colors.white)
                                 : null,
                           ),
-                          const SizedBox(width: 10),
+                          const SizedBox(width: 12),
                           Expanded(
                             child: Text(item.modifiers[i].name,
                                 style: TextStyle(
                                     fontFamily: kFontBody,
-                                    fontSize: 11.3,
+                                    fontSize: 14,
                                     color: pal.body)),
                           ),
                           if (item.modifiers[i].priceDelta > 0)
                             Text('+${money(item.modifiers[i].priceDelta)}',
                                 style: T.mono.copyWith(
-                                    fontSize: 10.5, color: pal.muted)),
+                                    fontSize: 12.5, fontWeight: FontWeight.w600, color: pal.muted)),
                         ],
                       ),
                     ),
                   ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 10),
                 FilledButton(
                   onPressed: () {
                     cart.addItem(item,
@@ -643,7 +646,7 @@ class _OfflineBanner extends StatelessWidget {
     final pal = Pal.of(context);
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
       decoration: BoxDecoration(
         color: pal.warningBg,
         border: Border.all(color: pal.warningBorder),
@@ -651,25 +654,25 @@ class _OfflineBanner extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Icon(Icons.wifi_off, size: 15, color: pal.warning),
-          const SizedBox(width: 8),
+          Icon(Icons.wifi_off, size: 17, color: pal.warning),
+          const SizedBox(width: 9),
           Expanded(
             child: Text(
               'Offline — the kitchen will not see orders until the '
               'connection returns.',
-              style: TextStyle(fontFamily: kFontBody, fontSize: 10.0, color: pal.warning),
+              style: TextStyle(fontFamily: kFontBody, fontSize: 12, color: pal.warning),
             ),
           ),
           TextButton(
             onPressed: onRetry,
             style: TextButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 8),
-                minimumSize: const Size(44, 32)),
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                minimumSize: const Size(44, 36)),
             child: Text('Retry',
                 style: TextStyle(
                     fontFamily: kFontBody,
-                    fontSize: 10.0,
-                    fontWeight: FontWeight.w600,
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w700,
                     color: pal.warning)),
           ),
         ],
@@ -704,8 +707,8 @@ class _CatChip extends StatelessWidget {
       onTap: onTap,
       borderRadius: BorderRadius.circular(99),
       child: Container(
-        constraints: const BoxConstraints(minHeight: 44, minWidth: 84),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        constraints: const BoxConstraints(minHeight: 50, minWidth: 92),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
         decoration: BoxDecoration(
           color: active ? pal.primary : pal.surface,
           borderRadius: BorderRadius.circular(99),
@@ -715,22 +718,22 @@ class _CatChip extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(emoji, style: const TextStyle(fontSize: 13)),
-            const SizedBox(width: 6),
+            Text(emoji, style: const TextStyle(fontSize: 16)),
+            const SizedBox(width: 7),
             Flexible(
               child: Text(label,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                       fontFamily: kFontBody,
-                      fontSize: 10.0,
-                      fontWeight: FontWeight.w500,
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w600,
                       color: active ? Colors.white : pal.body)),
             ),
-            const SizedBox(width: 6),
+            const SizedBox(width: 7),
             Container(
-              constraints: const BoxConstraints(minWidth: 18),
-              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+              constraints: const BoxConstraints(minWidth: 22),
+              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
               alignment: Alignment.center,
               decoration: BoxDecoration(
                 color: active
@@ -740,9 +743,9 @@ class _CatChip extends StatelessWidget {
               ),
               child: Text('$count',
                   style: TextStyle(
-                      fontFamily: kFontBody,
-                      fontSize: 9.2,
-                      fontWeight: FontWeight.w600,
+                      fontFamily: kFontMono,
+                      fontSize: 10.5,
+                      fontWeight: FontWeight.w700,
                       color: active ? Colors.white : pal.muted)),
             ),
           ],
@@ -826,7 +829,7 @@ class _ProductCard extends StatelessWidget {
           right: 0,
           bottom: 0,
           child: Container(
-            padding: const EdgeInsets.fromLTRB(8, 26, 8, 7),
+            padding: const EdgeInsets.fromLTRB(10, 30, 10, 9),
             decoration: const BoxDecoration(
               gradient: LinearGradient(
                 begin: Alignment.bottomCenter,
@@ -844,18 +847,18 @@ class _ProductCard extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                         fontFamily: kFontBody,
-                        fontSize: 9.9,
+                        fontSize: 12.5,
                         fontWeight: FontWeight.w700,
-                        height: 1.2,
+                        height: 1.25,
                         color: Colors.white)),
                 Text(money(item.price),
-                    style: T.price.copyWith(fontSize: 9.9, color: Colors.white)),
+                    style: T.price.copyWith(fontSize: 12.5, color: Colors.white)),
               ],
             ),
           ),
         ),
         if (inCart > 0)
-          Positioned(top: 6, right: 6, child: _CountBadge(count: inCart, size: 24)),
+          Positioned(top: 7, right: 7, child: _CountBadge(count: inCart, size: 26)),
         if (disabled)
           Container(
             color: Colors.black.withValues(alpha: 0.45),
@@ -863,7 +866,7 @@ class _ProductCard extends StatelessWidget {
             child: const Text('UNAVAILABLE',
                 style: TextStyle(
                     color: Colors.white,
-                    fontSize: 9,
+                    fontSize: 10.5,
                     fontWeight: FontWeight.w700,
                     letterSpacing: 0.6)),
           ),
@@ -875,7 +878,7 @@ class _ProductCard extends StatelessWidget {
   Widget _infoBlock(Pal pal) {
     final tag = item.category.trim();
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 7, 12, 8),
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
@@ -887,11 +890,11 @@ class _ProductCard extends StatelessWidget {
                 child: Text(item.name,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: T.cardName.copyWith(color: pal.heading)),
+                    style: T.cardName.copyWith(fontSize: 14, color: pal.heading)),
               ),
               const SizedBox(width: 6),
               Text(money(item.price),
-                  style: T.price.copyWith(color: pal.primary)),
+                  style: T.price.copyWith(fontSize: 13.5, color: pal.primary)),
             ],
           ),
           if (item.description.isNotEmpty) ...[
@@ -899,12 +902,12 @@ class _ProductCard extends StatelessWidget {
             Text(item.description,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: T.desc.copyWith(color: pal.muted)),
+                style: T.desc.copyWith(fontSize: 11.5, color: pal.muted)),
           ],
           if (tag.isNotEmpty) ...[
-            const SizedBox(height: 5),
+            const SizedBox(height: 6),
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
               decoration: BoxDecoration(
                 color: pal.sunken,
                 borderRadius: BorderRadius.circular(99),
@@ -912,8 +915,8 @@ class _ProductCard extends StatelessWidget {
               child: Text(tag.toUpperCase(),
                   style: TextStyle(
                       fontFamily: kFontBody,
-                      fontSize: 7.5,
-                      fontWeight: FontWeight.w600,
+                      fontSize: 9.5,
+                      fontWeight: FontWeight.w700,
                       letterSpacing: 0.5,
                       color: pal.muted)),
             ),
@@ -938,12 +941,12 @@ class _ProductCard extends StatelessWidget {
             child: const Text('UNAVAILABLE',
                 style: TextStyle(
                     color: Colors.white,
-                    fontSize: 10,
+                    fontSize: 11.5,
                     fontWeight: FontWeight.w700,
                     letterSpacing: 0.6)),
           ),
         if (withAddButton && !disabled)
-          // 44px circular add button — always visible (touch devices).
+          // 48px circular add button — always visible (touch devices).
           Positioned(bottom: 8, right: 8, child: _AddButton(onTap: onAdd)),
       ],
     );
@@ -995,11 +998,11 @@ class MenuPhotos {
   ];
 }
 
-/// 28px primary circle with the in-cart quantity — the web's badge-pop.
+/// 30px primary circle with the in-cart quantity — the web's badge-pop.
 class _CountBadge extends StatelessWidget {
   final int count;
   final double size;
-  const _CountBadge({required this.count, this.size = 28});
+  const _CountBadge({required this.count, this.size = 30});
 
   @override
   Widget build(BuildContext context) {
@@ -1021,14 +1024,14 @@ class _CountBadge extends StatelessWidget {
       child: Text('$count',
           style: const TextStyle(
               fontFamily: kFontBody,
-              fontSize: 9.6,
-              fontWeight: FontWeight.w700,
+              fontSize: 11.5,
+              fontWeight: FontWeight.w800,
               color: Colors.white)),
     );
   }
 }
 
-/// 44px circular `+` button — primary disc, white plus.
+/// 48px circular `+` button — primary disc, white plus.
 class _AddButton extends StatelessWidget {
   final VoidCallback? onTap;
   const _AddButton({required this.onTap});
@@ -1044,9 +1047,9 @@ class _AddButton extends StatelessWidget {
         onTap: onTap,
         customBorder: const CircleBorder(),
         child: const SizedBox(
-          width: 44,
-          height: 44,
-          child: Icon(Icons.add, size: 20, color: Colors.white),
+          width: 48,
+          height: 48,
+          child: Icon(Icons.add_rounded, size: 24, color: Colors.white),
         ),
       ),
     );

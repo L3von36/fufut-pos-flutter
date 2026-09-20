@@ -131,7 +131,7 @@ class StatusBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = badgeColors(context, status);
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 5),
       decoration: BoxDecoration(
         color: c.bg,
         borderRadius: BorderRadius.circular(99),
@@ -164,7 +164,7 @@ class PayBadge extends StatelessWidget {
       fg = dark ? const Color(0xFFFBBF24) : const Color(0xFF92400E);
     }
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 5),
       decoration: BoxDecoration(
         color: bg,
         borderRadius: BorderRadius.circular(99),
@@ -211,7 +211,7 @@ class NavSectionHeader extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(20, 14, 20, 6),
       child: Text(label.toUpperCase(),
           style: T.navHeader.copyWith(
-              color: Colors.white.withValues(alpha: 0.68), fontSize: 10.0)),
+              color: Colors.white.withValues(alpha: 0.68), fontSize: 11.0)),
     );
   }
 }
@@ -236,29 +236,29 @@ class EmptyState extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             Container(
-              width: 48,
-              height: 48,
+              width: 64,
+              height: 64,
               decoration: BoxDecoration(
                 color: pal.sunken,
                 shape: BoxShape.circle,
               ),
-              child: Icon(icon, size: 22, color: pal.faint),
+              child: Icon(icon, size: 28, color: pal.faint),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 14),
             Text(title,
                 style: TextStyle(
                     fontFamily: kFontBody,
-                    fontSize: 11.8,
-                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
                     color: pal.heading)),
             if (hint != null && hint!.isNotEmpty) ...[
-              const SizedBox(height: 4),
+              const SizedBox(height: 5),
               Text(hint!,
                   textAlign: TextAlign.center,
-                  style: TextStyle(fontFamily: kFontBody, fontSize: 10.5, color: pal.muted)),
+                  style: TextStyle(fontFamily: kFontBody, fontSize: 12.5, color: pal.muted)),
             ],
             if (onRetry != null) ...[
-              const SizedBox(height: 12),
+              const SizedBox(height: 14),
               OutlinedButton(onPressed: onRetry, child: const Text('Refresh')),
             ],
           ],
@@ -281,7 +281,7 @@ class TableContextBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final pal = Pal.of(context);
     return Container(
-      padding: const EdgeInsets.fromLTRB(14, 9, 8, 9),
+      padding: const EdgeInsets.fromLTRB(16, 11, 10, 11),
       decoration: BoxDecoration(
         color: pal.tintBg,
         border: Border.all(color: pal.primary, width: 1.5),
@@ -289,20 +289,20 @@ class TableContextBar extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Icon(Icons.table_restaurant, size: 17, color: pal.primary),
-          const SizedBox(width: 8),
+          Icon(Icons.table_restaurant, size: 20, color: pal.primary),
+          const SizedBox(width: 10),
           Expanded(
             child: Text.rich(
               TextSpan(
                 text: 'Ordering for ',
-                style: TextStyle(fontFamily: kFontBody, fontSize: 10.9, color: pal.body),
+                style: TextStyle(fontFamily: kFontBody, fontSize: 13.5, color: pal.body),
                 children: [
                   TextSpan(
                     text: 'Table $tableNum',
                     style: TextStyle(
                         fontFamily: kFontBody,
-                        fontSize: 10.9,
-                        fontWeight: FontWeight.w700,
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w800,
                         color: pal.primary),
                   ),
                 ],
@@ -311,10 +311,10 @@ class TableContextBar extends StatelessWidget {
           ),
           TextButton(
             onPressed: onMakeTakeaway,
-            style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8)),
+            style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 10)),
             child: Text('Make Takeaway',
                 style: TextStyle(
-                    fontFamily: kFontBody, fontSize: 10.0, fontWeight: FontWeight.w600,
+                    fontFamily: kFontBody, fontSize: 12.5, fontWeight: FontWeight.w700,
                     color: pal.primary)),
           ),
         ],

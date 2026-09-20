@@ -9,6 +9,7 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Palette
@@ -205,31 +206,65 @@ class Pal extends ThemeExtension<Pal> {
 const String kFontBody = 'Inter';
 const String kFontMono = 'FiraCode';
 
-/// Text styles used across the app. Sizes are the PWA's effective px
-/// (rem × 12.8 base) — deliberately dense, like the web till.
+/// Text styles used across the app.
+///
+/// The sizes follow Android conventions (Material body 14, titles 16-18,
+/// small labels 11-12) rather than the PWA's 12.8px web zoom — same brand,
+/// same colors, but readable at arm's length on a phone. Use these instead
+/// of hand-rolled TextStyles so a future size tweak stays one edit.
 abstract final class T {
   static const navItem = TextStyle(
-      fontFamily: kFontBody, fontSize: 10.9, fontWeight: FontWeight.w500);
+      fontFamily: kFontBody, fontSize: 13.5, fontWeight: FontWeight.w500);
   static const navHeader = TextStyle(
       fontFamily: kFontBody,
-      fontSize: 10.0,
-      fontWeight: FontWeight.w600,
-      letterSpacing: 1.54); // 0.12em
+      fontSize: 11.0,
+      fontWeight: FontWeight.w700,
+      letterSpacing: 1.6); // section eyebrows
+  static const screenTitle = TextStyle(
+      fontFamily: kFontBody, fontSize: 18, fontWeight: FontWeight.w800);
   static const cardName = TextStyle(
-      fontFamily: kFontBody, fontSize: 13.4, fontWeight: FontWeight.w700);
+      fontFamily: kFontBody, fontSize: 15, fontWeight: FontWeight.w700);
   static const price = TextStyle(
-      fontFamily: kFontMono, fontSize: 13.4, fontWeight: FontWeight.w700);
+      fontFamily: kFontMono, fontSize: 15, fontWeight: FontWeight.w700);
   static const priceBig = TextStyle(
-      fontFamily: kFontMono, fontSize: 19.2, fontWeight: FontWeight.w700);
+      fontFamily: kFontMono, fontSize: 22, fontWeight: FontWeight.w700);
   static const mono = TextStyle(fontFamily: kFontMono);
-  static const desc = TextStyle(fontFamily: kFontBody, fontSize: 10.5);
+  static const desc = TextStyle(fontFamily: kFontBody, fontSize: 12.5);
   static const chip = TextStyle(
-      fontFamily: kFontBody, fontSize: 10.0, fontWeight: FontWeight.w500);
+      fontFamily: kFontBody, fontSize: 12.5, fontWeight: FontWeight.w500);
   static const badge = TextStyle(
       fontFamily: kFontBody,
-      fontSize: 10.0,
-      fontWeight: FontWeight.w600,
-      letterSpacing: 0.51); // .04em
+      fontSize: 11.0,
+      fontWeight: FontWeight.w700,
+      letterSpacing: 0.5);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// System chrome — edge-to-edge, Android-style
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Call once from `main()`. Draws the app behind the status and navigation
+/// bars (transparent, theme-tinted icons) so the teal sidebar and gradient
+/// header reach the screen edges like a native Android app.
+Future<void> initSystemChrome() async {
+  await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+  await SystemChrome.setPreferredOrientations(DeviceOrientation.values);
+}
+
+/// Transparent status + nav bars whose icon brightness suits [brightness].
+/// Applied per-screen through `AnnotatedRegion` so theme switches restyle
+/// the bars instantly.
+SystemUiOverlayStyle systemOverlay(Brightness brightness) {
+  final darkIcons = brightness == Brightness.light;
+  return SystemUiOverlayStyle(
+    statusBarColor: Colors.transparent,
+    statusBarIconBrightness: darkIcons ? Brightness.dark : Brightness.light,
+    statusBarBrightness: darkIcons ? Brightness.light : Brightness.dark,
+    systemNavigationBarColor: Colors.transparent,
+    systemNavigationBarIconBrightness:
+        darkIcons ? Brightness.dark : Brightness.light,
+    systemNavigationBarContrastEnforced: false,
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -313,20 +348,21 @@ ThemeData _theme(Pal p, Brightness brightness) {
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
       fillColor: p.bg,
-      hintStyle: TextStyle(color: p.faint, fontSize: 11.8),
-      labelStyle: TextStyle(color: p.muted, fontSize: 11.8),
-      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+      hintStyle: TextStyle(color: p.faint, fontSize: 14),
+      labelStyle: TextStyle(color: p.muted, fontSize: 14),
+      floatingLabelStyle: TextStyle(color: p.primary, fontSize: 12.5),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 15),
       border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(12),
         borderSide: BorderSide(color: p.border, width: 1.5),
       ),
       enabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(12),
         borderSide: BorderSide(color: p.border, width: 1.5),
       ),
       focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(10),
-        borderSide: BorderSide(color: p.primary, width: 1.5),
+        borderRadius: BorderRadius.circular(12),
+        borderSide: BorderSide(color: p.primary, width: 2),
       ),
     ),
     filledButtonTheme: FilledButtonThemeData(
@@ -334,22 +370,22 @@ ThemeData _theme(Pal p, Brightness brightness) {
         backgroundColor: p.primary,
         foregroundColor: Colors.white,
         disabledBackgroundColor: p.primary.withValues(alpha: 0.5),
-        minimumSize: const Size(44, 44),
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+        minimumSize: const Size(64, 50),
+        padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 14),
         textStyle: const TextStyle(
-            fontFamily: kFontBody, fontSize: 11.5, fontWeight: FontWeight.w600),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            fontFamily: kFontBody, fontSize: 14.5, fontWeight: FontWeight.w700),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(13)),
       ),
     ),
     outlinedButtonTheme: OutlinedButtonThemeData(
       style: OutlinedButton.styleFrom(
         foregroundColor: p.body,
-        minimumSize: const Size(44, 44),
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+        minimumSize: const Size(64, 50),
+        padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 14),
         side: BorderSide(color: p.borderStrong, width: 1.5),
         textStyle: const TextStyle(
-            fontFamily: kFontBody, fontSize: 11.5, fontWeight: FontWeight.w600),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            fontFamily: kFontBody, fontSize: 14.5, fontWeight: FontWeight.w600),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(13)),
       ),
     ),
     textButtonTheme: TextButtonThemeData(
@@ -357,16 +393,29 @@ ThemeData _theme(Pal p, Brightness brightness) {
         foregroundColor: p.primary,
         textStyle: const TextStyle(
             fontFamily: kFontBody,
-            fontSize: 11.5,
-            fontWeight: FontWeight.w600),
+            fontSize: 13.5,
+            fontWeight: FontWeight.w700),
       ),
     ),
     snackBarTheme: SnackBarThemeData(
       behavior: SnackBarBehavior.floating,
       backgroundColor: p.heading,
       contentTextStyle: TextStyle(
-          fontFamily: kFontBody, fontSize: 11.5, color: p.bg),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          fontFamily: kFontBody, fontSize: 13.5, color: p.bg),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+    ),
+    progressIndicatorTheme: ProgressIndicatorThemeData(color: p.primary),
+    segmentedButtonTheme: SegmentedButtonThemeData(
+      style: SegmentedButton.styleFrom(
+        selectedForegroundColor: Colors.white,
+        selectedBackgroundColor: p.primary,
+        foregroundColor: p.body,
+        backgroundColor: p.sunken,
+        side: BorderSide(color: p.border),
+        textStyle: const TextStyle(
+            fontFamily: kFontBody, fontSize: 13, fontWeight: FontWeight.w600),
+        minimumSize: const Size(64, 44),
+      ),
     ),
     bottomSheetTheme: BottomSheetThemeData(
       backgroundColor: p.surface,
@@ -378,10 +427,10 @@ ThemeData _theme(Pal p, Brightness brightness) {
     ),
     dialogTheme: DialogThemeData(
       backgroundColor: p.surface,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       titleTextStyle: TextStyle(
-          fontFamily: kFontBody, fontSize: 14.7, fontWeight: FontWeight.w700, color: p.heading),
-      contentTextStyle: TextStyle(fontFamily: kFontBody, fontSize: 11.8, color: p.body),
+          fontFamily: kFontBody, fontSize: 18, fontWeight: FontWeight.w800, color: p.heading),
+      contentTextStyle: TextStyle(fontFamily: kFontBody, fontSize: 14, color: p.body),
     ),
   );
 }

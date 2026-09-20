@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../state/app_state.dart';
@@ -12,15 +13,15 @@ import 'register_screen.dart';
 import 'settings_screen.dart';
 
 /// Which screen the shell shows. The PWA's cashier chrome in miniature:
-/// Menu View, Orders, Open Checks + a "More" sheet holding Settings.
+/// Menu View, Orders, Open Checks + a drawer holding Settings & sign-out.
 enum ShellTab { menuView, orders, openChecks, settings }
 
-/// App chrome, ported from the web POS `AppLayout.vue`:
-///  * ≥ 900px wide — fixed 240px teal-gradient sidebar (brand row, sectioned
-///    nav with gold active edge, red-tinted sign out) beside a 60px topbar.
-///  * narrower — topbar + Material-3 bottom navigation bar
-///    (Menu View · Orders · Open Checks · More) with the PWA's bottom sheet
-///    for the overflow screens.
+/// App chrome — the web POS `AppLayout.vue`, re-thought as a native app:
+///  * Phone — an Android `Drawer` (edge swipe, scrim, teal gradient, user
+///    header) behind a 64px app bar, with a Material-3 bottom navigation bar
+///    (Menu View · Orders · Open Checks · More) for the three hot screens.
+///  * ≥ 900px wide — fixed 250px teal-gradient sidebar (brand row, sectioned
+///    nav with gold active edge, red-tinted sign out) beside a 64px topbar.
 class HomeShell extends StatefulWidget {
   const HomeShell({super.key});
 
@@ -30,6 +31,7 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> {
   ShellTab _tab = ShellTab.menuView;
+  final _scaffoldKey = GlobalKey<ScaffoldState>();
 
   static const _titles = {
     ShellTab.menuView: 'Menu View',
@@ -38,10 +40,22 @@ class _HomeShellState extends State<HomeShell> {
     ShellTab.settings: 'Settings',
   };
 
+  void _select(ShellTab t) {
+    // If the drawer is open (this is a drawer tap), close it first — even
+    // when the destination does not change.
+    final nav = Navigator.of(context);
+    if (nav.canPop()) nav.pop();
+    if (t == _tab) return;
+    HapticFeedback.selectionClick();
+    setState(() => _tab = t);
+  }
+
   @override
   Widget build(BuildContext context) {
     final width = MediaQuery.sizeOf(context).width;
     final wide = width >= 900;
+    final dark = Theme.of(context).brightness == Brightness.dark;
+
     final body = IndexedStack(
       index: _tab.index,
       children: const [
@@ -52,81 +66,67 @@ class _HomeShellState extends State<HomeShell> {
       ],
     );
 
-    if (wide) {
-      return Scaffold(
-        body: Row(
-          children: [
-            _Sidebar(selected: _tab, onSelect: (t) => setState(() => _tab = t)),
-            Expanded(
-              child: Column(
-                children: [
-                  _TopBar(title: _titles[_tab]!),
-                  Expanded(child: body),
-                ],
-              ),
+    final scaffold = wide
+        ? Scaffold(
+            body: Row(
+              children: [
+                _Sidebar(selected: _tab, onSelect: _select),
+                Expanded(
+                  child: SafeArea(
+                    top: false,
+                    bottom: false,
+                    child: Column(
+                      children: [
+                        _TopBar(title: _titles[_tab]!),
+                        Expanded(child: body),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
             ),
-          ],
-        ),
-      );
-    }
+          )
+        : Scaffold(
+            key: _scaffoldKey,
+            drawer: AppDrawer(selected: _tab, onSelect: _select),
+            drawerEdgeDragWidth: 72,
+            onDrawerChanged: (open) {
+              if (open) HapticFeedback.selectionClick();
+            },
+            body: Column(
+              children: [
+                _TopBar(
+                  title: _titles[_tab]!,
+                  showMenuButton: true,
+                  onMenu: () => _scaffoldKey.currentState?.openDrawer(),
+                ),
+                Expanded(child: body),
+              ],
+            ),
+            bottomNavigationBar: _BottomNav(
+              selected: _tab,
+              onSelect: (t) {
+                if (t == ShellTab.settings) {
+                  _scaffoldKey.currentState?.openDrawer();
+                } else {
+                  _select(t);
+                }
+              },
+            ),
+          );
 
-    return Scaffold(
-      body: Column(
-        children: [
-          _TopBar(
-            title: _titles[_tab]!,
-            showMenuButton: true,
-            onMenu: () => _openDrawer(context),
-          ),
-          Expanded(child: body),
-        ],
-      ),
-      bottomNavigationBar: _BottomNav(
-        selected: _tab,
-        onSelect: (t) => t == ShellTab.settings
-            ? _openMoreSheet(context)
-            : setState(() => _tab = t),
-      ),
-    );
-  }
-
-  // ── Phone navigation ───────────────────────────────────────────────────────
-
-  void _openDrawer(BuildContext context) {
-    final selected = _tab;
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (_) => _NavSheet(
-        selected: selected,
-        onSelect: (t) {
-          Navigator.of(context).pop();
-          setState(() => _tab = t);
-        },
-      ),
-    );
-  }
-
-  void _openMoreSheet(BuildContext context) {
-    final selected = _tab;
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (_) => _MoreSheet(
-        selected: selected,
-        onSelect: (t) {
-          Navigator.of(context).pop();
-          setState(() => _tab = t);
-        },
-      ),
+    // Edge-to-edge status bar with theme-aware icons; the drawer and the
+    // wide-layout sidebar draw under it by design.
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: systemOverlay(dark ? Brightness.dark : Brightness.light),
+      child: scaffold,
     );
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Topbar — 60px, title left; theme toggle + mono date right.
+// Topbar — 64px, title left; theme toggle + mono date right. Sits inside a
+// SafeArea so the edge-to-edge status bar never overlaps it.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _TopBar extends StatefulWidget {
@@ -176,15 +176,15 @@ class _TopBarState extends State<_TopBar> {
     final pal = Pal.of(context);
     final dark = Theme.of(context).brightness == Brightness.dark;
     return Container(
-      height: 60,
+      height: 64,
       color: pal.surface,
-      padding: const EdgeInsets.symmetric(horizontal: 16),
+      padding: const EdgeInsets.symmetric(horizontal: 12),
       child: Row(
         children: [
           if (widget.showMenuButton) ...[
             IconButton(
               onPressed: widget.onMenu,
-              icon: const Icon(Icons.menu, size: 20),
+              icon: const Icon(Icons.menu_rounded, size: 24),
               color: pal.body,
               tooltip: 'All screens',
             ),
@@ -192,23 +192,19 @@ class _TopBarState extends State<_TopBar> {
           ],
           Expanded(
             child: Text(widget.title,
-                style: TextStyle(
-                    fontFamily: kFontBody,
-                    fontSize: 13.4,
-                    fontWeight: FontWeight.w600,
-                    color: pal.heading)),
+                style: T.screenTitle.copyWith(color: pal.heading)),
           ),
           IconButton(
             onPressed: () => context.read<ThemeController>().toggle(),
             icon: Icon(dark ? Icons.light_mode_outlined : Icons.dark_mode_outlined,
-                size: 18),
+                size: 21),
             color: pal.muted,
             tooltip: dark ? 'Light theme' : 'Dark theme',
           ),
-          const SizedBox(width: 4),
+          const SizedBox(width: 2),
           Text(_date,
               style: TextStyle(
-                  fontFamily: kFontMono, fontSize: 10.0, color: pal.muted)),
+                  fontFamily: kFontMono, fontSize: 11.0, color: pal.muted)),
         ],
       ),
     );
@@ -216,7 +212,7 @@ class _TopBarState extends State<_TopBar> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Sidebar — the PWA's 240px teal gradient rail.
+// Sidebar — the PWA's teal gradient rail, sized for touch (48dp rows).
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _Sidebar extends StatelessWidget {
@@ -230,7 +226,7 @@ class _Sidebar extends StatelessWidget {
     final app = context.watch<AppState>();
     final pal = Pal.of(context);
     return Container(
-      width: 240,
+      width: 250,
       decoration: BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topCenter,
@@ -244,100 +240,141 @@ class _Sidebar extends StatelessWidget {
               offset: const Offset(2, 0)),
         ],
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // Brand row — logo, FU FUT, gold "Name • Role" eyebrow.
-          Container(
-            height: 60,
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            decoration: BoxDecoration(
-              border: Border(
-                  bottom: BorderSide(color: Colors.white.withValues(alpha: 0.08))),
+      child: SafeArea(
+        top: true,
+        bottom: false,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _BrandHeader(app: app),
+            const NavSectionHeader(label: 'Sales'),
+            _SideItem(
+              icon: Icons.menu_book_outlined,
+              label: 'Menu View',
+              active: selected == ShellTab.menuView,
+              onTap: () => onSelect(ShellTab.menuView),
             ),
-            child: Row(
-              children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(10),
-                  child: Image.asset('assets/images/logo.webp',
-                      width: 38, height: 38, fit: BoxFit.cover),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('FU FUT',
-                          style: TextStyle(
-                              fontFamily: kFontBody,
-                              fontSize: 12.8,
-                              fontWeight: FontWeight.w700,
-                              color: Colors.white,
-                              letterSpacing: 0.5)),
-                      Text(
-                        '${app.user?.firstName ?? app.user?.displayName ?? ''}'
-                        '${app.user == null ? '' : ' • '}'
-                        '${_titleCase(app.user?.role ?? '')}',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                            fontFamily: kFontBody,
-                            fontSize: 10.0,
-                            fontWeight: FontWeight.w500,
-                            color: pal.goldLight,
-                            letterSpacing: 1.0),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
+            _SideItem(
+              icon: Icons.shopping_cart_outlined,
+              label: 'Orders',
+              active: selected == ShellTab.orders,
+              onTap: () => onSelect(ShellTab.orders),
             ),
-          ),
-          const NavSectionHeader(label: 'Sales'),
-          _SideItem(
-            icon: Icons.menu_book_outlined,
-            label: 'Menu View',
-            active: selected == ShellTab.menuView,
-            onTap: () => onSelect(ShellTab.menuView),
-          ),
-          _SideItem(
-            icon: Icons.shopping_cart_outlined,
-            label: 'Orders',
-            active: selected == ShellTab.orders,
-            onTap: () => onSelect(ShellTab.orders),
-          ),
-          _SideItem(
-            icon: Icons.credit_card_outlined,
-            label: 'Open Checks',
-            active: selected == ShellTab.openChecks,
-            onTap: () => onSelect(ShellTab.openChecks),
-          ),
-          const NavSectionHeader(label: 'System'),
-          _SideItem(
-            icon: Icons.settings_outlined,
-            label: 'Settings',
-            active: selected == ShellTab.settings,
-            onTap: () => onSelect(ShellTab.settings),
-          ),
-          const Spacer(),
-          // Sign out — the PWA's red-tinted footer button.
-          SafeArea(
-            top: false,
-            child: Padding(
+            _SideItem(
+              icon: Icons.credit_card_outlined,
+              label: 'Open Checks',
+              active: selected == ShellTab.openChecks,
+              onTap: () => onSelect(ShellTab.openChecks),
+            ),
+            const NavSectionHeader(label: 'System'),
+            _SideItem(
+              icon: Icons.settings_outlined,
+              label: 'Settings',
+              active: selected == ShellTab.settings,
+              onTap: () => onSelect(ShellTab.settings),
+            ),
+            const Spacer(),
+            // Sign out — the PWA's red-tinted footer button.
+            Padding(
               padding: const EdgeInsets.all(12),
               child: TextButton.icon(
                 onPressed: () => _confirmSignOut(context),
-                icon: const Icon(Icons.logout, size: 15),
+                icon: const Icon(Icons.logout, size: 17),
                 label: const Text('Sign Out'),
                 style: TextButton.styleFrom(
-                  foregroundColor: const Color(0xFFDC2F2F),
-                  backgroundColor: const Color(0xFFDC2F2F).withValues(alpha: 0.15),
+                  foregroundColor: const Color(0xFFFF8A8A),
+                  backgroundColor: const Color(0xFFDC2F2F).withValues(alpha: 0.2),
                   shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8)),
-                  minimumSize: const Size(44, 44),
+                      borderRadius: BorderRadius.circular(10)),
+                  minimumSize: const Size(48, 48),
+                  textStyle: const TextStyle(
+                      fontFamily: kFontBody,
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w700),
                 ),
               ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Brand + user block shared by the wide sidebar and the phone drawer.
+class _BrandHeader extends StatelessWidget {
+  final AppState app;
+  const _BrandHeader({required this.app});
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = Pal.of(context);
+    final name = app.user?.firstName ?? app.user?.displayName ?? '';
+    final role = _titleCase(app.user?.role ?? '');
+    final initials = name.isEmpty
+        ? 'FU'
+        : name.trim().split(RegExp(r'\s+')).map((w) => w[0]).take(2).join().toUpperCase();
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 18, 16, 16),
+      decoration: BoxDecoration(
+        border: Border(
+            bottom: BorderSide(color: Colors.white.withValues(alpha: 0.08))),
+      ),
+      child: Row(
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: Image.asset('assets/images/logo.webp',
+                width: 44, height: 44, fit: BoxFit.cover),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('FU FUT',
+                    style: TextStyle(
+                        fontFamily: kFontBody,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w800,
+                        color: Colors.white,
+                        letterSpacing: 0.5)),
+                const SizedBox(height: 2),
+                if (app.user != null) ...[
+                  Row(
+                    children: [
+                      Container(
+                        width: 18,
+                        height: 18,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: pal.gold,
+                        ),
+                        child: Text(initials,
+                            style: const TextStyle(
+                                fontFamily: kFontBody,
+                                fontSize: 8.5,
+                                fontWeight: FontWeight.w800,
+                                color: Color(0xFF073735))),
+                      ),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text('$name • $role',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                                fontFamily: kFontBody,
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w600,
+                                color: pal.goldLight,
+                                letterSpacing: 0.6)),
+                      ),
+                    ],
+                  ),
+                ],
+              ],
             ),
           ),
         ],
@@ -376,7 +413,7 @@ class _SideItem extends StatelessWidget {
       child: InkWell(
         onTap: onTap,
         child: Container(
-          height: 44,
+          height: 50,
           padding: const EdgeInsets.symmetric(horizontal: 20),
           decoration: BoxDecoration(
             border: Border(
@@ -389,15 +426,110 @@ class _SideItem extends StatelessWidget {
           child: Row(
             children: [
               Icon(icon,
-                  size: 18,
+                  size: 21,
                   color: Colors.white.withValues(alpha: active ? 1 : 0.6)),
-              const SizedBox(width: 12),
+              const SizedBox(width: 14),
               Expanded(
                 child: Text(
                   label,
                   style: T.navItem.copyWith(
                     color: Colors.white.withValues(alpha: active ? 1 : 0.72),
-                    fontWeight: active ? FontWeight.w600 : FontWeight.w500,
+                    fontWeight: active ? FontWeight.w700 : FontWeight.w500,
+                  ),
+                ),
+              ),
+              if (active)
+                Icon(Icons.chevron_right,
+                    size: 18, color: Colors.white.withValues(alpha: 0.9)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AppDrawer — the phone's left navigation drawer: teal gradient, brand +
+// user header, touch-sized nav rows with the gold active edge, a theme
+// toggle row and the red sign-out footer. Opens by hamburger, edge swipe,
+// or the bottom-bar "More".
+// ─────────────────────────────────────────────────────────────────────────────
+
+class AppDrawer extends StatelessWidget {
+  final ShellTab selected;
+  final ValueChanged<ShellTab> onSelect;
+
+  const AppDrawer({super.key, required this.selected, required this.onSelect});
+
+  @override
+  Widget build(BuildContext context) {
+    final app = context.watch<AppState>();
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    return Drawer(
+      backgroundColor: Colors.transparent,
+      elevation: 8,
+      child: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Pal.of(context).sidebarTop, Pal.of(context).sidebarBottom],
+          ),
+        ),
+        child: SafeArea(
+          bottom: false,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _BrandHeader(app: app),
+              const NavSectionHeader(label: 'Sales'),
+              _SideItem(
+                  icon: Icons.menu_book_outlined,
+                  label: 'Menu View',
+                  active: selected == ShellTab.menuView,
+                  onTap: () => onSelect(ShellTab.menuView)),
+              _SideItem(
+                  icon: Icons.shopping_cart_outlined,
+                  label: 'Orders',
+                  active: selected == ShellTab.orders,
+                  onTap: () => onSelect(ShellTab.orders)),
+              _SideItem(
+                  icon: Icons.credit_card_outlined,
+                  label: 'Open Checks',
+                  active: selected == ShellTab.openChecks,
+                  onTap: () => onSelect(ShellTab.openChecks)),
+              const NavSectionHeader(label: 'System'),
+              _SideItem(
+                  icon: Icons.settings_outlined,
+                  label: 'Settings',
+                  active: selected == ShellTab.settings,
+                  onTap: () => onSelect(ShellTab.settings)),
+              _SideItem(
+                  icon: dark
+                      ? Icons.light_mode_outlined
+                      : Icons.dark_mode_outlined,
+                  label: dark ? 'Light theme' : 'Dark theme',
+                  active: false,
+                  onTap: () => context.read<ThemeController>().toggle()),
+              const Spacer(),
+              Padding(
+                padding: const EdgeInsets.all(12),
+                child: TextButton.icon(
+                  onPressed: () => _confirmSignOut(context),
+                  icon: const Icon(Icons.logout, size: 17),
+                  label: const Text('Sign Out'),
+                  style: TextButton.styleFrom(
+                    foregroundColor: const Color(0xFFFF8A8A),
+                    backgroundColor:
+                        const Color(0xFFDC2F2F).withValues(alpha: 0.2),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10)),
+                    minimumSize: const Size(48, 48),
+                    textStyle: const TextStyle(
+                        fontFamily: kFontBody,
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w700),
                   ),
                 ),
               ),
@@ -410,7 +542,8 @@ class _SideItem extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Bottom nav (phone) — M3 bar: sunken bg, 64×32 pill indicator.
+// Bottom nav (phone) — M3 bar: sunken bg, 64×34 pill indicator, 11dp labels.
+// "More" opens the drawer.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _BottomNav extends StatelessWidget {
@@ -432,22 +565,24 @@ class _BottomNav extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Container(
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 180),
+                curve: Curves.easeOut,
                 width: 64,
-                height: 32,
+                height: 34,
                 alignment: Alignment.center,
                 decoration: BoxDecoration(
                   color: isSel ? pal.tintBg : Colors.transparent,
-                  borderRadius: BorderRadius.circular(16),
+                  borderRadius: BorderRadius.circular(17),
                 ),
-                child: Icon(isSel ? activeIcon : icon, size: 22, color: color),
+                child: Icon(isSel ? activeIcon : icon, size: 23, color: color),
               ),
-              const SizedBox(height: 2),
+              const SizedBox(height: 3),
               Text(label,
                   style: TextStyle(
                       fontFamily: kFontBody,
-                      fontSize: 10.0,
-                      fontWeight: FontWeight.w500,
+                      fontSize: 11.0,
+                      fontWeight: isSel ? FontWeight.w700 : FontWeight.w500,
                       color: color)),
             ],
           ),
@@ -457,7 +592,8 @@ class _BottomNav extends StatelessWidget {
 
     return Container(
       decoration: BoxDecoration(
-        color: pal.sunken,
+        color: pal.surface,
+        border: Border(top: BorderSide(color: pal.border)),
         boxShadow: [
           BoxShadow(
               color: const Color(0xFF073735).withValues(alpha: 0.05),
@@ -466,7 +602,7 @@ class _BottomNav extends StatelessWidget {
         ],
       ),
       padding: EdgeInsets.only(
-          left: 8, right: 8, top: 8, bottom: 10 + MediaQuery.of(context).padding.bottom),
+          left: 8, right: 8, top: 8, bottom: 8 + MediaQuery.of(context).padding.bottom),
       child: Row(
         children: [
           item(ShellTab.menuView, Icons.menu_book_outlined, Icons.menu_book,
@@ -475,216 +611,8 @@ class _BottomNav extends StatelessWidget {
               'Orders'),
           item(ShellTab.openChecks, Icons.credit_card_outlined, Icons.credit_card,
               'Open Checks'),
-          item(ShellTab.settings, Icons.expand_more, Icons.expand_more, 'More'),
+          item(ShellTab.settings, Icons.menu_rounded, Icons.menu_rounded, 'More'),
         ],
-      ),
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// "More" sheet — PWA style: 28px top radius, drag handle, "All screens",
-// 2-col grid grouped by section.
-// ─────────────────────────────────────────────────────────────────────────────
-
-class _MoreSheet extends StatelessWidget {
-  final ShellTab selected;
-  final ValueChanged<ShellTab> onSelect;
-
-  const _MoreSheet({required this.selected, required this.onSelect});
-
-  @override
-  Widget build(BuildContext context) {
-    final pal = Pal.of(context);
-    return SafeArea(
-      child: Container(
-        constraints: BoxConstraints(
-            maxHeight: MediaQuery.sizeOf(context).height * 0.72),
-        decoration: BoxDecoration(
-          color: pal.surface,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const SheetHandle(),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
-              child: Text('All screens',
-                  style: TextStyle(
-                      fontFamily: kFontBody,
-                      fontSize: 13.4,
-                      fontWeight: FontWeight.w600,
-                      color: pal.heading)),
-            ),
-            Flexible(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _gridHeader(context, 'Sales'),
-                    Row(
-                      children: [
-                        _tile(context, Icons.menu_book_outlined, 'Menu View',
-                            ShellTab.menuView),
-                        const SizedBox(width: 10),
-                        _tile(context, Icons.shopping_cart_outlined, 'Orders',
-                            ShellTab.orders),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                    Row(
-                      children: [
-                        _tile(context, Icons.credit_card_outlined, 'Open Checks',
-                            ShellTab.openChecks),
-                      ],
-                    ),
-                    _gridHeader(context, 'System'),
-                    Row(
-                      children: [
-                        _tile(context, Icons.settings_outlined, 'Settings',
-                            ShellTab.settings),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _gridHeader(BuildContext context, String label) {
-    final pal = Pal.of(context);
-    return Padding(
-      padding: const EdgeInsets.only(top: 12, bottom: 8),
-      child: Text(label.toUpperCase(),
-          style: T.navHeader.copyWith(color: pal.muted, fontSize: 9.5)),
-    );
-  }
-
-  Widget _tile(BuildContext context, IconData icon, String label, ShellTab tab) {
-    final pal = Pal.of(context);
-    final active = selected == tab;
-    return Expanded(
-      child: InkWell(
-        onTap: () => onSelect(tab),
-        borderRadius: BorderRadius.circular(14),
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 12),
-          decoration: BoxDecoration(
-            color: active ? pal.tintBg : pal.sunken.withValues(alpha: 0.5),
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: active ? pal.primary : pal.border),
-          ),
-          child: Row(
-            children: [
-              Icon(icon, size: 17,
-                  color: active ? pal.primary : pal.muted),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(label,
-                    style: TextStyle(
-                        fontFamily: kFontBody,
-                        fontSize: 10.5,
-                        fontWeight: FontWeight.w600,
-                        color: active ? pal.primary : pal.body)),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// Same content as the sidebar, in a drawer sheet for phones.
-class _NavSheet extends StatelessWidget {
-  final ShellTab selected;
-  final ValueChanged<ShellTab> onSelect;
-
-  const _NavSheet({required this.selected, required this.onSelect});
-
-  @override
-  Widget build(BuildContext context) {
-    final app = context.watch<AppState>();
-    final pal = Pal.of(context);
-    return SafeArea(
-      child: Container(
-        margin: const EdgeInsets.all(12),
-        clipBehavior: Clip.antiAlias,
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [pal.sidebarTop, pal.sidebarBottom],
-          ),
-          borderRadius: BorderRadius.circular(24),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Row(
-                children: [
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(10),
-                    child: Image.asset('assets/images/logo.webp',
-                        width: 38, height: 38, fit: BoxFit.cover),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text('FU FUT',
-                            style: TextStyle(
-                                fontFamily: kFontBody,
-                                fontSize: 12.8,
-                                fontWeight: FontWeight.w700,
-                                color: Colors.white)),
-                        Text(
-                          '${app.user?.firstName ?? ''} • ${app.user?.role ?? ''}',
-                          style: TextStyle(
-                              fontFamily: kFontBody,
-                              fontSize: 10.0,
-                              color: pal.goldLight),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            _SideItem(
-                icon: Icons.menu_book_outlined,
-                label: 'Menu View',
-                active: selected == ShellTab.menuView,
-                onTap: () => onSelect(ShellTab.menuView)),
-            _SideItem(
-                icon: Icons.shopping_cart_outlined,
-                label: 'Orders',
-                active: selected == ShellTab.orders,
-                onTap: () => onSelect(ShellTab.orders)),
-            _SideItem(
-                icon: Icons.credit_card_outlined,
-                label: 'Open Checks',
-                active: selected == ShellTab.openChecks,
-                onTap: () => onSelect(ShellTab.openChecks)),
-            _SideItem(
-                icon: Icons.settings_outlined,
-                label: 'Settings',
-                active: selected == ShellTab.settings,
-                onTap: () => onSelect(ShellTab.settings)),
-            const SizedBox(height: 8),
-          ],
-        ),
       ),
     );
   }

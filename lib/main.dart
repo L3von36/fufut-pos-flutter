@@ -10,6 +10,7 @@ import 'theme.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  initSystemChrome();
   runApp(const FufutPosApp());
 }
 
