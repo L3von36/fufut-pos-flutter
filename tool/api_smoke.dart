@@ -6,6 +6,7 @@
 // edge block), and session-gated reads answer 401 without a cookie.
 //
 // Run: dart run tool/api_smoke.dart [base_url]
+// ignore_for_file: avoid_print
 import 'package:fufut_pos/api/api_client.dart';
 import 'package:fufut_pos/api/fufut_api.dart';
 
