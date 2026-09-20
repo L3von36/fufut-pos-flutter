@@ -5,6 +5,7 @@ import 'screens/home_shell.dart';
 import 'screens/login_screen.dart';
 import 'state/app_state.dart';
 import 'state/cart.dart';
+import 'state/theme_controller.dart';
 import 'theme.dart';
 
 void main() {
@@ -21,12 +22,17 @@ class FufutPosApp extends StatelessWidget {
       providers: [
         ChangeNotifierProvider(create: (_) => AppState()),
         ChangeNotifierProvider(create: (_) => CartState()),
+        ChangeNotifierProvider(create: (_) => ThemeController()..load()),
       ],
-      child: MaterialApp(
-        title: 'Fufut POS',
-        debugShowCheckedModeBanner: false,
-        theme: buildTheme(),
-        home: const RootGate(),
+      child: Consumer<ThemeController>(
+        builder: (context, theme, _) => MaterialApp(
+          title: 'FU FUT POS',
+          debugShowCheckedModeBanner: false,
+          theme: buildLightTheme(),
+          darkTheme: buildDarkTheme(),
+          themeMode: theme.mode,
+          home: const RootGate(),
+        ),
       ),
     );
   }

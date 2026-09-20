@@ -81,9 +81,13 @@ class CartState extends ChangeNotifier {
     ].join('::');
   }
 
-  void addItem(MenuItem item, {List<MenuModifier> selected = const []}) {
+  void addItem(MenuItem item,
+      {List<MenuModifier> selected = const [],
+      int qty = 1,
+      String course = 'main'}) {
+    if (qty < 1) return;
     final key = _dedupKey(
-        item.id, selected, '', item.name, item.price, 'main');
+        item.id, selected, '', item.name, item.price, course);
     CartLine? existing;
     for (final l in _items) {
       if (l.uid == key) {
@@ -92,16 +96,35 @@ class CartState extends ChangeNotifier {
       }
     }
     if (existing != null) {
-      existing.qty++;
+      existing.qty += qty;
     } else {
       _items.add(CartLine(
         uid: key,
         menuItemId: item.id,
         name: item.name,
         basePrice: item.price,
+        qty: qty,
         selectedModifiers: selected,
+        course: course,
       ));
     }
+    _persist();
+    notifyListeners();
+  }
+
+  /// Total quantity of a menu item across all its lines (with any
+  /// modifiers) — drives the in-cart count badge on the menu card.
+  int qtyForItem(String? menuItemId) {
+    if (menuItemId == null || menuItemId.isEmpty) return 0;
+    return _items.fold<int>(
+        0, (s, l) => l.menuItemId == menuItemId ? s + l.qty : s);
+  }
+
+  /// Re-inserts a line at its old position — the Undo of the cart's
+  /// remove action, same contract as the web POS's 3s undo toast.
+  void insertLine(int index, CartLine line) {
+    final i = index.clamp(0, _items.length);
+    _items.insert(i, line);
     _persist();
     notifyListeners();
   }

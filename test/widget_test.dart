@@ -9,8 +9,10 @@ void main() {
     SharedPreferences.setMockInitialValues(<String, Object>{});
     await tester.pumpWidget(const FufutPosApp());
     await tester.pumpAndSettle();
-    expect(find.text('Fufut Coffee'), findsOneWidget);
-    expect(find.text('Point of Sale'), findsOneWidget);
-    expect(find.text('Sign in'), findsOneWidget);
+    // The split login card: brand panel + form, PWA wording.
+    expect(find.text('FU FUT'), findsWidgets);
+    expect(find.text('COFFEE · POS'), findsOneWidget);
+    expect(find.text('Welcome back'), findsOneWidget);
+    expect(find.text('Sign In'), findsOneWidget);
   });
 }

@@ -79,11 +79,18 @@ void main() {
   });
 
   group('money', () {
-    test('formats birr with thousands separators', () {
-      expect(money(0), 'ETB 0.00');
-      expect(money(150), 'ETB 150.00');
-      expect(money(12345.5), 'ETB 12,345.50');
-      expect(money(1234567.89), 'ETB 1,234,567.89');
+    // The web POS formats prices as `ETB ${n.toFixed(0)}` — whole birr,
+    // no separators. Quick-tender buttons use toLocaleString (grouped).
+    test('formats birr as whole numbers, no separators', () {
+      expect(money(0), 'ETB 0');
+      expect(money(150), 'ETB 150');
+      expect(money(12345.5), 'ETB 12346');
+      expect(money(1234567.89), 'ETB 1234568');
+    });
+
+    test('tender labels group thousands like toLocaleString', () {
+      expect(moneyGroup(1000), 'ETB 1,000');
+      expect(moneyGroup(704), 'ETB 704');
     });
   });
 
