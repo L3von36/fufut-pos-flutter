@@ -176,19 +176,20 @@ class _TopBarState extends State<_TopBar> {
     final pal = Pal.of(context);
     final dark = Theme.of(context).brightness == Brightness.dark;
     return Container(
-      height: 64,
+      height: 52,
       color: pal.surface,
-      padding: const EdgeInsets.symmetric(horizontal: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 10),
       child: Row(
         children: [
           if (widget.showMenuButton) ...[
             IconButton(
               onPressed: widget.onMenu,
-              icon: const Icon(Icons.menu_rounded, size: 24),
+              icon: const Icon(Icons.menu_rounded, size: 20),
               color: pal.body,
+              visualDensity: VisualDensity.compact,
               tooltip: 'All screens',
             ),
-            const SizedBox(width: 4),
+            const SizedBox(width: 2),
           ],
           Expanded(
             child: Text(widget.title,
@@ -197,14 +198,15 @@ class _TopBarState extends State<_TopBar> {
           IconButton(
             onPressed: () => context.read<ThemeController>().toggle(),
             icon: Icon(dark ? Icons.light_mode_outlined : Icons.dark_mode_outlined,
-                size: 21),
+                size: 18),
             color: pal.muted,
+            visualDensity: VisualDensity.compact,
             tooltip: dark ? 'Light theme' : 'Dark theme',
           ),
           const SizedBox(width: 2),
           Text(_date,
               style: TextStyle(
-                  fontFamily: kFontMono, fontSize: 11.0, color: pal.muted)),
+                  fontFamily: kFontMono, fontSize: 10.0, color: pal.muted)),
         ],
       ),
     );
@@ -226,7 +228,7 @@ class _Sidebar extends StatelessWidget {
     final app = context.watch<AppState>();
     final pal = Pal.of(context);
     return Container(
-      width: 250,
+      width: 232,
       decoration: BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topCenter,
@@ -235,8 +237,8 @@ class _Sidebar extends StatelessWidget {
         ),
         boxShadow: [
           BoxShadow(
-              color: const Color(0xFF073735).withValues(alpha: 0.15),
-              blurRadius: 8,
+              color: const Color(0xFF073735).withValues(alpha: 0.12),
+              blurRadius: 6,
               offset: const Offset(2, 0)),
         ],
       ),
@@ -276,21 +278,21 @@ class _Sidebar extends StatelessWidget {
             const Spacer(),
             // Sign out — the PWA's red-tinted footer button.
             Padding(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.all(10),
               child: TextButton.icon(
                 onPressed: () => _confirmSignOut(context),
-                icon: const Icon(Icons.logout, size: 17),
+                icon: const Icon(Icons.logout, size: 15),
                 label: const Text('Sign Out'),
                 style: TextButton.styleFrom(
                   foregroundColor: const Color(0xFFFF8A8A),
                   backgroundColor: const Color(0xFFDC2F2F).withValues(alpha: 0.2),
                   shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10)),
-                  minimumSize: const Size(48, 48),
+                      borderRadius: BorderRadius.circular(8)),
+                  minimumSize: const Size(48, 38),
                   textStyle: const TextStyle(
                       fontFamily: kFontBody,
-                      fontSize: 13.5,
-                      fontWeight: FontWeight.w700),
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w600),
                 ),
               ),
             ),
@@ -316,7 +318,7 @@ class _BrandHeader extends StatelessWidget {
         : name.trim().split(RegExp(r'\s+')).map((w) => w[0]).take(2).join().toUpperCase();
 
     return Container(
-      padding: const EdgeInsets.fromLTRB(16, 18, 16, 16),
+      padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
       decoration: BoxDecoration(
         border: Border(
             bottom: BorderSide(color: Colors.white.withValues(alpha: 0.08))),
@@ -324,11 +326,11 @@ class _BrandHeader extends StatelessWidget {
       child: Row(
         children: [
           ClipRRect(
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.circular(10),
             child: Image.asset('assets/images/logo.webp',
-                width: 44, height: 44, fit: BoxFit.cover),
+                width: 36, height: 36, fit: BoxFit.cover),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 10),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -336,7 +338,7 @@ class _BrandHeader extends StatelessWidget {
                 const Text('FU FUT',
                     style: TextStyle(
                         fontFamily: kFontBody,
-                        fontSize: 15,
+                        fontSize: 13.5,
                         fontWeight: FontWeight.w800,
                         color: Colors.white,
                         letterSpacing: 0.5)),
@@ -345,8 +347,8 @@ class _BrandHeader extends StatelessWidget {
                   Row(
                     children: [
                       Container(
-                        width: 18,
-                        height: 18,
+                        width: 16,
+                        height: 16,
                         alignment: Alignment.center,
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
@@ -355,7 +357,7 @@ class _BrandHeader extends StatelessWidget {
                         child: Text(initials,
                             style: const TextStyle(
                                 fontFamily: kFontBody,
-                                fontSize: 8.5,
+                                fontSize: 8,
                                 fontWeight: FontWeight.w800,
                                 color: Color(0xFF073735))),
                       ),
@@ -366,10 +368,10 @@ class _BrandHeader extends StatelessWidget {
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(
                                 fontFamily: kFontBody,
-                                fontSize: 11.5,
+                                fontSize: 10.5,
                                 fontWeight: FontWeight.w600,
                                 color: pal.goldLight,
-                                letterSpacing: 0.6)),
+                                letterSpacing: 0.4)),
                       ),
                     ],
                   ),
@@ -413,8 +415,8 @@ class _SideItem extends StatelessWidget {
       child: InkWell(
         onTap: onTap,
         child: Container(
-          height: 50,
-          padding: const EdgeInsets.symmetric(horizontal: 20),
+          height: 42,
+          padding: const EdgeInsets.symmetric(horizontal: 16),
           decoration: BoxDecoration(
             border: Border(
               left: BorderSide(
@@ -426,9 +428,9 @@ class _SideItem extends StatelessWidget {
           child: Row(
             children: [
               Icon(icon,
-                  size: 21,
+                  size: 18,
                   color: Colors.white.withValues(alpha: active ? 1 : 0.6)),
-              const SizedBox(width: 14),
+              const SizedBox(width: 12),
               Expanded(
                 child: Text(
                   label,
@@ -440,7 +442,7 @@ class _SideItem extends StatelessWidget {
               ),
               if (active)
                 Icon(Icons.chevron_right,
-                    size: 18, color: Colors.white.withValues(alpha: 0.9)),
+                    size: 16, color: Colors.white.withValues(alpha: 0.9)),
             ],
           ),
         ),
@@ -469,6 +471,7 @@ class AppDrawer extends StatelessWidget {
     return Drawer(
       backgroundColor: Colors.transparent,
       elevation: 8,
+      width: 284,
       child: Container(
         decoration: BoxDecoration(
           gradient: LinearGradient(
@@ -514,22 +517,22 @@ class AppDrawer extends StatelessWidget {
                   onTap: () => context.read<ThemeController>().toggle()),
               const Spacer(),
               Padding(
-                padding: const EdgeInsets.all(12),
+                padding: const EdgeInsets.all(10),
                 child: TextButton.icon(
                   onPressed: () => _confirmSignOut(context),
-                  icon: const Icon(Icons.logout, size: 17),
+                  icon: const Icon(Icons.logout, size: 15),
                   label: const Text('Sign Out'),
                   style: TextButton.styleFrom(
                     foregroundColor: const Color(0xFFFF8A8A),
                     backgroundColor:
                         const Color(0xFFDC2F2F).withValues(alpha: 0.2),
                     shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10)),
-                    minimumSize: const Size(48, 48),
+                        borderRadius: BorderRadius.circular(8)),
+                    minimumSize: const Size(48, 38),
                     textStyle: const TextStyle(
                         fontFamily: kFontBody,
-                        fontSize: 13.5,
-                        fontWeight: FontWeight.w700),
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w600),
                   ),
                 ),
               ),
@@ -568,20 +571,20 @@ class _BottomNav extends StatelessWidget {
               AnimatedContainer(
                 duration: const Duration(milliseconds: 180),
                 curve: Curves.easeOut,
-                width: 64,
-                height: 34,
+                width: 56,
+                height: 30,
                 alignment: Alignment.center,
                 decoration: BoxDecoration(
                   color: isSel ? pal.tintBg : Colors.transparent,
-                  borderRadius: BorderRadius.circular(17),
+                  borderRadius: BorderRadius.circular(15),
                 ),
-                child: Icon(isSel ? activeIcon : icon, size: 23, color: color),
+                child: Icon(isSel ? activeIcon : icon, size: 20, color: color),
               ),
-              const SizedBox(height: 3),
+              const SizedBox(height: 2),
               Text(label,
                   style: TextStyle(
                       fontFamily: kFontBody,
-                      fontSize: 11.0,
+                      fontSize: 10.5,
                       fontWeight: isSel ? FontWeight.w700 : FontWeight.w500,
                       color: color)),
             ],
@@ -594,12 +597,6 @@ class _BottomNav extends StatelessWidget {
       decoration: BoxDecoration(
         color: pal.surface,
         border: Border(top: BorderSide(color: pal.border)),
-        boxShadow: [
-          BoxShadow(
-              color: const Color(0xFF073735).withValues(alpha: 0.05),
-              blurRadius: 20,
-              offset: const Offset(0, -4)),
-        ],
       ),
       padding: EdgeInsets.only(
           left: 8, right: 8, top: 8, bottom: 8 + MediaQuery.of(context).padding.bottom),

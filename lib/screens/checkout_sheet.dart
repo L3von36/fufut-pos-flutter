@@ -52,7 +52,7 @@ class _ReviewSheetState extends State<ReviewSheet> {
     final pal = Pal.of(context);
     return SafeArea(
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -64,13 +64,13 @@ class _ReviewSheetState extends State<ReviewSheet> {
                   child: Text('Review Order',
                       style: TextStyle(
                           fontFamily: kFontBody,
-                          fontSize: 16.5,
+                          fontSize: 15,
                           fontWeight: FontWeight.w700,
                           color: pal.heading)),
                 ),
                 Container(
                   padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                   decoration: BoxDecoration(
                     color: pal.primary,
                     borderRadius: BorderRadius.circular(99),
@@ -78,21 +78,21 @@ class _ReviewSheetState extends State<ReviewSheet> {
                   child: Text('${cart.itemCount}',
                       style: const TextStyle(
                           fontFamily: kFontBody,
-                          fontSize: 12.0,
+                          fontSize: 11,
                           fontWeight: FontWeight.w700,
                           color: Colors.white)),
                 ),
               ],
             ),
-            const SizedBox(height: 10),
+            const SizedBox(height: 8),
             Flexible(
               child: ListView(
                 shrinkWrap: true,
                 children: [
                   OrderContextEditor(cart: cart, tables: _tables),
-                  const SizedBox(height: 12),
-                  ...cart.items.map((l) => _ReviewLine(line: l)),
                   const SizedBox(height: 10),
+                  ...cart.items.map((l) => _ReviewLine(line: l)),
+                  const SizedBox(height: 8),
                   TextField(
                     onChanged: cart.setNotes,
                     decoration: const InputDecoration(
@@ -102,36 +102,36 @@ class _ReviewSheetState extends State<ReviewSheet> {
                 ],
               ),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 10),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text('Total',
                     style: TextStyle(
                         fontFamily: kFontBody,
-                        fontSize: 14.0,
+                        fontSize: 13,
                         fontWeight: FontWeight.w600,
                         color: pal.heading)),
                 Text(money(cart.grandTotal()),
                     style: T.priceBig.copyWith(color: pal.heading)),
               ],
             ),
-            const SizedBox(height: 10),
+            const SizedBox(height: 8),
             SizedBox(
-              height: 52,
+              height: 42,
               child: FilledButton.icon(
                 onPressed: cart.isEmpty || _sending ? null : _pay,
                 icon: _sending
                     ? const SizedBox(
-                        width: 16,
-                        height: 16,
+                        width: 14,
+                        height: 14,
                         child: CircularProgressIndicator(
                             strokeWidth: 2, color: Colors.white))
-                    : const Icon(Icons.arrow_forward, size: 16),
+                    : const Icon(Icons.arrow_forward, size: 15),
                 label: Text(_sending ? 'Sending...' : 'Continue to Payment',
                     style: const TextStyle(
                         fontFamily: kFontBody,
-                        fontSize: 12.8,
+                        fontSize: 12.5,
                         fontWeight: FontWeight.w600)),
               ),
             ),
@@ -148,7 +148,7 @@ class _ReviewSheetState extends State<ReviewSheet> {
       isScrollControlled: true,
       backgroundColor: Pal.of(context).surface,
       shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
       constraints: BoxConstraints(
           maxWidth: 680,
           maxHeight: MediaQuery.sizeOf(context).height * 0.9),
@@ -243,11 +243,11 @@ class _ReviewLine extends StatelessWidget {
     final cart = context.read<CartState>();
     final pal = Pal.of(context);
     return Container(
-      margin: const EdgeInsets.only(bottom: 6),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      margin: const EdgeInsets.only(bottom: 5),
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
       decoration: BoxDecoration(
         color: pal.surface,
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(8),
         border: Border.all(color: pal.border),
       ),
       child: Row(
@@ -259,12 +259,12 @@ class _ReviewLine extends StatelessWidget {
                 Text(line.name,
                     style: TextStyle(
                         fontFamily: kFontBody,
-                        fontSize: 13.5,
+                        fontSize: 12.5,
                         fontWeight: FontWeight.w600,
                         color: pal.heading)),
                 Text('${money(line.unitPrice)} each',
                     style:
-                        T.mono.copyWith(fontSize: 11.5, color: pal.muted)),
+                        T.mono.copyWith(fontSize: 10.5, color: pal.muted)),
               ],
             ),
           ),
@@ -273,21 +273,21 @@ class _ReviewLine extends StatelessWidget {
             onTap: () => cart.decrementQty(line),
           ),
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 6),
+            padding: const EdgeInsets.symmetric(horizontal: 5),
             child: Text('${line.qty}',
-                style: T.price.copyWith(fontSize: 14.0)),
+                style: T.price.copyWith(fontSize: 13)),
           ),
           _MiniStepper(
             icon: Icons.add,
             onTap: () => cart.incrementQty(line),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: 6),
           SizedBox(
-            width: 64,
+            width: 66,
             child: Text(money(line.lineTotal),
                 textAlign: TextAlign.end,
                 style: T.mono.copyWith(
-                    fontSize: 12.5,
+                    fontSize: 11.5,
                     fontWeight: FontWeight.w600,
                     color: pal.heading)),
           ),
@@ -311,8 +311,8 @@ class _ReviewLine extends StatelessWidget {
             },
             customBorder: const CircleBorder(),
             child: Padding(
-              padding: const EdgeInsets.all(6),
-              child: Icon(Icons.close, size: 15, color: pal.danger),
+              padding: const EdgeInsets.all(5),
+              child: Icon(Icons.close, size: 14, color: pal.danger),
             ),
           ),
         ],
@@ -337,13 +337,13 @@ class _MiniStepper extends StatelessWidget {
         onTap: onTap,
         customBorder: const CircleBorder(),
         child: Ink(
-          width: 32,
-          height: 32,
+          width: 28,
+          height: 28,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            border: Border.all(color: pal.borderStrong, width: 1.5),
+            border: Border.all(color: pal.borderStrong, width: 1),
           ),
-          child: Icon(icon, size: 15, color: pal.body),
+          child: Icon(icon, size: 14, color: pal.body),
         ),
       ),
     );
@@ -407,7 +407,7 @@ class _PaymentSheetState extends State<PaymentSheet> {
     final pal = Pal.of(context);
     return SafeArea(
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -419,24 +419,24 @@ class _PaymentSheetState extends State<PaymentSheet> {
                   child: Text('Payment',
                       style: TextStyle(
                           fontFamily: kFontBody,
-                          fontSize: 16.5,
+                          fontSize: 15,
                           fontWeight: FontWeight.w700,
                           color: pal.heading)),
                 ),
                 Text(money(_total),
                     style: T.price.copyWith(
-                        fontSize: 16.0, color: pal.primary)),
+                        fontSize: 14, color: pal.primary)),
               ],
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 10),
             // 3-col method card grid.
             GridView.count(
               crossAxisCount: 3,
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
-              mainAxisSpacing: 8,
-              crossAxisSpacing: 8,
-              childAspectRatio: 1.45,
+              mainAxisSpacing: 6,
+              crossAxisSpacing: 6,
+              childAspectRatio: 1.55,
               children: [
                 for (final (value, label, icon) in _methods)
                   _MethodCard(
@@ -447,39 +447,39 @@ class _PaymentSheetState extends State<PaymentSheet> {
                   ),
               ],
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 10),
             if (_method == 'cash') ..._cashPanel(pal) else ...[
               Container(
-                padding: const EdgeInsets.symmetric(vertical: 20),
+                padding: const EdgeInsets.symmetric(vertical: 16),
                 alignment: Alignment.center,
                 decoration: BoxDecoration(
                   color: pal.sunken.withValues(alpha: 0.5),
-                  borderRadius: BorderRadius.circular(12),
+                  borderRadius: BorderRadius.circular(10),
                 ),
                 child: Column(
                   children: [
                     Icon(_methods
                         .firstWhere((m) => m.$1 == _method)
                         .$3,
-                        size: 28,
+                        size: 24,
                         color: pal.primary),
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 6),
                     Text(
                       'Collect the ${_methods.firstWhere((m) => m.$1 == _method).$2.toLowerCase()} payment, '
                       'then process it.',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                           fontFamily: kFontBody,
-                          fontSize: 12.0,
+                          fontSize: 11.5,
                           color: pal.muted),
                     ),
                   ],
                 ),
               ),
             ],
-            const SizedBox(height: 14),
+            const SizedBox(height: 12),
             SizedBox(
-              height: 50,
+              height: 42,
               child: FilledButton(
                 onPressed: _canPay ? () => _confirm(context) : null,
                 style: FilledButton.styleFrom(
@@ -488,7 +488,7 @@ class _PaymentSheetState extends State<PaymentSheet> {
                 child: Text('Process Payment — ${money(_total)}',
                     style: const TextStyle(
                         fontFamily: kFontBody,
-                        fontSize: 14.0,
+                        fontSize: 12.5,
                         fontWeight: FontWeight.w600)),
               ),
             ),
@@ -502,10 +502,10 @@ class _PaymentSheetState extends State<PaymentSheet> {
     final covered = _tenderedValue + 0.005 >= _total && _tenderedValue > 0;
     return [
       Container(
-        padding: const EdgeInsets.all(12),
+        padding: const EdgeInsets.all(10),
         decoration: BoxDecoration(
           color: pal.sunken.withValues(alpha: 0.5),
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(10),
         ),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -513,23 +513,23 @@ class _PaymentSheetState extends State<PaymentSheet> {
             Text('Amount Due',
                 style: TextStyle(
                     fontFamily: kFontBody,
-                    fontSize: 13.0,
+                    fontSize: 12,
                     fontWeight: FontWeight.w600,
                     color: pal.body)),
             Text(money(_total),
-                style: T.price.copyWith(fontSize: 16.6)),
+                style: T.price.copyWith(fontSize: 15)),
           ],
         ),
       ),
-      const SizedBox(height: 10),
+      const SizedBox(height: 8),
       // Quick tender: 4-col grid, mono labels.
       GridView.count(
         crossAxisCount: 4,
         shrinkWrap: true,
         physics: const NeverScrollableScrollPhysics(),
-        mainAxisSpacing: 6,
-        crossAxisSpacing: 6,
-        childAspectRatio: 1.9,
+        mainAxisSpacing: 5,
+        crossAxisSpacing: 5,
+        childAspectRatio: 2.1,
         children: [
           for (final quick in _quickAmounts())
             OutlinedButton(
@@ -538,17 +538,17 @@ class _PaymentSheetState extends State<PaymentSheet> {
                 setState(() {});
               },
               style: OutlinedButton.styleFrom(
-                side: BorderSide(color: pal.borderStrong, width: 1.5),
+                side: BorderSide(color: pal.borderStrong),
                 foregroundColor: pal.heading,
                 padding: EdgeInsets.zero,
               ),
               child: Text(moneyGroup(quick).replaceFirst('ETB ', ''),
                   style: T.mono.copyWith(
-                      fontSize: 13.0, fontWeight: FontWeight.w600)),
+                      fontSize: 12, fontWeight: FontWeight.w600)),
             ),
         ],
       ),
-      const SizedBox(height: 6),
+      const SizedBox(height: 5),
       OutlinedButton(
         onPressed: () {
           _tender.text = _total.toStringAsFixed(0);
@@ -556,17 +556,17 @@ class _PaymentSheetState extends State<PaymentSheet> {
         },
         style: OutlinedButton.styleFrom(
           backgroundColor: pal.tintBg,
-          side: BorderSide(color: pal.tintBorder, width: 1.5),
+          side: BorderSide(color: pal.tintBorder),
           foregroundColor: pal.primary,
-          minimumSize: const Size.fromHeight(42),
+          minimumSize: const Size.fromHeight(36),
         ),
         child: Text('Exact (${money(_total)})',
             style: const TextStyle(
                 fontFamily: kFontBody,
-                fontSize: 13.0,
+                fontSize: 12,
                 fontWeight: FontWeight.w600)),
       ),
-      const SizedBox(height: 8),
+      const SizedBox(height: 6),
       TextField(
         controller: _tender,
         keyboardType: TextInputType.number,
@@ -577,14 +577,14 @@ class _PaymentSheetState extends State<PaymentSheet> {
           labelText: 'Custom amount (ETB)',
         ),
       ),
-      const SizedBox(height: 10),
+      const SizedBox(height: 8),
       if (covered)
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           decoration: BoxDecoration(
             color: pal.successBg,
             border: Border.all(color: pal.successBorder),
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.circular(10),
           ),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -592,23 +592,23 @@ class _PaymentSheetState extends State<PaymentSheet> {
               Text('CHANGE DUE',
                   style: TextStyle(
                       fontFamily: kFontBody,
-                      fontSize: 12.0,
+                      fontSize: 11,
                       fontWeight: FontWeight.w600,
                       letterSpacing: 0.8,
                       color: pal.muted)),
               Text(money(_change),
                   style: T.price.copyWith(
-                      fontSize: 23.0, color: pal.success)),
+                      fontSize: 19, color: pal.success)),
             ],
           ),
         )
       else if (_tenderedValue > 0)
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           decoration: BoxDecoration(
             color: pal.warningBg,
             border: Border.all(color: pal.warningBorder),
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.circular(10),
           ),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -616,13 +616,13 @@ class _PaymentSheetState extends State<PaymentSheet> {
               Text('STILL NEED',
                   style: TextStyle(
                       fontFamily: kFontBody,
-                      fontSize: 12.0,
+                      fontSize: 11,
                       fontWeight: FontWeight.w600,
                       letterSpacing: 0.8,
                       color: pal.muted)),
               Text(money(_total - _tenderedValue),
                   style: T.price.copyWith(
-                      fontSize: 23.0, color: pal.warning)),
+                      fontSize: 19, color: pal.warning)),
             ],
           ),
         ),
@@ -674,22 +674,22 @@ class _MethodCard extends StatelessWidget {
     final pal = Pal.of(context);
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(16),
+      borderRadius: BorderRadius.circular(12),
       child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 6),
+        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 5),
         decoration: BoxDecoration(
           color: active ? pal.tintBg : pal.surface,
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(12),
           border: Border.all(
             color: active ? pal.primary : pal.border,
-            width: active ? 2 : 1.5,
+            width: active ? 1.5 : 1,
           ),
           boxShadow: active
               ? [
                   BoxShadow(
-                      color: pal.primary.withValues(alpha: 0.15),
+                      color: pal.primary.withValues(alpha: 0.12),
                       blurRadius: 0,
-                      spreadRadius: 3),
+                      spreadRadius: 2),
                 ]
               : null,
         ),
@@ -700,15 +700,15 @@ class _MethodCard extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Icon(icon,
-                      size: 20,
+                      size: 18,
                       color: active ? pal.primary : pal.body),
-                  const SizedBox(height: 6),
+                  const SizedBox(height: 5),
                   Text(label,
                       textAlign: TextAlign.center,
                       maxLines: 2,
                       style: TextStyle(
                           fontFamily: kFontBody,
-                          fontSize: 11.5,
+                          fontSize: 10.5,
                           fontWeight: FontWeight.w600,
                           color: active ? pal.primary : pal.body)),
                 ],
@@ -716,15 +716,15 @@ class _MethodCard extends StatelessWidget {
             ),
             if (active)
               Positioned(
-                top: 4,
-                right: 4,
+                top: 3,
+                right: 3,
                 child: Container(
-                  width: 16,
-                  height: 16,
+                  width: 14,
+                  height: 14,
                   decoration: BoxDecoration(
                       shape: BoxShape.circle, color: pal.primary),
                   child: const Icon(Icons.check,
-                      size: 11, color: Colors.white),
+                      size: 10, color: Colors.white),
                 ),
               ),
           ],
@@ -748,46 +748,46 @@ class SuccessSheet extends StatelessWidget {
     final pal = Pal.of(context);
     return Center(
       child: Padding(
-        padding: const EdgeInsets.all(24),
+        padding: const EdgeInsets.all(20),
         child: Container(
-          constraints: const BoxConstraints(maxWidth: 340),
-          padding: const EdgeInsets.all(24),
+          constraints: const BoxConstraints(maxWidth: 320),
+          padding: const EdgeInsets.all(20),
           decoration: BoxDecoration(
             color: pal.surface,
-            borderRadius: BorderRadius.circular(24),
+            borderRadius: BorderRadius.circular(16),
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               Container(
-                width: 80,
-                height: 80,
+                width: 64,
+                height: 64,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
                   color: pal.successBg,
-                  border: Border.all(color: pal.success, width: 3),
+                  border: Border.all(color: pal.success, width: 2.5),
                 ),
                 child:
-                    Icon(Icons.check, size: 40, color: pal.success),
+                    Icon(Icons.check, size: 32, color: pal.success),
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 12),
               Text('Order Confirmed!',
                   style: TextStyle(
                       fontFamily: kFontBody,
-                      fontSize: 17.9,
+                      fontSize: 16,
                       fontWeight: FontWeight.w700,
                       color: pal.heading)),
               if (orderId.isNotEmpty) ...[
-                const SizedBox(height: 4),
+                const SizedBox(height: 3),
                 Text('Order ${shortId(orderId)}',
                     style: T.mono.copyWith(
-                        fontSize: 16.5,
+                        fontSize: 14,
                         fontWeight: FontWeight.w600,
                         color: pal.primary)),
               ],
-              const SizedBox(height: 20),
+              const SizedBox(height: 16),
               SizedBox(
-                width: 280,
+                width: 260,
                 child: FilledButton(
                   onPressed: () => Navigator.of(context).pop(),
                   child: const Text('New Order'),

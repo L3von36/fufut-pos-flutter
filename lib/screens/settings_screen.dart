@@ -31,32 +31,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final pal = Pal.of(context);
     final user = app.user;
     return ListView(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(12),
       children: [
         // ── Who is signed in ──────────────────────────────────────────────
         Container(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
             color: pal.surface,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: pal.border, width: 1.5),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: pal.border),
           ),
           child: Row(
             children: [
               CircleAvatar(
-                radius: 22,
+                radius: 18,
                 backgroundColor: pal.primary,
                 child: Text(
                   user != null && user.displayName.isNotEmpty
                       ? user.displayName[0].toUpperCase()
                       : '?',
                   style: const TextStyle(
-                      fontSize: 15,
+                      fontSize: 13,
                       fontWeight: FontWeight.w700,
                       color: Colors.white),
                 ),
               ),
-              const SizedBox(width: 14),
+              const SizedBox(width: 10),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -64,7 +64,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     Text(user?.displayName ?? 'Signed out',
                         style: TextStyle(
                             fontFamily: kFontBody,
-                            fontSize: 14.0,
+                            fontSize: 13,
                             fontWeight: FontWeight.w700,
                             color: pal.heading)),
                     const SizedBox(height: 2),
@@ -74,14 +74,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           : '',
                       style: TextStyle(
                           fontFamily: kFontBody,
-                          fontSize: 11.5,
+                          fontSize: 11,
                           color: pal.muted),
                     ),
                     if (user?.email != null && user!.email!.isNotEmpty)
                       Text(user.email!,
                           style: TextStyle(
                               fontFamily: kFontBody,
-                              fontSize: 11.5,
+                              fontSize: 11,
                               color: pal.faint)),
                   ],
                 ),
@@ -89,15 +89,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ],
           ),
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 10),
 
         // ── Server ────────────────────────────────────────────────────────
         Container(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
             color: pal.surface,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: pal.border, width: 1.5),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: pal.border),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -105,16 +105,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
               Text('API server',
                   style: TextStyle(
                       fontFamily: kFontBody,
-                      fontSize: 13.0,
+                      fontSize: 12.5,
                       fontWeight: FontWeight.w600,
                       color: pal.heading)),
-              const SizedBox(height: 4),
+              const SizedBox(height: 3),
               Text(
                 'The fufut-api Worker every request goes through.',
                 style: TextStyle(
-                    fontFamily: kFontBody, fontSize: 11.5, color: pal.faint),
+                    fontFamily: kFontBody, fontSize: 11, color: pal.faint),
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: 8),
               if (_editingServer) ...[
                 TextField(
                   controller: _server,
@@ -151,7 +151,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       child: Text(
                         app.baseUrl,
                         style: T.mono.copyWith(
-                            fontSize: 11.5, color: pal.primary),
+                            fontSize: 11, color: pal.primary),
                       ),
                     ),
                     TextButton(
@@ -163,15 +163,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ],
           ),
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 10),
 
         // ── About ─────────────────────────────────────────────────────────
         Container(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
             color: pal.surface,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: pal.border, width: 1.5),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: pal.border),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -179,10 +179,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
               Text('FU FUT POS',
                   style: TextStyle(
                       fontFamily: kFontBody,
-                      fontSize: 13.0,
+                      fontSize: 12.5,
                       fontWeight: FontWeight.w600,
                       color: pal.heading)),
-              const SizedBox(height: 4),
+              const SizedBox(height: 3),
               Text(
                 'Android & desktop point of sale for Fufut Coffee. '
                 'Sessions last 30 days or until the server says otherwise. '
@@ -190,14 +190,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 'the floor plan and every ticket are shared.',
                 style: TextStyle(
                     fontFamily: kFontBody,
-                    fontSize: 11.5,
-                    height: 1.55,
+                    fontSize: 11,
+                    height: 1.5,
                     color: pal.muted),
               ),
             ],
           ),
         ),
-        const SizedBox(height: 20),
+        const SizedBox(height: 16),
 
         // ── Sign out ──────────────────────────────────────────────────────
         if (app.isLoggedIn)
@@ -206,7 +206,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               foregroundColor: pal.danger,
               side: BorderSide(color: pal.dangerBorder),
               backgroundColor: pal.dangerBg,
-              minimumSize: const Size.fromHeight(46),
+              minimumSize: const Size.fromHeight(40),
             ),
             onPressed: () async {
               final ok = await showDialog<bool>(

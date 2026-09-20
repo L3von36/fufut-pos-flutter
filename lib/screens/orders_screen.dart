@@ -138,16 +138,16 @@ class _OrdersScreenState extends State<OrdersScreen> {
         children: [
           // ── Header ────────────────────────────────────────────────────────
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 Text('Orders',
                     style: T.screenTitle.copyWith(color: pal.heading)),
-                const SizedBox(width: 10),
+                const SizedBox(width: 8),
                 Container(
                   padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                   decoration: BoxDecoration(
                     color: pal.tintBg,
                     borderRadius: BorderRadius.circular(99),
@@ -155,7 +155,7 @@ class _OrdersScreenState extends State<OrdersScreen> {
                   child: Text('${rows.length}',
                       style: TextStyle(
                           fontFamily: kFontMono,
-                          fontSize: 12,
+                          fontSize: 10.5,
                           fontWeight: FontWeight.w700,
                           color: pal.primary)),
                 ),
@@ -167,7 +167,7 @@ class _OrdersScreenState extends State<OrdersScreen> {
           // ── Scope toggle + search + status chips ─────────────────────────
           if (!widget.openOnlyDefault)
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
               child: Row(
                 children: [
                   _ScopeChip(
@@ -179,7 +179,7 @@ class _OrdersScreenState extends State<OrdersScreen> {
                       _load();
                     },
                   ),
-                  const SizedBox(width: 8),
+                  const SizedBox(width: 6),
                   _ScopeChip(
                     label: 'All recent',
                     icon: Icons.receipt_long_outlined,
@@ -193,21 +193,21 @@ class _OrdersScreenState extends State<OrdersScreen> {
               ),
             ),
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
             child: _SearchField(
               controller: _search,
               onChanged: (v) => setState(() => _query = v),
             ),
           ),
           SizedBox(
-            height: 44,
+            height: 34,
             child: ListView(
               scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
               children: [
                 for (final s in _statuses)
                   Padding(
-                    padding: const EdgeInsets.only(right: 8),
+                    padding: const EdgeInsets.only(right: 6),
                     child: _StatusFilterChip(
                       label: s == 'all' ? 'All' : _cap(s),
                       count: s == 'all'
@@ -226,7 +226,7 @@ class _OrdersScreenState extends State<OrdersScreen> {
           // ── KPI strip ────────────────────────────────────────────────────
           if (!_loading && _error == null && _orders.isNotEmpty)
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+              padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
               child: _KpiStrip(
                 open: _openCount,
                 ready: _readyCount,
@@ -251,10 +251,10 @@ class _OrdersScreenState extends State<OrdersScreen> {
                             child: ListView.separated(
                               physics: const AlwaysScrollableScrollPhysics(),
                               padding:
-                                  const EdgeInsets.fromLTRB(16, 8, 16, 24),
+                                  const EdgeInsets.fromLTRB(12, 6, 12, 20),
                               itemCount: rows.length,
                               separatorBuilder: (_, __) =>
-                                  const SizedBox(height: 10),
+                                  const SizedBox(height: 8),
                               itemBuilder: (context, i) => _OrderTile(
                                 order: rows[i],
                                 accent: _accentFor(context, rows[i].status),
@@ -292,9 +292,9 @@ class _IconAction extends StatelessWidget {
       child: InkWell(
         onTap: onTap,
         child: SizedBox(
-          width: 40,
-          height: 40,
-          child: Icon(icon, size: 20, color: pal.body),
+          width: 32,
+          height: 32,
+          child: Icon(icon, size: 17, color: pal.body),
         ),
       ),
     );
@@ -322,25 +322,25 @@ class _ScopeChip extends StatelessWidget {
       onTap: onTap,
       borderRadius: BorderRadius.circular(99),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 5),
         decoration: BoxDecoration(
           color: active ? pal.primary : pal.surface,
           borderRadius: BorderRadius.circular(99),
           border: Border.all(
-              color: active ? pal.primary : pal.border, width: 1.5),
+              color: active ? pal.primary : pal.border),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(icon,
-                size: 15,
+                size: 13,
                 color: active ? Colors.white : pal.muted),
-            const SizedBox(width: 6),
+            const SizedBox(width: 5),
             Text(label,
                 style: TextStyle(
                     fontFamily: kFontBody,
-                    fontSize: 12.5,
-                    fontWeight: FontWeight.w700,
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w600,
                     color: active ? Colors.white : pal.body)),
           ],
         ),
@@ -360,23 +360,23 @@ class _SearchField extends StatelessWidget {
   Widget build(BuildContext context) {
     final pal = Pal.of(context);
     return Container(
-      height: 48,
-      padding: const EdgeInsets.symmetric(horizontal: 14),
+      height: 38,
+      padding: const EdgeInsets.symmetric(horizontal: 12),
       decoration: BoxDecoration(
         color: pal.surface,
-        border: Border.all(color: pal.border, width: 1.5),
-        borderRadius: BorderRadius.circular(13),
+        border: Border.all(color: pal.border),
+        borderRadius: BorderRadius.circular(10),
       ),
       child: Row(
         children: [
-          Icon(Icons.search_rounded, size: 20, color: pal.muted),
-          const SizedBox(width: 10),
+          Icon(Icons.search_rounded, size: 17, color: pal.muted),
+          const SizedBox(width: 8),
           Expanded(
             child: TextField(
               controller: controller,
               onChanged: onChanged,
               style: TextStyle(
-                  fontFamily: kFontBody, fontSize: 14, color: pal.heading),
+                  fontFamily: kFontBody, fontSize: 12.5, color: pal.heading),
               decoration: InputDecoration(
                 hintText: 'Search id, table, customer…',
                 isDense: true,
@@ -384,13 +384,13 @@ class _SearchField extends StatelessWidget {
                 border: InputBorder.none,
                 enabledBorder: InputBorder.none,
                 focusedBorder: InputBorder.none,
-                contentPadding: const EdgeInsets.symmetric(vertical: 14),
+                contentPadding: const EdgeInsets.symmetric(vertical: 12),
                 suffixIcon: controller.text.isEmpty
                     ? null
                     : IconButton(
                         visualDensity: VisualDensity.compact,
                         icon: Icon(Icons.close_rounded,
-                            size: 18, color: pal.muted),
+                            size: 16, color: pal.muted),
                         onPressed: () {
                           controller.clear();
                           onChanged('');
@@ -426,12 +426,12 @@ class _StatusFilterChip extends StatelessWidget {
       onTap: onTap,
       borderRadius: BorderRadius.circular(99),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 5),
+        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 4),
         decoration: BoxDecoration(
           color: active ? pal.primary : pal.surface,
           borderRadius: BorderRadius.circular(99),
           border: Border.all(
-              color: active ? pal.primary : pal.border, width: 1.5),
+              color: active ? pal.primary : pal.border),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -439,14 +439,14 @@ class _StatusFilterChip extends StatelessWidget {
             Text(label,
                 style: TextStyle(
                     fontFamily: kFontBody,
-                    fontSize: 12,
+                    fontSize: 11.5,
                     fontWeight: FontWeight.w600,
                     color: active ? Colors.white : pal.body)),
             if (count > 0) ...[
-              const SizedBox(width: 6),
+              const SizedBox(width: 5),
               Container(
                 padding:
-                    const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                    const EdgeInsets.symmetric(horizontal: 5, vertical: 0.5),
                 decoration: BoxDecoration(
                   color: active
                       ? Colors.white.withValues(alpha: 0.22)
@@ -456,7 +456,7 @@ class _StatusFilterChip extends StatelessWidget {
                 child: Text('$count',
                     style: TextStyle(
                         fontFamily: kFontMono,
-                        fontSize: 10.5,
+                        fontSize: 9.5,
                         fontWeight: FontWeight.w700,
                         color: active ? Colors.white : pal.muted)),
               ),
@@ -489,7 +489,10 @@ class _KpiStrip extends StatelessWidget {
   Widget build(BuildContext context) {
     final pal = Pal.of(context);
     final dark = Theme.of(context).brightness == Brightness.dark;
-    Color tint(Color base, Color bg) => dark ? base : bg;
+    // Dark mode: wash the accent at 16% over the card instead of a solid
+    // fill — a saturated block with same-hue text is unreadable.
+    Color tint(Color base, Color bg) =>
+        dark ? base.withValues(alpha: 0.16) : bg;
 
     final cells = [
       (
@@ -521,13 +524,13 @@ class _KpiStrip extends StatelessWidget {
     return Row(
       children: [
         for (var i = 0; i < cells.length; i++) ...[
-          if (i > 0) const SizedBox(width: 8),
+          if (i > 0) const SizedBox(width: 6),
           Expanded(
             child: Container(
-              padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+              padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 6),
               decoration: BoxDecoration(
                 color: cells[i].bg,
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(10),
               ),
               child: Column(
                 children: [
@@ -536,16 +539,16 @@ class _KpiStrip extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                           fontFamily: kFontMono,
-                          fontSize: 14.5,
+                          fontSize: 13,
                           fontWeight: FontWeight.w700,
                           color: cells[i].fg)),
-                  const SizedBox(height: 2),
+                  const SizedBox(height: 1),
                   Text(cells[i].label,
                       style: TextStyle(
                           fontFamily: kFontBody,
-                          fontSize: 9.5,
+                          fontSize: 9,
                           fontWeight: FontWeight.w700,
-                          letterSpacing: 0.7,
+                          letterSpacing: 0.6,
                           color: cells[i].fg.withValues(alpha: 0.75))),
                 ],
               ),
@@ -579,22 +582,22 @@ class _OrderTile extends StatelessWidget {
 
     return InkWell(
       onTap: () => _openDetail(context),
-      borderRadius: BorderRadius.circular(16),
+      borderRadius: BorderRadius.circular(12),
       child: Container(
         clipBehavior: Clip.antiAlias,
         decoration: BoxDecoration(
           color: pal.surface,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: pal.border, width: 1.5),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: pal.border),
         ),
         child: IntrinsicHeight(
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Container(width: 5, color: accent),
+              Container(width: 4, color: accent),
               Expanded(
                 child: Padding(
-                  padding: const EdgeInsets.all(14),
+                  padding: const EdgeInsets.all(11),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -604,18 +607,18 @@ class _OrderTile extends StatelessWidget {
                           Expanded(
                             child: Text('Order #${order.id}',
                                 style: T.mono.copyWith(
-                                    fontSize: 13.5,
+                                    fontSize: 12,
                                     fontWeight: FontWeight.w700,
                                     color: pal.heading)),
                           ),
                           StatusBadge(status: order.status),
-                          const SizedBox(width: 6),
+                          const SizedBox(width: 5),
                           PayBadge(paid: order.isPaid),
                         ],
                       ),
                       // Line 2: items
                       if (order.itemsRaw.isNotEmpty) ...[
-                        const SizedBox(height: 7),
+                        const SizedBox(height: 5),
                         Text(
                           order.items.isNotEmpty
                               ? order.items
@@ -627,22 +630,22 @@ class _OrderTile extends StatelessWidget {
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                               fontFamily: kFontBody,
-                              fontSize: 12.5,
-                              height: 1.3,
+                              fontSize: 11.5,
+                              height: 1.35,
                               color: pal.muted),
                         ),
                       ],
-                      const SizedBox(height: 8),
+                      const SizedBox(height: 6),
                       // Line 3: money + method + type
                       Row(
                         children: [
                           Text(money(order.total),
                               style: T.mono.copyWith(
-                                  fontSize: 16.5,
+                                  fontSize: 14.5,
                                   fontWeight: FontWeight.w700,
                                   color: pal.heading)),
                           if (order.tip > 0) ...[
-                            const SizedBox(width: 6),
+                            const SizedBox(width: 5),
                             _Tag(
                               text: '+${money(order.tip)}',
                               bg: pal.tintBg,
@@ -650,7 +653,7 @@ class _OrderTile extends StatelessWidget {
                             ),
                           ],
                           if (order.discount > 0) ...[
-                            const SizedBox(width: 6),
+                            const SizedBox(width: 5),
                             _Tag(
                               text: '-${money(order.discount)}',
                               bg: pal.successBg,
@@ -662,40 +665,40 @@ class _OrderTile extends StatelessWidget {
                             Text(_title(order.payment!),
                                 style: TextStyle(
                                     fontFamily: kFontBody,
-                                    fontSize: 11.5,
+                                    fontSize: 11,
                                     color: pal.muted)),
                           if ((order.payment ?? '').isNotEmpty && type.isNotEmpty)
                             Text('  ·  ',
                                 style: TextStyle(
                                     fontFamily: kFontBody,
-                                    fontSize: 11.5,
+                                    fontSize: 11,
                                     color: pal.faint)),
                           if (type.isNotEmpty)
                             Text(_title(type),
                                 style: TextStyle(
                                     fontFamily: kFontBody,
-                                    fontSize: 11.5,
+                                    fontSize: 11,
                                     color: pal.muted)),
                         ],
                       ),
-                      const SizedBox(height: 6),
+                      const SizedBox(height: 4),
                       // Line 4: table · customer · date — with icons
                       Row(
                         children: [
                           if (table.isNotEmpty) ...[
                             Icon(Icons.table_restaurant_outlined,
-                                size: 12.5, color: pal.faint),
+                                size: 11, color: pal.faint),
                             const SizedBox(width: 3),
                             Text(table,
                                 style: TextStyle(
                                     fontFamily: kFontBody,
-                                    fontSize: 11.5,
+                                    fontSize: 10.5,
                                     color: pal.faint)),
-                            const SizedBox(width: 10),
+                            const SizedBox(width: 8),
                           ],
                           if (customer.isNotEmpty) ...[
                             Icon(Icons.person_outline,
-                                size: 13, color: pal.faint),
+                                size: 11.5, color: pal.faint),
                             const SizedBox(width: 3),
                             Flexible(
                               child: Text(customer,
@@ -703,19 +706,19 @@ class _OrderTile extends StatelessWidget {
                                   overflow: TextOverflow.ellipsis,
                                   style: TextStyle(
                                       fontFamily: kFontBody,
-                                      fontSize: 11.5,
+                                      fontSize: 10.5,
                                       color: pal.faint)),
                             ),
-                            const SizedBox(width: 10),
+                            const SizedBox(width: 8),
                           ],
                           if (order.created != null) ...[
                             Icon(Icons.schedule,
-                                size: 12.5, color: pal.faint),
+                                size: 11, color: pal.faint),
                             const SizedBox(width: 3),
                             Text(order.created!,
                                 style: TextStyle(
                                     fontFamily: kFontBody,
-                                    fontSize: 11.5,
+                                    fontSize: 10.5,
                                     color: pal.faint)),
                           ],
                         ],
@@ -727,9 +730,9 @@ class _OrderTile extends StatelessWidget {
               // Tap affordance — subtle chevron like a native list tile.
               Center(
                 child: Padding(
-                  padding: const EdgeInsets.only(right: 6),
+                  padding: const EdgeInsets.only(right: 4),
                   child: Icon(Icons.chevron_right_rounded,
-                      size: 22, color: pal.faint),
+                      size: 18, color: pal.faint),
                 ),
               ),
             ],
@@ -753,7 +756,7 @@ class _OrderTile extends StatelessWidget {
       isScrollControlled: true,
       backgroundColor: Pal.of(context).surface,
       shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
       constraints: BoxConstraints(
           maxWidth: 680,
           maxHeight: MediaQuery.sizeOf(context).height * 0.85),
@@ -775,14 +778,14 @@ class _Tag extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
       decoration: BoxDecoration(
         color: bg,
         borderRadius: BorderRadius.circular(99),
       ),
       child: Text(text,
           style: T.mono.copyWith(
-              fontSize: 10.5, fontWeight: FontWeight.w700, color: fg)),
+              fontSize: 10, fontWeight: FontWeight.w700, color: fg)),
     );
   }
 }
@@ -808,26 +811,26 @@ class _OrderDetailSheet extends StatelessWidget {
     final next = _nextStatus[order.status.toLowerCase()];
     return SafeArea(
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const SheetHandle(),
-            const SizedBox(height: 6),
+            const SizedBox(height: 4),
             Row(
               children: [
                 Expanded(
                   child: Text('Order #${order.id}',
                       style: T.mono.copyWith(
-                          fontSize: 17,
+                          fontSize: 15,
                           fontWeight: FontWeight.w700,
                           color: pal.heading)),
                 ),
                 StatusBadge(status: order.status),
               ],
             ),
-            const SizedBox(height: 4),
+            const SizedBox(height: 3),
             Text(
               [
                 if ((order.type ?? '').isNotEmpty) order.type!,
@@ -837,9 +840,9 @@ class _OrderDetailSheet extends StatelessWidget {
                   order.customer!,
                 if (order.created != null) order.created!,
               ].join('  ·  '),
-              style: TextStyle(fontFamily: kFontBody, fontSize: 12, color: pal.faint),
+              style: TextStyle(fontFamily: kFontBody, fontSize: 11, color: pal.faint),
             ),
-            const SizedBox(height: 14),
+            const SizedBox(height: 10),
             Flexible(
               child: SingleChildScrollView(
                 child: Column(
@@ -848,31 +851,31 @@ class _OrderDetailSheet extends StatelessWidget {
                     if (order.items.isNotEmpty)
                       for (final l in order.items)
                         Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 5),
+                          padding: const EdgeInsets.symmetric(vertical: 4),
                           child: Row(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Container(
-                                width: 30,
+                                width: 26,
                                 alignment: Alignment.center,
                                 padding: const EdgeInsets.symmetric(
-                                    horizontal: 5, vertical: 1),
+                                    horizontal: 4, vertical: 1),
                                 decoration: BoxDecoration(
                                   color: pal.sunken,
-                                  borderRadius: BorderRadius.circular(6),
+                                  borderRadius: BorderRadius.circular(5),
                                 ),
                                 child: Text('${l.qty}×',
                                     style: T.mono.copyWith(
-                                        fontSize: 12.5,
+                                        fontSize: 11.5,
                                         fontWeight: FontWeight.w700,
                                         color: pal.body)),
                               ),
-                              const SizedBox(width: 9),
+                              const SizedBox(width: 8),
                               Expanded(
                                 child: Text(_lineLabel(l),
                                     style: TextStyle(
                                         fontFamily: kFontBody,
-                                        fontSize: 13.5,
+                                        fontSize: 12.5,
                                         fontWeight: FontWeight.w500,
                                         height: 1.3,
                                         color: pal.heading)),
@@ -880,7 +883,7 @@ class _OrderDetailSheet extends StatelessWidget {
                               const SizedBox(width: 8),
                               Text(money(l.lineTotal),
                                   style: T.mono.copyWith(
-                                      fontSize: 13, color: pal.body)),
+                                      fontSize: 12, color: pal.body)),
                             ],
                           ),
                         )
@@ -890,34 +893,34 @@ class _OrderDetailSheet extends StatelessWidget {
                           : order.itemsRaw,
                           style: TextStyle(
                               fontFamily: kFontBody,
-                              fontSize: 12.5,
+                              fontSize: 11.5,
                               color: pal.body)),
                     if ((order.notes ?? '').isNotEmpty) ...[
-                      const SizedBox(height: 12),
+                      const SizedBox(height: 10),
                       Container(
-                        padding: const EdgeInsets.all(12),
+                        padding: const EdgeInsets.all(10),
                         decoration: BoxDecoration(
                           color: pal.sunken,
-                          borderRadius: BorderRadius.circular(12),
+                          borderRadius: BorderRadius.circular(10),
                         ),
                         child: Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Icon(Icons.sticky_note_2_outlined,
-                                size: 15, color: pal.muted),
-                            const SizedBox(width: 8),
+                                size: 14, color: pal.muted),
+                            const SizedBox(width: 7),
                             Expanded(
                               child: Text('Notes: ${order.notes}',
                                   style: TextStyle(
                                       fontFamily: kFontBody,
-                                      fontSize: 12.5,
+                                      fontSize: 11.5,
                                       color: pal.body)),
                             ),
                           ],
                         ),
                       ),
                     ],
-                    const SizedBox(height: 14),
+                    const SizedBox(height: 10),
                     Container(
                       padding: const EdgeInsets.only(top: 10),
                       decoration: BoxDecoration(
@@ -982,19 +985,19 @@ class _OrderDetailSheet extends StatelessWidget {
       {bool bold = false}) {
     final pal = Pal.of(context);
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 3),
+      padding: const EdgeInsets.symmetric(vertical: 2),
       child: Row(
         children: [
           Text(label,
               style: TextStyle(
                   fontFamily: kFontBody,
-                  fontSize: 13,
+                  fontSize: 12,
                   color: pal.muted,
                   fontWeight: bold ? FontWeight.w700 : FontWeight.w400)),
           const Spacer(),
           Text(money(value),
               style: T.mono.copyWith(
-                  fontSize: bold ? 16 : 13.5,
+                  fontSize: bold ? 14.5 : 12,
                   fontWeight: bold ? FontWeight.w700 : FontWeight.w500,
                   color: bold ? pal.heading : pal.body)),
         ],
@@ -1029,7 +1032,7 @@ class _OrderDetailSheet extends StatelessWidget {
       isScrollControlled: true,
       backgroundColor: Pal.of(context).surface,
       shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
       constraints: BoxConstraints(
           maxWidth: 680,
           maxHeight: MediaQuery.sizeOf(context).height * 0.9),
@@ -1068,13 +1071,13 @@ class _ErrorPane extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.cloud_off, size: 36, color: pal.faint),
-            const SizedBox(height: 12),
+            Icon(Icons.cloud_off, size: 32, color: pal.faint),
+            const SizedBox(height: 10),
             Text(message,
                 textAlign: TextAlign.center,
                 style:
-                    TextStyle(fontFamily: kFontBody, fontSize: 13, color: pal.body)),
-            const SizedBox(height: 14),
+                    TextStyle(fontFamily: kFontBody, fontSize: 12.5, color: pal.body)),
+            const SizedBox(height: 12),
             OutlinedButton(onPressed: onRetry, child: const Text('Retry')),
           ],
         ),

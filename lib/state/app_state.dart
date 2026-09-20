@@ -116,14 +116,18 @@ class AppState extends ChangeNotifier {
     roleKey = _normalizeRole(res.role);
     offlineIdentity = false;
     // The login POST's Set-Cookie carries the session; the client captured it.
+    // On Flutter web the browser keeps the cookie itself (same-origin proxy
+    // flow) and hides Set-Cookie from XHR — so a null token there is normal.
     final token = client.sessionToken;
-    if (token == null || token.isEmpty) {
+    if ((token == null || token.isEmpty) && !kIsWeb) {
       // Defensive: without a cookie every subsequent call 401s. Fail loudly
       // rather than half-sign-in.
       user = null;
       throw ApiError('Login succeeded but no session was returned — try again');
     }
-    await _prefs?.setString(_kSession, token);
+    if (token != null && token.isNotEmpty) {
+      await _prefs?.setString(_kSession, token);
+    }
     _rememberIdentity();
     notifyListeners();
   }

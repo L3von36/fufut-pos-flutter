@@ -42,5 +42,14 @@
     * https://docs.flutter.dev/platform-integration/web/initialization
   -->
   <script src="flutter_bootstrap.js" async></script>
+  <!-- No service worker: the POS must never serve a stale build, and the
+       Android app ships as an APK where a SW is dead weight anyway. -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register = function () {
+        return Promise.reject(new Error('service worker disabled'));
+      };
+    }
+  </script>
 </body>
 </html>

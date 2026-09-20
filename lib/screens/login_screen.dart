@@ -72,20 +72,20 @@ class _LoginScreenState extends State<LoginScreen> {
     final stacked = width < 640; // the PWA's ≤600px breakpoint
 
     final card = Container(
-      constraints: const BoxConstraints(maxWidth: 800, minHeight: 480),
+      constraints: const BoxConstraints(maxWidth: 800, minHeight: 440),
       clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
         color: pal.surface,
-        borderRadius: BorderRadius.circular(24),
+        borderRadius: BorderRadius.circular(18),
         boxShadow: [
           BoxShadow(
-              color: const Color(0xFF073735).withValues(alpha: 0.16),
-              blurRadius: 60,
-              offset: const Offset(0, 24)),
+              color: const Color(0xFF073735).withValues(alpha: 0.12),
+              blurRadius: 40,
+              offset: const Offset(0, 16)),
           BoxShadow(
-              color: const Color(0xFF073735).withValues(alpha: 0.08),
-              blurRadius: 16,
-              offset: const Offset(0, 8)),
+              color: const Color(0xFF073735).withValues(alpha: 0.06),
+              blurRadius: 12,
+              offset: const Offset(0, 6)),
         ],
       ),
       child: stacked
@@ -136,13 +136,13 @@ class _LoginScreenState extends State<LoginScreen> {
 
   Widget _brandPanel({bool compact = false}) {
     final logo = Container(
-      width: compact ? 60 : 80,
-      height: compact ? 60 : 80,
+      width: compact ? 52 : 68,
+      height: compact ? 52 : 68,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        border: Border.all(color: Colors.white.withValues(alpha: 0.2), width: 3),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.2), width: 2.5),
         boxShadow: const [
-          BoxShadow(color: Color(0x33000000), blurRadius: 24, offset: Offset(0, 8)),
+          BoxShadow(color: Color(0x2E000000), blurRadius: 18, offset: Offset(0, 6)),
         ],
       ),
       child: ClipOval(
@@ -152,7 +152,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
     return Container(
       padding: EdgeInsets.symmetric(
-          horizontal: 32, vertical: compact ? 24 : 40),
+          horizontal: 28, vertical: compact ? 20 : 32),
       decoration: const BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topLeft,
@@ -164,32 +164,32 @@ class _LoginScreenState extends State<LoginScreen> {
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           logo,
-          SizedBox(height: compact ? 12 : 20),
+          SizedBox(height: compact ? 10 : 16),
           Text('FU FUT',
               style: TextStyle(
                   fontFamily: kFontBody,
-                  fontSize: compact ? 16.6 : 20.5,
+                  fontSize: compact ? 15 : 18,
                   fontWeight: FontWeight.w700,
                   color: Colors.white,
                   letterSpacing: 0.8)),
-          const SizedBox(height: 6),
+          const SizedBox(height: 5),
           Text('COFFEE · POS',
               style: TextStyle(
                   fontFamily: kFontBody,
-                  fontSize: 11.5,
+                  fontSize: 10.5,
                   fontWeight: FontWeight.w500,
                   color: Colors.white.withValues(alpha: 0.7),
-                  letterSpacing: 2.6)),
+                  letterSpacing: 2.4)),
           if (!compact) ...[
-            const SizedBox(height: 20),
-            Container(width: 40, height: 2, color: Colors.white.withValues(alpha: 0.25)),
-            const SizedBox(height: 20),
+            const SizedBox(height: 16),
+            Container(width: 36, height: 2, color: Colors.white.withValues(alpha: 0.25)),
+            const SizedBox(height: 16),
             Text('Authentic Ethiopian Coffee\n& Restaurant Management',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                     fontFamily: kFontBody,
-                    fontSize: 12.0,
-                    height: 1.55,
+                    fontSize: 11.5,
+                    height: 1.5,
                     color: Colors.white.withValues(alpha: 0.6))),
           ],
         ],
@@ -202,7 +202,7 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget _formPanel() {
     final pal = Pal.of(context);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(32, 32, 32, 24),
+      padding: const EdgeInsets.fromLTRB(24, 26, 24, 20),
       child: Material(
         type: MaterialType.transparency,
         child: Form(
@@ -213,16 +213,16 @@ class _LoginScreenState extends State<LoginScreen> {
             Text('Welcome back',
                 style: TextStyle(
                     fontFamily: kFontBody,
-                    fontSize: 16.6,
+                    fontSize: 15.5,
                     fontWeight: FontWeight.w700,
                     color: pal.heading)),
-            const SizedBox(height: 4),
+            const SizedBox(height: 3),
             Text('Sign in to your account',
                 style:
-                    TextStyle(fontFamily: kFontBody, fontSize: 13.0, color: pal.muted)),
-            const SizedBox(height: 24),
+                    TextStyle(fontFamily: kFontBody, fontSize: 12, color: pal.muted)),
+            const SizedBox(height: 20),
             const _FieldLabel(icon: Icons.person_outline, text: 'Staff ID or Email'),
-            const SizedBox(height: 6),
+            const SizedBox(height: 5),
             TextField(
               controller: _account,
               textInputAction: TextInputAction.next,
@@ -231,9 +231,9 @@ class _LoginScreenState extends State<LoginScreen> {
               decoration: const InputDecoration(
                   hintText: 'you@fufut.coffee', prefixIcon: null),
             ),
-            const SizedBox(height: 14),
+            const SizedBox(height: 12),
             const _FieldLabel(icon: Icons.lock_outline, text: 'Password'),
-            const SizedBox(height: 6),
+            const SizedBox(height: 5),
             TextField(
               controller: _password,
               obscureText: _obscure,
@@ -242,76 +242,78 @@ class _LoginScreenState extends State<LoginScreen> {
               decoration: InputDecoration(
                 hintText: 'Enter your password',
                 suffixIcon: IconButton(
+                  visualDensity: VisualDensity.compact,
                   icon: Icon(
                       _obscure
                           ? Icons.visibility_outlined
                           : Icons.visibility_off_outlined,
-                      size: 18),
+                      size: 17),
                   onPressed: () => setState(() => _obscure = !_obscure),
                 ),
               ),
             ),
             if (_error != null) ...[
-              const SizedBox(height: 10),
+              const SizedBox(height: 8),
               Row(
                 children: [
-                  Icon(Icons.error_outline, size: 16, color: pal.danger),
-                  const SizedBox(width: 6),
+                  Icon(Icons.error_outline, size: 15, color: pal.danger),
+                  const SizedBox(width: 5),
                   Expanded(
                     child: Text(_error!,
                         style: TextStyle(
-                            fontFamily: kFontBody, fontSize: 12.0, color: pal.danger)),
+                            fontFamily: kFontBody, fontSize: 11.5, color: pal.danger)),
                   ),
                 ],
               ),
             ],
-            const SizedBox(height: 18),
+            const SizedBox(height: 14),
             SizedBox(
-              height: 46,
+              height: 42,
               child: FilledButton.icon(
                 onPressed: _busy ? null : _submit,
                 style: FilledButton.styleFrom(
                   backgroundColor: pal.primary,
                   disabledBackgroundColor: pal.primary.withValues(alpha: 0.7),
                   shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10)),
+                      borderRadius: BorderRadius.circular(8)),
                 ),
                 icon: _busy
                     ? const SizedBox(
-                        width: 16,
-                        height: 16,
+                        width: 14,
+                        height: 14,
                         child: CircularProgressIndicator(
                             strokeWidth: 2, color: Colors.white))
-                    : const Icon(Icons.arrow_forward, size: 16),
+                    : const Icon(Icons.arrow_forward, size: 15),
                 label: Text(
                     _busy ? 'Signing in...' : 'Sign In',
                     style: const TextStyle(
                         fontFamily: kFontBody,
-                        fontSize: 14.0,
+                        fontSize: 13,
                         fontWeight: FontWeight.w600)),
               ),
             ),
-            const SizedBox(height: 14),
+            const SizedBox(height: 12),
             // The web form ends with the powered-by line under the button.
             Text('Powered by FU FUT COFFEE',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                     fontFamily: kFontBody,
-                    fontSize: 11.5,
+                    fontSize: 10.5,
                     letterSpacing: 0.5,
                     color: pal.muted)),
-            const SizedBox(height: 8),
+            const SizedBox(height: 6),
             // Server override, out of the way but always reachable.
             ExpansionTile(
               initiallyExpanded: _advanced,
               onExpansionChanged: (v) => setState(() => _advanced = v),
               tilePadding: EdgeInsets.zero,
               childrenPadding: EdgeInsets.zero,
+              visualDensity: VisualDensity.compact,
               iconColor: pal.muted,
               collapsedIconColor: pal.muted,
               title: Text('Server',
                   style: TextStyle(
-                      fontFamily: kFontBody, fontSize: 12.5, color: pal.muted)),
+                      fontFamily: kFontBody, fontSize: 12, color: pal.muted)),
               children: [
                 TextField(
                   controller: _server,
@@ -323,12 +325,12 @@ class _LoginScreenState extends State<LoginScreen> {
                 const SizedBox(height: 8),
               ],
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 6),
             Text('Sessions last 30 days. Sign out from the sidebar when you '
                 'leave the floor.',
                 textAlign: TextAlign.center,
                 style: TextStyle(
-                    fontFamily: kFontBody, fontSize: 11.5, color: pal.faint)),
+                    fontFamily: kFontBody, fontSize: 10.5, color: pal.faint)),
           ],
         ),
         ),
@@ -348,12 +350,12 @@ class _FieldLabel extends StatelessWidget {
     final pal = Pal.of(context);
     return Row(
       children: [
-        Icon(icon, size: 14, color: pal.gold),
-        const SizedBox(width: 6),
+        Icon(icon, size: 13, color: pal.gold),
+        const SizedBox(width: 5),
         Text(text.toUpperCase(),
             style: TextStyle(
                 fontFamily: kFontBody,
-                fontSize: 11.5,
+                fontSize: 10.5,
                 fontWeight: FontWeight.w600,
                 letterSpacing: 0.5,
                 color: pal.muted)),

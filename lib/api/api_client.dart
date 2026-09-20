@@ -17,6 +17,7 @@ library;
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:http/http.dart' as http;
 
 class ApiError implements Exception {
@@ -63,7 +64,10 @@ class ApiClient {
 
   Map<String, String> get _headers => {
         'Content-Type': 'application/json',
-        'User-Agent': _userAgent,
+        // On web the browser owns the User-Agent — setting it is a forbidden
+        // header and Chromium kills the whole XHR. The real browser UA is
+        // exactly what Bot Fight Mode wants anyway.
+        if (!kIsWeb) 'User-Agent': _userAgent,
         'Accept': 'application/json',
         if (sessionToken != null) 'Cookie': 'session=$sessionToken',
       };

@@ -122,7 +122,7 @@ BadgeColors badgeColors(BuildContext context, String status) {
   }
 }
 
-/// The PWA `.badge`: pill, uppercase, 10px/600, 4×10 padding.
+/// The PWA `.badge` — compact pill: uppercase, 10px/700, tight padding.
 class StatusBadge extends StatelessWidget {
   final String status;
   const StatusBadge({super.key, required this.status});
@@ -131,7 +131,7 @@ class StatusBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = badgeColors(context, status);
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 5),
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
       decoration: BoxDecoration(
         color: c.bg,
         borderRadius: BorderRadius.circular(99),
@@ -164,7 +164,7 @@ class PayBadge extends StatelessWidget {
       fg = dark ? const Color(0xFFFBBF24) : const Color(0xFF92400E);
     }
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 5),
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
       decoration: BoxDecoration(
         color: bg,
         borderRadius: BorderRadius.circular(99),
@@ -188,9 +188,9 @@ class SheetHandle extends StatelessWidget {
     final pal = Pal.of(context);
     return Center(
       child: Container(
-        width: 40,
-        height: 4,
-        margin: const EdgeInsets.only(top: 12, bottom: 8),
+        width: 32,
+        height: 3.5,
+        margin: const EdgeInsets.only(top: 10, bottom: 6),
         decoration: BoxDecoration(
           color: pal.borderStrong,
           borderRadius: BorderRadius.circular(99),
@@ -208,10 +208,10 @@ class NavSectionHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 14, 20, 6),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
       child: Text(label.toUpperCase(),
           style: T.navHeader.copyWith(
-              color: Colors.white.withValues(alpha: 0.68), fontSize: 11.0)),
+              color: Colors.white.withValues(alpha: 0.68), fontSize: 10.0)),
     );
   }
 }
@@ -231,34 +231,34 @@ class EmptyState extends StatelessWidget {
     final pal = Pal.of(context);
     return Center(
       child: Padding(
-        padding: const EdgeInsets.all(24),
+        padding: const EdgeInsets.all(20),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Container(
-              width: 64,
-              height: 64,
+              width: 52,
+              height: 52,
               decoration: BoxDecoration(
                 color: pal.sunken,
                 shape: BoxShape.circle,
               ),
-              child: Icon(icon, size: 28, color: pal.faint),
+              child: Icon(icon, size: 23, color: pal.faint),
             ),
-            const SizedBox(height: 14),
+            const SizedBox(height: 10),
             Text(title,
                 style: TextStyle(
                     fontFamily: kFontBody,
-                    fontSize: 14,
+                    fontSize: 13,
                     fontWeight: FontWeight.w700,
                     color: pal.heading)),
             if (hint != null && hint!.isNotEmpty) ...[
-              const SizedBox(height: 5),
+              const SizedBox(height: 4),
               Text(hint!,
                   textAlign: TextAlign.center,
-                  style: TextStyle(fontFamily: kFontBody, fontSize: 12.5, color: pal.muted)),
+                  style: TextStyle(fontFamily: kFontBody, fontSize: 11.5, color: pal.muted)),
             ],
             if (onRetry != null) ...[
-              const SizedBox(height: 14),
+              const SizedBox(height: 12),
               OutlinedButton(onPressed: onRetry, child: const Text('Refresh')),
             ],
           ],
@@ -281,28 +281,28 @@ class TableContextBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final pal = Pal.of(context);
     return Container(
-      padding: const EdgeInsets.fromLTRB(16, 11, 10, 11),
+      padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
       decoration: BoxDecoration(
         color: pal.tintBg,
-        border: Border.all(color: pal.primary, width: 1.5),
-        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: pal.primary),
+        borderRadius: BorderRadius.circular(10),
       ),
       child: Row(
         children: [
-          Icon(Icons.table_restaurant, size: 20, color: pal.primary),
-          const SizedBox(width: 10),
+          Icon(Icons.table_restaurant, size: 17, color: pal.primary),
+          const SizedBox(width: 8),
           Expanded(
             child: Text.rich(
               TextSpan(
                 text: 'Ordering for ',
-                style: TextStyle(fontFamily: kFontBody, fontSize: 13.5, color: pal.body),
+                style: TextStyle(fontFamily: kFontBody, fontSize: 12.5, color: pal.body),
                 children: [
                   TextSpan(
                     text: 'Table $tableNum',
                     style: TextStyle(
                         fontFamily: kFontBody,
-                        fontSize: 13.5,
-                        fontWeight: FontWeight.w800,
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w700,
                         color: pal.primary),
                   ),
                 ],
@@ -311,10 +311,10 @@ class TableContextBar extends StatelessWidget {
           ),
           TextButton(
             onPressed: onMakeTakeaway,
-            style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 10)),
+            style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8)),
             child: Text('Make Takeaway',
                 style: TextStyle(
-                    fontFamily: kFontBody, fontSize: 12.5, fontWeight: FontWeight.w700,
+                    fontFamily: kFontBody, fontSize: 11.5, fontWeight: FontWeight.w600,
                     color: pal.primary)),
           ),
         ],
