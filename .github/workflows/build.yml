@@ -1,0 +1,166 @@
+name: Build APK & Desktop
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      build_macos:
+        description: "Also build macOS (macOS runners consume 10x minutes on private repos)"
+        type: boolean
+        default: false
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  analyze:
+    name: Analyze (flutter analyze)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.47.5
+          cache: true
+      - run: flutter pub get
+      # Infos are not fatal by default: the const lints stay as advice while
+      # a genuine error or warning still stops the build.
+      - run: flutter analyze
+      - run: flutter test
+
+  apk:
+    name: Android APK
+    runs-on: ubuntu-latest
+    needs: analyze
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.47.5
+          cache: true
+      - run: flutter pub get
+      # Release signing comes later; until a keystore is configured the
+      # release build is signed with debug keys, which installs and runs —
+      # the right default for a testing build handed to the floor.
+      - run: flutter build apk --release
+      - name: Also build split ABIs (smaller downloads per device)
+        run: flutter build apk --release --split-per-abi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fufut-pos-android
+          path: |
+            build/app/outputs/flutter-apk/app-release.apk
+            build/app/outputs/flutter-apk/app-*-release.apk
+          if-no-files-found: error
+
+  linux:
+    name: Linux desktop
+    runs-on: ubuntu-latest
+    needs: analyze
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build libgtk-3-dev liblzma-dev
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.47.5
+          cache: true
+      - run: flutter pub get
+      - run: flutter config --enable-linux-desktop
+      - run: flutter build linux --release
+      - name: Pack
+        run: |
+          cd build/linux/x64/release/bundle
+          tar czf ../../../fufut-pos-linux-x64.tar.gz .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fufut-pos-linux
+          path: build/linux/fufut-pos-linux-x64.tar.gz
+          if-no-files-found: error
+
+  windows:
+    name: Windows desktop
+    runs-on: windows-latest
+    needs: analyze
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.47.5
+          cache: true
+      - run: flutter pub get
+      - run: flutter config --enable-windows-desktop
+      - run: flutter build windows --release
+      - name: Pack
+        shell: pwsh
+        run: |
+          Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath fufut-pos-windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fufut-pos-windows
+          path: fufut-pos-windows-x64.zip
+          if-no-files-found: error
+
+  macos:
+    name: macOS desktop (optional)
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_macos }}
+    runs-on: macos-latest
+    needs: analyze
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.47.5
+          cache: true
+      - run: flutter pub get
+      - run: flutter config --enable-macos-desktop
+      - run: flutter build macos --release --no-codesign
+      - name: Pack
+        run: |
+          cd build/macos/Build/Products/Release
+          zip -qry fufut-pos-macos.zip fufut_pos.app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fufut-pos-macos
+          path: build/macos/Build/Products/Release/fufut-pos-macos.zip
+          if-no-files-found: error
+
+  # Attaches every built artifact to a GitHub Release when a release is
+  # published. Tag v1.2.3 → release page carries the APK and both desktop
+  # zips, so the floor installs from one link.
+  release:
+    name: Attach artifacts to release
+    if: ${{ github.event_name == 'release' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: [apk, linux, windows]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Attach
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            --repo "${{ github.repository }}" \
+            --clobber \
+            artifacts/fufut-pos-android/*.apk \
+            artifacts/fufut-pos-linux/*.tar.gz \
+            artifacts/fufut-pos-windows/*.zip
