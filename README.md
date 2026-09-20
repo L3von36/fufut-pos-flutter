@@ -32,8 +32,10 @@ refusal-not-retry rules: reads retry on transient errors, writes fail fast.
 4. **Windows** — x64 zip.
 5. **macOS** — optional, behind the `build_macos` workflow_dispatch input
    (macOS runners bill 10x minutes on private repos).
-6. **Releases** — publishing a `v*` release attaches every artifact to the
-   release page automatically.
+6. **Releases** — push a version tag and the release happens by itself:
+   `git tag v1.0.1 && git push origin v1.0.1` → CI builds everything, creates
+   the GitHub Release, and attaches the APK + desktop bundles to it.
+   Publishing a release by hand from the GitHub UI does the same.
 
 Grab the artifacts from the run page → *Artifacts*, or from the release page.
 

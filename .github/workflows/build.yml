@@ -3,6 +3,7 @@ name: Build APK & Desktop
 on:
   push:
     branches: [main]
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       build_macos:
@@ -141,12 +142,12 @@ jobs:
           path: build/macos/Build/Products/Release/fufut-pos-macos.zip
           if-no-files-found: error
 
-  # Attaches every built artifact to a GitHub Release when a release is
-  # published. Tag v1.2.3 → release page carries the APK and both desktop
-  # zips, so the floor installs from one link.
+  # Tag push (v1.2.3) → builds everything, then creates the GitHub Release
+  # and attaches the APK + desktop bundles to it, so the floor installs from
+  # one link. Publishing a release by hand from the GitHub UI does the same.
   release:
     name: Attach artifacts to release
-    if: ${{ github.event_name == 'release' }}
+    if: ${{ github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     needs: [apk, linux, windows]
@@ -154,11 +155,41 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-      - name: Attach
+      - name: Create release (tag push)
+        if: ${{ github.event_name == 'push' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${{ github.event.release.tag_name }}" \
+          TAG="${{ github.ref_name }}"
+          cat > release-notes.md <<'NOTES'
+          Automated build from CI.
+
+          ## Install
+          - **Android** — download `app-release.apk` and open it on the phone
+            (works on any device; the other APKs are smaller per-ABI variants
+            of the same app).
+          - **Windows** — download `fufut-pos-windows-x64.zip`, unzip, run
+            `fufut_pos.exe`.
+          - **Linux** — download `fufut-pos-linux-x64.tar.gz`, untar, run
+            `./fufut_pos`.
+          - **macOS** — built on demand: run the workflow with "Also build
+            macOS" checked, then grab `fufut-pos-macos` from the run's
+            artifacts.
+
+          The APK is signed with debug keys until a release keystore is added,
+          so Android shows the usual "unknown sources" warning — expected.
+          NOTES
+          gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1 || \
+            gh release create "$TAG" \
+              --repo "${{ github.repository }}" \
+              --title "Fufut POS $TAG" \
+              --notes-file release-notes.md
+      - name: Attach
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name || github.ref_name }}
+        run: |
+          gh release upload "$TAG" \
             --repo "${{ github.repository }}" \
             --clobber \
             artifacts/fufut-pos-android/*.apk \
