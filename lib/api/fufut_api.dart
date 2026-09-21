@@ -237,6 +237,74 @@ class FufutApi {
     });
   }
 
+  // ── Reports (manager / accountant / cashier dashboards) ───────────────────
+
+  /// `GET /api/reports/dashboard?period=<day|week|month>` — net sales, order
+  /// mix, payment methods and the operations counters the KPI cards show.
+  Future<DashboardStats> reportsDashboard({String period = 'day'}) async {
+    final res = await client.get('reports/dashboard?period=$period');
+    if (res is Map) {
+      return DashboardStats.fromJson(Map<String, dynamic>.from(res));
+    }
+    return const DashboardStats();
+  }
+
+  // ── Waste (cleaner / barista) ─────────────────────────────────────────────
+
+  /// `GET /api/waste` — the log, newest first.
+  Future<List<WasteEntry>> wasteLog() async {
+    final res = await client.get('waste');
+    if (res is! List) return const [];
+    return res
+        .whereType<Map>()
+        .map((m) => WasteEntry.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  /// `POST /api/waste` — record what was thrown away. Free-text form: the
+  /// server stores the name as typed; a real inventory item can be attached
+  /// with [inventoryId], which also takes it off the shelf.
+  Future<void> postWaste({
+    required String name,
+    required double qty,
+    required String reason,
+    double cost = 0,
+    String? inventoryId,
+  }) async {
+    final res = await client.post('waste', {
+      'name': name.trim(),
+      'quantity': qty,
+      'reason': reason.trim(),
+      if (cost > 0) 'cost': cost,
+      if (inventoryId != null && inventoryId.isNotEmpty)
+        'inventoryId': inventoryId,
+    });
+    if (res is Map && res['ok'] == false) {
+      throw ApiError((res['error'] as String?) ?? 'Could not record waste');
+    }
+  }
+
+  // ── Delivery (driver's run list) ──────────────────────────────────────────
+
+  /// `GET /api/delivery` — the jobs, newest first, each joined with its order.
+  Future<List<DeliveryJob>> deliveries() async {
+    final res = await client.get('delivery');
+    if (res is! List) return const [];
+    return res
+        .whereType<Map>()
+        .map((m) => DeliveryJob.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  /// `POST /api/delivery/:id/status` — move a job along
+  /// (new → assigned → out-for-delivery → delivered).
+  Future<void> advanceDelivery(String id, String status) async {
+    final res = await client.post('delivery/$id/status', {'status': status});
+    if (res is Map && res['ok'] == false) {
+      throw ApiError((res['error'] as String?) ?? 'Could not update delivery');
+    }
+  }
+
   // ── Small helpers ─────────────────────────────────────────────────────────
 
   static double _r2(double v) => (v * 100).roundToDouble() / 100;

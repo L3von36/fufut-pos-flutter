@@ -5,23 +5,35 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../state/app_state.dart';
+import '../state/roles.dart';
 import '../state/theme_controller.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
+import 'cashdrawer_screen.dart';
+import 'delivery_screen.dart';
+import 'kitchen_board.dart';
+import 'manager_dashboard.dart';
 import 'orders_screen.dart';
 import 'register_screen.dart';
+import 'reports_screen.dart';
 import 'settings_screen.dart';
+import 'tables_screen.dart';
+import 'waste_screen.dart';
 
-/// Which screen the shell shows. The PWA's cashier chrome in miniature:
-/// Menu View, Orders, Open Checks + a drawer holding Settings & sign-out.
-enum ShellTab { menuView, orders, openChecks, settings }
-
-/// App chrome — the web POS `AppLayout.vue`, re-thought as a native app:
+/// App chrome — the web POS `AppLayout.vue`, re-thought as a native app.
+///
+/// The nav is per-role: each role signs in to its own home screen and sees
+/// only the destinations its server grant backs — the manager to the
+/// Dashboard, the chef to the Kitchen board, the waiter to the Tables floor,
+/// the cashier to the Cash Drawer, the driver to the Delivery run, the
+/// cleaner to the Waste log, the accountant to Reports (mapping in
+/// `state/roles.dart`, mirroring the web's ROLE_DEFAULT_VIEW).
+///
 ///  * Phone — an Android `Drawer` (edge swipe, scrim, teal gradient, user
-///    header) behind a 64px app bar, with a Material-3 bottom navigation bar
-///    (Menu View · Orders · Open Checks · More) for the three hot screens.
-///  * ≥ 900px wide — fixed 250px teal-gradient sidebar (brand row, sectioned
-///    nav with gold active edge, red-tinted sign out) beside a 64px topbar.
+///    header) behind a 52px app bar, with a Material-3 bottom navigation bar
+///    carrying the role's hottest screens; "More" opens the drawer.
+///  * ≥ 900px wide — fixed teal-gradient sidebar (brand row, sectioned nav
+///    with gold active edge, red-tinted sign out) beside a 52px topbar.
 class HomeShell extends StatefulWidget {
   const HomeShell({super.key});
 
@@ -30,17 +42,36 @@ class HomeShell extends StatefulWidget {
 }
 
 class _HomeShellState extends State<HomeShell> {
-  ShellTab _tab = ShellTab.menuView;
+  late List<NavEntry> _nav;
+  late NavKey _tab;
+  String? _roleSeen;
   final _scaffoldKey = GlobalKey<ScaffoldState>();
 
-  static const _titles = {
-    ShellTab.menuView: 'Menu View',
-    ShellTab.orders: 'Orders',
-    ShellTab.openChecks: 'Open Checks',
-    ShellTab.settings: 'Settings',
-  };
+  /// Screens built on first visit and kept alive afterwards — an
+  /// IndexedStack would eagerly build every role screen (and fire its API
+  /// calls) at sign-in; this stays lazy without losing scroll position.
+  final Map<NavKey, Widget> _built = {};
 
-  void _select(ShellTab t) {
+  @override
+  void initState() {
+    super.initState();
+    final app = context.read<AppState>();
+    _roleSeen = app.roleKey;
+    _nav = navForRole(app.roleKey);
+    _tab = defaultViewFor(app.roleKey);
+  }
+
+  /// Re-point the nav if the role changed underneath us (session revalidated
+  /// as a different account, role edited server-side).
+  void _syncRole(AppState app) {
+    if (_roleSeen == app.roleKey) return;
+    _roleSeen = app.roleKey;
+    _built.clear();
+    _nav = navForRole(app.roleKey);
+    _tab = defaultViewFor(app.roleKey);
+  }
+
+  void _select(NavKey t) {
     // If the drawer is open (this is a drawer tap), close it first — even
     // when the destination does not change.
     final nav = Navigator.of(context);
@@ -50,19 +81,55 @@ class _HomeShellState extends State<HomeShell> {
     setState(() => _tab = t);
   }
 
+  Widget _screenFor(NavKey key) {
+    return _built.putIfAbsent(key, () {
+      switch (key) {
+        case NavKey.dashboard:
+          return ManagerDashboard(onNavigate: _select);
+        case NavKey.kitchen:
+          return const KitchenBoard();
+        case NavKey.barista:
+          return const KitchenBoard(baristaMode: true);
+        case NavKey.tables:
+          return TablesScreen(onNavigate: _select);
+        case NavKey.menuView:
+          return const RegisterScreen();
+        case NavKey.orders:
+          return const OrdersScreen();
+        case NavKey.openChecks:
+          return const OrdersScreen(openOnlyDefault: true);
+        case NavKey.cashdrawer:
+          return CashDrawerScreen(onNavigate: _select);
+        case NavKey.delivery:
+          return const DeliveryScreen();
+        case NavKey.waste:
+          return const WasteScreen();
+        case NavKey.reports:
+          return const ReportsScreen();
+        case NavKey.settings:
+          return const SettingsScreen();
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
+    final app = context.watch<AppState>();
+    _syncRole(app);
+
     final width = MediaQuery.sizeOf(context).width;
     final wide = width >= 900;
     final dark = Theme.of(context).brightness == Brightness.dark;
 
-    final body = IndexedStack(
-      index: _tab.index,
-      children: const [
-        RegisterScreen(),
-        OrdersScreen(),
-        OrdersScreen(openOnlyDefault: true),
-        SettingsScreen(),
+    // Keep-alive stack of visited screens, only the active one painted.
+    // The active tab is always built (that is what seeds [_built]); the ones
+    // already visited keep their state, the rest stay unbuilt so their API
+    // calls never fire until they are actually opened.
+    final body = Stack(
+      children: [
+        for (final e in _nav)
+          if (_built.containsKey(e.key) || e.key == _tab)
+            Offstage(offstage: e.key != _tab, child: _screenFor(e.key)),
       ],
     );
 
@@ -70,14 +137,14 @@ class _HomeShellState extends State<HomeShell> {
         ? Scaffold(
             body: Row(
               children: [
-                _Sidebar(selected: _tab, onSelect: _select),
+                _Sidebar(selected: _tab, nav: _nav, onSelect: _select),
                 Expanded(
                   child: SafeArea(
                     top: false,
                     bottom: false,
                     child: Column(
                       children: [
-                        _TopBar(title: _titles[_tab]!),
+                        _TopBar(title: titleFor(_tab)),
                         Expanded(child: body),
                       ],
                     ),
@@ -88,7 +155,7 @@ class _HomeShellState extends State<HomeShell> {
           )
         : Scaffold(
             key: _scaffoldKey,
-            drawer: AppDrawer(selected: _tab, onSelect: _select),
+            drawer: AppDrawer(selected: _tab, nav: _nav, onSelect: _select),
             drawerEdgeDragWidth: 72,
             onDrawerChanged: (open) {
               if (open) HapticFeedback.selectionClick();
@@ -96,7 +163,7 @@ class _HomeShellState extends State<HomeShell> {
             body: Column(
               children: [
                 _TopBar(
-                  title: _titles[_tab]!,
+                  title: titleFor(_tab),
                   showMenuButton: true,
                   onMenu: () => _scaffoldKey.currentState?.openDrawer(),
                 ),
@@ -104,9 +171,10 @@ class _HomeShellState extends State<HomeShell> {
               ],
             ),
             bottomNavigationBar: _BottomNav(
+              nav: _nav,
               selected: _tab,
               onSelect: (t) {
-                if (t == ShellTab.settings) {
+                if (t == NavKey.settings) {
                   _scaffoldKey.currentState?.openDrawer();
                 } else {
                   _select(t);
@@ -125,7 +193,7 @@ class _HomeShellState extends State<HomeShell> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Topbar — 64px, title left; theme toggle + mono date right. Sits inside a
+// Topbar — 52px, title left; theme toggle + mono date right. Sits inside a
 // SafeArea so the edge-to-edge status bar never overlaps it.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -214,14 +282,16 @@ class _TopBarState extends State<_TopBar> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Sidebar — the PWA's teal gradient rail, sized for touch (48dp rows).
+// Sidebar — the PWA's teal gradient rail, sized for touch (42dp rows),
+// sectioned by the entries' own section labels.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _Sidebar extends StatelessWidget {
-  final ShellTab selected;
-  final ValueChanged<ShellTab> onSelect;
+  final NavKey selected;
+  final List<NavEntry> nav;
+  final ValueChanged<NavKey> onSelect;
 
-  const _Sidebar({required this.selected, required this.onSelect});
+  const _Sidebar({required this.selected, required this.nav, required this.onSelect});
 
   @override
   Widget build(BuildContext context) {
@@ -248,34 +318,15 @@ class _Sidebar extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _BrandHeader(app: app),
-            const NavSectionHeader(label: 'Sales'),
-            _SideItem(
-              icon: Icons.menu_book_outlined,
-              label: 'Menu View',
-              active: selected == ShellTab.menuView,
-              onTap: () => onSelect(ShellTab.menuView),
+            Expanded(
+              child: ListView(
+                padding: EdgeInsets.zero,
+                children: [
+                  _BrandHeader(app: app),
+                  ..._navRows(nav, selected, onSelect),
+                ],
+              ),
             ),
-            _SideItem(
-              icon: Icons.shopping_cart_outlined,
-              label: 'Orders',
-              active: selected == ShellTab.orders,
-              onTap: () => onSelect(ShellTab.orders),
-            ),
-            _SideItem(
-              icon: Icons.credit_card_outlined,
-              label: 'Open Checks',
-              active: selected == ShellTab.openChecks,
-              onTap: () => onSelect(ShellTab.openChecks),
-            ),
-            const NavSectionHeader(label: 'System'),
-            _SideItem(
-              icon: Icons.settings_outlined,
-              label: 'Settings',
-              active: selected == ShellTab.settings,
-              onTap: () => onSelect(ShellTab.settings),
-            ),
-            const Spacer(),
             // Sign out — the PWA's red-tinted footer button.
             Padding(
               padding: const EdgeInsets.all(10),
@@ -303,6 +354,27 @@ class _Sidebar extends StatelessWidget {
   }
 }
 
+/// The teal-rail rows shared by the wide sidebar and the phone drawer:
+/// a section header whenever the group label changes, then the destination
+/// row itself.
+List<Widget> _navRows(
+    List<NavEntry> nav, NavKey selected, ValueChanged<NavKey> onSelect) {
+  final rows = <Widget>[];
+  String? lastSection;
+  for (final e in nav) {
+    if (e.section.isNotEmpty && e.section != lastSection) {
+      rows.add(NavSectionHeader(label: e.section));
+      lastSection = e.section;
+    }
+    rows.add(_SideItem(
+      entry: e,
+      active: selected == e.key,
+      onTap: () => onSelect(e.key),
+    ));
+  }
+  return rows;
+}
+
 /// Brand + user block shared by the wide sidebar and the phone drawer.
 class _BrandHeader extends StatelessWidget {
   final AppState app;
@@ -312,7 +384,7 @@ class _BrandHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     final pal = Pal.of(context);
     final name = app.user?.firstName ?? app.user?.displayName ?? '';
-    final role = _titleCase(app.user?.role ?? '');
+    final role = roleTitle(app.user?.role ?? '');
     final initials = name.isEmpty
         ? 'FU'
         : name.trim().split(RegExp(r'\s+')).map((w) => w[0]).take(2).join().toUpperCase();
@@ -383,29 +455,18 @@ class _BrandHeader extends StatelessWidget {
       ),
     );
   }
-
-  static String _titleCase(String role) {
-    if (role.isEmpty) return '';
-    return role
-        .split(RegExp(r'[\s_-]+'))
-        .map((w) => w.isEmpty ? w : '${w[0].toUpperCase()}${w.substring(1).toLowerCase()}')
-        .join(' ');
-  }
 }
 
 class _SideItem extends StatelessWidget {
-  final IconData icon;
-  final String label;
+  final NavEntry entry;
   final bool active;
   final VoidCallback onTap;
 
   const _SideItem({
-    required this.icon,
-    required this.label,
+    required this.entry,
     required this.active,
     required this.onTap,
   });
-
   @override
   Widget build(BuildContext context) {
     // Active: white text on rgba(255,255,255,.1) with a 3px gold left edge —
@@ -427,13 +488,13 @@ class _SideItem extends StatelessWidget {
           ),
           child: Row(
             children: [
-              Icon(icon,
+              Icon(entry.icon,
                   size: 18,
                   color: Colors.white.withValues(alpha: active ? 1 : 0.6)),
               const SizedBox(width: 12),
               Expanded(
                 child: Text(
-                  label,
+                  entry.label,
                   style: T.navItem.copyWith(
                     color: Colors.white.withValues(alpha: active ? 1 : 0.72),
                     fontWeight: active ? FontWeight.w700 : FontWeight.w500,
@@ -459,10 +520,16 @@ class _SideItem extends StatelessWidget {
 // ─────────────────────────────────────────────────────────────────────────────
 
 class AppDrawer extends StatelessWidget {
-  final ShellTab selected;
-  final ValueChanged<ShellTab> onSelect;
+  final NavKey selected;
+  final List<NavEntry> nav;
+  final ValueChanged<NavKey> onSelect;
 
-  const AppDrawer({super.key, required this.selected, required this.onSelect});
+  const AppDrawer({
+    super.key,
+    required this.selected,
+    required this.nav,
+    required this.onSelect,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -486,36 +553,25 @@ class AppDrawer extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               _BrandHeader(app: app),
-              const NavSectionHeader(label: 'Sales'),
+              Expanded(
+                child: ListView(
+                  padding: EdgeInsets.zero,
+                  children: [
+                    ..._navRows(nav, selected, onSelect),
+                  ],
+                ),
+              ),
               _SideItem(
-                  icon: Icons.menu_book_outlined,
-                  label: 'Menu View',
-                  active: selected == ShellTab.menuView,
-                  onTap: () => onSelect(ShellTab.menuView)),
-              _SideItem(
-                  icon: Icons.shopping_cart_outlined,
-                  label: 'Orders',
-                  active: selected == ShellTab.orders,
-                  onTap: () => onSelect(ShellTab.orders)),
-              _SideItem(
-                  icon: Icons.credit_card_outlined,
-                  label: 'Open Checks',
-                  active: selected == ShellTab.openChecks,
-                  onTap: () => onSelect(ShellTab.openChecks)),
-              const NavSectionHeader(label: 'System'),
-              _SideItem(
-                  icon: Icons.settings_outlined,
-                  label: 'Settings',
-                  active: selected == ShellTab.settings,
-                  onTap: () => onSelect(ShellTab.settings)),
-              _SideItem(
-                  icon: dark
-                      ? Icons.light_mode_outlined
-                      : Icons.dark_mode_outlined,
-                  label: dark ? 'Light theme' : 'Dark theme',
-                  active: false,
-                  onTap: () => context.read<ThemeController>().toggle()),
-              const Spacer(),
+                entry: NavEntry(
+                    NavKey.settings,
+                    dark
+                        ? Icons.light_mode_outlined
+                        : Icons.dark_mode_outlined,
+                    Icons.light_mode_outlined,
+                    dark ? 'Light theme' : 'Dark theme'),
+                active: false,
+                onTap: () => context.read<ThemeController>().toggle(),
+              ),
               Padding(
                 padding: const EdgeInsets.all(10),
                 child: TextButton.icon(
@@ -545,25 +601,34 @@ class AppDrawer extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Bottom nav (phone) — M3 bar: sunken bg, 64×34 pill indicator, 11dp labels.
-// "More" opens the drawer.
+// Bottom nav (phone) — M3 bar: sunken bg, pill indicator, 11dp labels.
+// Carries the role's first three destinations; "More" opens the drawer with
+// everything else.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _BottomNav extends StatelessWidget {
-  final ShellTab selected;
-  final ValueChanged<ShellTab> onSelect;
+  final List<NavEntry> nav;
+  final NavKey selected;
+  final ValueChanged<NavKey> onSelect;
 
-  const _BottomNav({required this.selected, required this.onSelect});
+  const _BottomNav({
+    required this.nav,
+    required this.selected,
+    required this.onSelect,
+  });
 
   @override
   Widget build(BuildContext context) {
     final pal = Pal.of(context);
-    Widget item(ShellTab tab, IconData icon, IconData activeIcon, String label) {
-      final isSel = selected == tab;
+    // Bar slots: the first three non-settings screens of the role. The home
+    // screen leads by construction — kRolePermissions orders it first.
+    final bar = nav.where((e) => e.key != NavKey.settings).take(3).toList();
+
+    Widget item(NavEntry e, bool isSel) {
       final color = isSel ? pal.primary : pal.muted;
       return Expanded(
         child: InkWell(
-          onTap: () => onSelect(tab),
+          onTap: () => onSelect(e.key),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             mainAxisAlignment: MainAxisAlignment.center,
@@ -578,10 +643,12 @@ class _BottomNav extends StatelessWidget {
                   color: isSel ? pal.tintBg : Colors.transparent,
                   borderRadius: BorderRadius.circular(15),
                 ),
-                child: Icon(isSel ? activeIcon : icon, size: 20, color: color),
+                child: Icon(isSel ? e.activeIcon : e.icon, size: 20, color: color),
               ),
               const SizedBox(height: 2),
-              Text(label,
+              Text(e.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                       fontFamily: kFontBody,
                       fontSize: 10.5,
@@ -602,13 +669,37 @@ class _BottomNav extends StatelessWidget {
           left: 8, right: 8, top: 8, bottom: 8 + MediaQuery.of(context).padding.bottom),
       child: Row(
         children: [
-          item(ShellTab.menuView, Icons.menu_book_outlined, Icons.menu_book,
-              'Menu View'),
-          item(ShellTab.orders, Icons.shopping_cart_outlined, Icons.shopping_cart,
-              'Orders'),
-          item(ShellTab.openChecks, Icons.credit_card_outlined, Icons.credit_card,
-              'Open Checks'),
-          item(ShellTab.settings, Icons.menu_rounded, Icons.menu_rounded, 'More'),
+          for (final e in bar) item(e, selected == e.key),
+          // More — the drawer, which carries every remaining destination.
+          Expanded(
+            child: InkWell(
+              onTap: () => onSelect(NavKey.settings),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    width: 56,
+                    height: 30,
+                    alignment: Alignment.center,
+                    child: Icon(Icons.menu_rounded, size: 20,
+                        color: selected == NavKey.settings
+                            ? pal.primary
+                            : pal.muted),
+                  ),
+                  const SizedBox(height: 2),
+                  Text('More',
+                      style: TextStyle(
+                          fontFamily: kFontBody,
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w500,
+                          color: selected == NavKey.settings
+                              ? pal.primary
+                              : pal.muted)),
+                ],
+              ),
+            ),
+          ),
         ],
       ),
     );

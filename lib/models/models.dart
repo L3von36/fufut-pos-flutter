@@ -355,8 +355,10 @@ class StaffUser {
     return StaffUser(
       id: (j['id'] ?? '') as String,
       name: (j['name'] ?? j['full_name']) as String?,
-      firstName: j['first_name'] as String?,
-      lastName: j['last_name'] as String?,
+      // The server sends camelCase (`firstName`); the cached identity blob
+      // this model round-trips through stores snake_case. Accept both.
+      firstName: (j['firstName'] ?? j['first_name']) as String?,
+      lastName: (j['lastName'] ?? j['last_name']) as String?,
       email: j['email'] as String?,
       role: (j['role'] ?? '') as String,
     );
@@ -385,6 +387,204 @@ class CafeTable {
         section: j['section'] as String?,
         status: (j['status'] ?? 'available') as String,
         seats: j['seats'] is int ? j['seats'] as int : int.tryParse('${j['seats']}'),
+      );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reports — the manager / accountant dashboard payload
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One payment-method row of the day (`paymentMethods[]`).
+class PayMethod {
+  final String method;
+  final int count;
+  final double total;
+  const PayMethod({required this.method, required this.count, required this.total});
+
+  factory PayMethod.fromJson(Map<String, dynamic> j) => PayMethod(
+        method: (j['method'] ?? 'other').toString(),
+        count: _asInt(j['count']),
+        total: _asDouble(j['total']),
+      );
+}
+
+/// One category sales row (`byCategory[]`).
+class CategoryRow {
+  final String category;
+  final int quantity;
+  final double revenue;
+  const CategoryRow({required this.category, required this.quantity, required this.revenue});
+
+  factory CategoryRow.fromJson(Map<String, dynamic> j) => CategoryRow(
+        category: (j['category'] ?? 'Uncategorised').toString(),
+        quantity: _asInt(j['quantity']),
+        revenue: _asDouble(j['revenue']),
+      );
+}
+
+/// `GET /api/reports/dashboard` — the trading day at a glance. Net sales is
+/// `total - tip`: the tip is the guest's money, never the restaurant's.
+class DashboardStats {
+  final String period;
+  final int orders;
+  final double netSales;
+  final double averageOrder;
+  final double discounts;
+  final int dineInOrders;
+  final int takeawayOrders;
+  final int deliveryOrders;
+  final double tips;
+  final double expenses;
+  final double grossOfExpenses;
+  final int lowStockItems;
+  final int pendingKitchen;
+  final int pendingDeliveries;
+  final List<PayMethod> paymentMethods;
+  final List<CategoryRow> byCategory;
+
+  const DashboardStats({
+    this.period = 'day',
+    this.orders = 0,
+    this.netSales = 0,
+    this.averageOrder = 0,
+    this.discounts = 0,
+    this.dineInOrders = 0,
+    this.takeawayOrders = 0,
+    this.deliveryOrders = 0,
+    this.tips = 0,
+    this.expenses = 0,
+    this.grossOfExpenses = 0,
+    this.lowStockItems = 0,
+    this.pendingKitchen = 0,
+    this.pendingDeliveries = 0,
+    this.paymentMethods = const [],
+    this.byCategory = const [],
+  });
+
+  factory DashboardStats.fromJson(Map<String, dynamic> j) {
+    final sales = j['sales'] is Map ? Map<String, dynamic>.from(j['sales'] as Map) : const <String, dynamic>{};
+    final byType = j['byOrderType'] is Map ? Map<String, dynamic>.from(j['byOrderType'] as Map) : const <String, dynamic>{};
+    final ops = j['operations'] is Map ? Map<String, dynamic>.from(j['operations'] as Map) : const <String, dynamic>{};
+    int typeCount(String k) {
+      final row = byType[k];
+      return row is Map ? _asInt(row['orders']) : 0;
+    }
+
+    return DashboardStats(
+      period: (j['period'] ?? 'day').toString(),
+      orders: _asInt(sales['orders']),
+      netSales: _asDouble(sales['netSales']),
+      averageOrder: _asDouble(sales['averageOrder']),
+      discounts: _asDouble(sales['discounts']),
+      dineInOrders: typeCount('dineIn'),
+      takeawayOrders: typeCount('takeaway'),
+      deliveryOrders: typeCount('delivery'),
+      tips: _asDouble(j['tips']),
+      expenses: _asDouble(j['expenses']),
+      grossOfExpenses: _asDouble(j['grossOfExpenses']),
+      lowStockItems: _asInt(ops['lowStockItems']),
+      pendingKitchen: _asInt(ops['pendingKitchenOrders']),
+      pendingDeliveries: _asInt(ops['pendingDeliveries']),
+      paymentMethods: (j['paymentMethods'] as List? ?? const [])
+          .whereType<Map>()
+          .map((m) => PayMethod.fromJson(Map<String, dynamic>.from(m)))
+          .toList(),
+      byCategory: (j['byCategory'] as List? ?? const [])
+          .whereType<Map>()
+          .map((m) => CategoryRow.fromJson(Map<String, dynamic>.from(m)))
+          .toList(),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Waste — the cleaner's / barista's log
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One row of `GET /api/waste`. The server aliases `qty`/`est_cost` into
+/// `quantity`/`cost`; the item name comes from the inventory join or the
+/// free-text `name` the entry was logged with.
+class WasteEntry {
+  final String id;
+  final String item;
+  final double qty;
+  final String? unit;
+  final String reason;
+  final double cost;
+  final String? date;
+  final String? loggedBy;
+
+  const WasteEntry({
+    required this.id,
+    required this.item,
+    required this.qty,
+    this.unit,
+    this.reason = '',
+    this.cost = 0,
+    this.date,
+    this.loggedBy,
+  });
+
+  factory WasteEntry.fromJson(Map<String, dynamic> j) => WasteEntry(
+        id: (j['id'] ?? '').toString(),
+        item: (j['item'] ?? j['name'] ?? 'Item').toString(),
+        qty: _asDouble(j['quantity'] ?? j['qty']),
+        unit: (j['unit'] as String?)?.toString(),
+        reason: (j['reason'] ?? '').toString(),
+        cost: _asDouble(j['cost'] ?? j['est_cost']),
+        date: (j['date'] ?? j['created'])?.toString(),
+        loggedBy: (j['logged_by'] ?? j['loggedBy'])?.toString(),
+      );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Delivery — the driver's run list
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One job of `GET /api/delivery`. The row joins the order behind it, so the
+/// driver can see what is in the bag, what it comes to and whether it is paid.
+class DeliveryJob {
+  final String id;
+  final String? orderId;
+  final String? customer;
+  final String? phone;
+  final String? address;
+  final String status;
+  final String? driver;
+  final double total;
+  final String? itemsRaw;
+  final String? paymentStatus;
+  final String? created;
+
+  const DeliveryJob({
+    required this.id,
+    this.orderId,
+    this.customer,
+    this.phone,
+    this.address,
+    this.status = 'new',
+    this.driver,
+    this.total = 0,
+    this.itemsRaw,
+    this.paymentStatus,
+    this.created,
+  });
+
+  bool get isPaid =>
+      (paymentStatus ?? '').toLowerCase() == 'paid';
+
+  factory DeliveryJob.fromJson(Map<String, dynamic> j) => DeliveryJob(
+        id: (j['id'] ?? '').toString(),
+        orderId: (j['orderId'] ?? j['order_id'])?.toString(),
+        customer: (j['customer'] ?? j['customer_name'])?.toString(),
+        phone: (j['phone'] ?? j['customer_phone'])?.toString(),
+        address: (j['address'] ?? j['delivery_address'])?.toString(),
+        status: ((j['status'] ?? 'new') as String).replaceAll('_', '-'),
+        driver: (j['driver'] ?? j['driver_name'])?.toString(),
+        total: _asDouble(j['order_total'] ?? j['total']),
+        itemsRaw: (j['order_items'] ?? j['items'])?.toString(),
+        paymentStatus: (j['order_payment_status'] ?? j['payment_status'])?.toString(),
+        created: (j['created'] ?? j['assigned_at'])?.toString(),
       );
 }
 
