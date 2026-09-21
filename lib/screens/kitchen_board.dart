@@ -292,6 +292,7 @@ class _KitchenBoardState extends State<KitchenBoard> {
   Future<void> _toggleMute() async {
     final audio = AudioAlerts.instance;
     await audio.setMuted(!audio.muted);
+    if (!mounted) return;
     setState(() => _muted = audio.muted);
     showInfoOn(_messenger ?? ScaffoldMessenger.of(context),
         _muted ? 'Board sounds muted' : 'Board sounds on');

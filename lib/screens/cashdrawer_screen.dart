@@ -310,7 +310,7 @@ class _CashDrawerScreenState extends State<CashDrawerScreen> {
           double counted() =>
               controllers.keys
                   .fold(0.0, (s, d) => s + (notesOf(d) * d).toDouble());
-          double variance = counted() - active.expected;
+          final variance = counted() - active.expected;
           final pct = active.expected > 0
               ? (variance.abs() / active.expected * 100)
               : 0.0;
@@ -1076,8 +1076,8 @@ class _CashDrawerScreenState extends State<CashDrawerScreen> {
           ),
           children: [
             if (snap.connectionState != ConnectionState.done)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 12),
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 12),
                 child: Center(
                   child: SizedBox(
                       width: 16,

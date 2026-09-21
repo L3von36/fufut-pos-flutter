@@ -4,6 +4,8 @@
 /// These lock the wire contracts the new screens depend on — camelCase and
 /// snake_case aliases, defensive parsing, and the derived numbers (expected,
 /// variance, per-seat split preview).
+library;
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fufut_pos/models/models.dart';
 
