@@ -46,12 +46,37 @@ class Rig(http.server.BaseHTTPRequestHandler):
             if k.lower() not in HOP:
                 req.add_header(k, v)
         try:
-            resp = urllib.request.urlopen(req, timeout=30)
+            resp = urllib.request.urlopen(req, timeout=60)
         except urllib.error.HTTPError as e:
             resp = e
         except Exception as e:  # noqa: BLE001
             self.send_error(502, str(e))
             return
+
+        ctype = (resp.headers.get('Content-Type') or '').lower()
+        if ctype.startswith('text/event-stream'):
+            # Stream relay: SSE must arrive incrementally or the browser's
+            # EventSource never fires open/message callbacks and the
+            # Flutter web board would sit on "Polling" forever.
+            self.send_response(resp.status if hasattr(resp, 'status') else 200)
+            for k, v in resp.headers.items():
+                if k.lower() not in HOP and k.lower() != 'content-length':
+                    self.send_header(k, v)
+            self.send_header('Connection', 'close')
+            self.end_headers()
+            try:
+                while True:
+                    chunk = resp.read(512)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+            except Exception:  # noqa: BLE001 — client gone / upstream cut
+                pass
+            finally:
+                self.close_connection = True
+            return
+
         payload = resp.read()
         self.send_response(resp.status if hasattr(resp, 'status') else 200)
         for k, v in resp.headers.items():

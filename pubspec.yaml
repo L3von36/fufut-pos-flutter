@@ -1,7 +1,7 @@
 name: fufut_pos
 description: "Fufut Coffee POS — Android & desktop point of sale for the Fufut floor."
 publish_to: "none"
-version: 1.0.7+8
+version: 1.0.8+9
 
 environment:
   sdk: ">=3.5.0 <4.0.0"
@@ -10,6 +10,10 @@ dependencies:
   flutter:
     sdk: flutter
   http: ^1.2.2
+  # Web SSE transport — package:web EventSource bindings (the browser's own
+  # primitive, same as the PWA's useSSE.js). Native platforms stream the
+  # same wire format through package:http instead.
+  web: ^1.1.1
   provider: ^6.1.2
   shared_preferences: ^2.3.3
   intl: ^0.20.1

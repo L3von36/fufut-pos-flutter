@@ -55,6 +55,13 @@ class _HomeShellState extends State<HomeShell> {
   /// calls) at sign-in; this stays lazy without losing scroll position.
   final Map<NavKey, Widget> _built = {};
 
+  /// Which tab is on stage right now, broadcast for keep-alive screens that
+  /// hold live resources (the kitchen boards' SSE channels): an offstage
+  /// board must release its Worker connection exactly like a hidden web tab
+  /// does, or a chef who visited both boards pins two connections and hears
+  /// every alert twice.
+  final ValueNotifier<NavKey> activeTab = ValueNotifier(NavKey.dashboard);
+
   @override
   void initState() {
     super.initState();
@@ -102,9 +109,10 @@ class _HomeShellState extends State<HomeShell> {
         case NavKey.dashboard:
           return RoleDashboard(onNavigate: _select);
         case NavKey.kitchen:
-          return const KitchenBoard();
+          return KitchenBoard(activeTab: activeTab, self: NavKey.kitchen);
         case NavKey.barista:
-          return const KitchenBoard(baristaMode: true);
+          return KitchenBoard(
+              baristaMode: true, activeTab: activeTab, self: NavKey.barista);
         case NavKey.tables:
           return TablesScreen(onNavigate: _select);
         case NavKey.menuView:
@@ -142,6 +150,9 @@ class _HomeShellState extends State<HomeShell> {
     final width = MediaQuery.sizeOf(context).width;
     final wide = width >= 900;
     final dark = Theme.of(context).brightness == Brightness.dark;
+    // Covers every _tab mutation path (init/_sync/_guard/_select); the
+    // notifier itself no-ops on equal values, so this never loops.
+    activeTab.value = _tab;
 
     // Keep-alive stack of visited screens, only the active one painted.
     // The active tab is always built (that is what seeds [_built]); the ones
