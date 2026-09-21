@@ -611,6 +611,42 @@ class FufutApi {
     return res is Map ? res['orderStatus']?.toString() : null;
   }
 
+  // ── Operations alerts — the web AlertsBanner's three calls ───────────────
+
+  /// `GET /api/alerts` — the open SLA breaches. The endpoint answers either a
+  /// bare array or `{ok, alerts}` depending on the handler path; both parse.
+  /// A refused fetch (role without the resource) surfaces as an ApiError the
+  /// banner swallows into an empty list — silence, not an error banner on an
+  /// error banner.
+  Future<List<OpsAlert>> alerts() async {
+    final res = await client.get('alerts');
+    final List rows;
+    if (res is List) {
+      rows = res;
+    } else if (res is Map && res['alerts'] is List) {
+      rows = res['alerts'] as List;
+    } else {
+      return const [];
+    }
+    return rows
+        .whereType<Map>()
+        .map((m) => OpsAlert.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  /// `POST /api/alerts/:id/acknowledge` — per-alert ack (manager, head-chef,
+  /// head-waiter, cashier). Other roles get the server's 403 and the banner
+  /// renders no button for them in the first place.
+  Future<void> acknowledgeAlert(String id) async {
+    await client.post('alerts/$id/acknowledge', {});
+  }
+
+  /// `POST /api/alerts/acknowledge-all` — manager only ("Manager only" 403
+  /// for everyone else; the banner's bulk button is manager-gated to match).
+  Future<void> acknowledgeAllAlerts() async {
+    await client.post('alerts/acknowledge-all', {});
+  }
+
   // ── Small helpers ─────────────────────────────────────────────────────────
 
   static double _r2(double v) => (v * 100).roundToDouble() / 100;

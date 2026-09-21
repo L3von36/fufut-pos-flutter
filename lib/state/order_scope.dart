@@ -60,6 +60,26 @@ bool _lineIsDrink(String name, {String? category}) {
   return nameIsDrink('', name);
 }
 
+/// The board's renderable lines of a ticket: the structured lines when the
+/// order row carries them, the legacy flat summary parsed back into lines
+/// otherwise. The /api/orders rows (and the SSE snapshots built from them)
+/// carry NO `orderItems` — just the flat "2x Latte, 1xDish" string the
+/// server stores on the order — so without this fallback every pushed
+/// ticket parsed line-less and the board filtered it into silence.
+List<OrderItemLine> boardLines(FufutOrder order) {
+  if (order.items.isNotEmpty) return order.items;
+  return [
+    for (final f in _parseFlatItems(order.itemsRaw))
+      OrderItemLine(
+        menuItemId: null,
+        name: f.name,
+        basePrice: 0,
+        qty: f.qty,
+        lineTotal: 0,
+      ),
+  ];
+}
+
 /// The station's own lines of a ticket. [station] is 'bar' (drinks) or
 /// 'kitchen' (everything else), matching the board filters. Reads the
 /// structured lines when the ticket carries them, falls back to the legacy

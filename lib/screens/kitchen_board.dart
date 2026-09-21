@@ -42,6 +42,7 @@ import '../models/models.dart';
 import '../services/audio_alerts.dart';
 import '../services/kitchen_live.dart';
 import '../state/app_state.dart';
+import '../state/order_scope.dart';
 import '../state/roles.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
@@ -347,8 +348,8 @@ class _KitchenBoardState extends State<KitchenBoard>
   /// category first (rows stamped since the category migration), name as the
   /// fallback for rows written before categories existed.
   List<OrderItemLine> _stationLines(FufutOrder o) {
-    if (!widget.baristaMode) return o.items;
-    return o.items
+    if (!widget.baristaMode) return boardLines(o);
+    return boardLines(o)
         .where((l) =>
             nameIsDrink(_catByName[l.name.toLowerCase()] ?? '', l.name))
         .toList();

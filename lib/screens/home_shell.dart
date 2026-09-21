@@ -8,6 +8,7 @@ import '../state/app_state.dart';
 import '../state/roles.dart';
 import '../state/theme_controller.dart';
 import '../theme.dart';
+import '../widgets/alerts_banner.dart';
 import '../widgets/common.dart';
 import 'cashdrawer_screen.dart';
 import 'delivery_screen.dart';
@@ -114,7 +115,8 @@ class _HomeShellState extends State<HomeShell> {
           return KitchenBoard(
               baristaMode: true, activeTab: activeTab, self: NavKey.barista);
         case NavKey.tables:
-          return TablesScreen(onNavigate: _select);
+          return TablesScreen(
+              onNavigate: _select, activeTab: activeTab, self: NavKey.tables);
         case NavKey.menuView:
           return const RegisterScreen();
         case NavKey.orders:
@@ -178,6 +180,10 @@ class _HomeShellState extends State<HomeShell> {
                     child: Column(
                       children: [
                         _TopBar(title: titleFor(_tab)),
+                        // The operations alerts banner — above every tab, the
+                        // web AppLayout's mount point. One channel for the
+                        // whole shell, carried across tab switches.
+                        const OpsAlertsBanner(),
                         Expanded(child: body),
                       ],
                     ),
@@ -206,6 +212,10 @@ class _HomeShellState extends State<HomeShell> {
                     showMenuButton: true,
                     onMenu: () => _scaffoldKey.currentState?.openDrawer(),
                   ),
+                  // Operations alerts banner — above every tab (the web
+                  // AppLayout's mount point), so a breach follows the user
+                  // from the floor to the till.
+                  const OpsAlertsBanner(),
                   Expanded(child: body),
                 ],
               ),

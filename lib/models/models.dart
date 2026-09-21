@@ -395,7 +395,11 @@ class CafeTable {
         number: (j['number'] ?? j['id'] ?? '').toString(),
         section: j['section'] as String?,
         status: (j['status'] ?? 'available') as String,
-        seats: j['seats'] is int ? j['seats'] as int : int.tryParse('${j['seats']}'),
+        // The server names the field `capacity`; older rows said `seats`.
+        // Both parse so the card's "4p" hint renders on every shape.
+        seats: j['seats'] is int
+            ? j['seats'] as int
+            : int.tryParse('${j['seats'] ?? j['capacity'] ?? ''}'),
         guests: j['guests']?.toString(),
         billRequestedAt:
             (j['bill_requested_at'] ?? j['billRequestedAt'])?.toString(),
@@ -1119,6 +1123,63 @@ class ActiveOrderItem {
         status: (j['status'] ?? 'new').toString(),
         notes: (j['notes'])?.toString(),
       );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Operations alerts — the cron sweep's SLA breaches (`GET /api/alerts`,
+// the `alerts_update` SSE payload rows, the web AlertsBanner's list)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One operations alert: a rule breach the server wrote (a table waiting too
+/// long for acceptance, an order sitting on the pass, a driver stalled on a
+/// run). The banner sorts critical first, then oldest first — the thing about
+/// to be lost is the thing to read first.
+class OpsAlert {
+  final String id;
+  final String ruleId;
+  final String severity; // warning | critical
+  final String entityType;
+  final String entityId;
+  final String entityLabel;
+  final String message;
+  final String status; // open | acknowledged | resolved
+  final String created;
+
+  /// True while nobody has acknowledged the breach — the only rows the
+  /// banner shows (the server serves open rows to the read endpoint).
+  bool get isOpen => status == 'open';
+
+  const OpsAlert({
+    required this.id,
+    this.ruleId = '',
+    this.severity = 'warning',
+    this.entityType = '',
+    this.entityId = '',
+    this.entityLabel = '',
+    this.message = '',
+    this.status = 'open',
+    this.created = '',
+  });
+
+  factory OpsAlert.fromJson(Map<String, dynamic> j) => OpsAlert(
+        id: (j['id'] ?? '').toString(),
+        ruleId: (j['rule_id'] ?? j['ruleId'] ?? '').toString(),
+        severity: (j['severity'] ?? 'warning').toString(),
+        entityType: (j['entity_type'] ?? j['entityType'] ?? '').toString(),
+        entityId: (j['entity_id'] ?? j['entityId'] ?? '').toString(),
+        entityLabel: (j['entity_label'] ?? j['entityLabel'] ?? '').toString(),
+        message: (j['message'] ?? '').toString(),
+        status: (j['status'] ?? 'open').toString(),
+        created: (j['created'] ?? '').toString(),
+      );
+
+  /// Critical first, then oldest first — the web banner's `sorted` computed.
+  static int rank(OpsAlert a, OpsAlert b) {
+    final aCritical = a.severity == 'critical';
+    final bCritical = b.severity == 'critical';
+    if (aCritical != bCritical) return aCritical ? -1 : 1;
+    return a.created.compareTo(b.created);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

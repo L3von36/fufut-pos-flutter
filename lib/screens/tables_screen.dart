@@ -3,12 +3,26 @@
 /// Table cards grouped by section, colored by state. Tap an open table to
 /// seat the party; tap an occupied one to open the menu against it (the cart
 /// carries the table number into the ticket) or to see its open check.
+///
+/// **Live via SSE** — the screen subscribes to the fufut-api `tables` event
+/// channel (the web's exact wire: a `table_update` snapshot carrying the
+/// full floor). Pushes replace the grid within seconds of any seat / claim /
+/// bill request from ANY device, then one quiet GET refreshes the open
+/// checks the payload does not carry (the badges). The header shows a
+/// Live / Offline chip — the web's `tm-live-btn` — and a 15s poll runs only
+/// while the stream is disconnected, the kitchen board's safety-net gate.
+/// The server role-gates the channel (403 for the kitchen roles); this
+/// screen is only reachable for roles whose nav grant includes tables, so
+/// no refused connection ever happens.
 library;
+
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../api/api_client.dart';
+import '../api/sse/sse_channel.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
 import '../state/cart.dart';
@@ -20,22 +34,51 @@ import '../widgets/dashboard.dart';
 class TablesScreen extends StatefulWidget {
   final ValueChanged<NavKey>? onNavigate;
 
-  const TablesScreen({super.key, this.onNavigate});
+  /// The shell's active-tab notifier — the kitchen board's keep-alive
+  /// contract. An offstage floor must not pin a Worker connection.
+  final ValueNotifier<NavKey>? activeTab;
+  final NavKey? self;
+
+  const TablesScreen({super.key, this.onNavigate, this.activeTab, this.self});
 
   @override
   State<TablesScreen> createState() => _TablesScreenState();
 }
 
-class _TablesScreenState extends State<TablesScreen> {
+class _TablesScreenState extends State<TablesScreen>
+    with WidgetsBindingObserver {
   List<CafeTable> _tables = [];
   List<FufutOrder> _openOrders = [];
   bool _loading = true;
   Object? _error;
 
+  // SSE live channel — one per screen instance, web useSSE parity.
+  SseChannel? _sse;
+  StreamSubscription<SseEvent>? _sseSub;
+
+  // Same two gates as the kitchen board: app foregrounded AND this screen
+  // the shell's active tab (Offstage keep-alive).
+  bool _lifecycleUp = true;
+  bool _tabUp = true;
+
+  Timer? _poll;
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _tabUp = widget.self == null || widget.activeTab?.value == widget.self;
+    widget.activeTab?.addListener(_onTabChanged);
     _load();
+    if (_tabUp) _connectSse();
+    // Refresh fallback: only while SSE is NOT connected — when the stream
+    // is alive the server pushes every state change within seconds (the
+    // kitchen board's identical gate).
+    _poll = Timer.periodic(const Duration(seconds: 15), (_) {
+      if (!_tabUp) return;
+      final sse = _sse;
+      if (sse == null || !sse.connected.value) _load(quiet: true);
+    });
   }
 
   Future<void> _load({bool quiet = false}) async {
@@ -70,6 +113,112 @@ class _TablesScreenState extends State<TablesScreen> {
       if (o.tableNum == t.number && !o.isClosed) return o;
     }
     return null;
+  }
+
+  void _onTabChanged() {
+    if (!mounted) return;
+    final up = widget.activeTab?.value == widget.self;
+    if (up == _tabUp) return;
+    _tabUp = up;
+    _syncSse();
+    if (up) {
+      // Back on stage: the floor may have moved while we were dark.
+      _load(quiet: true);
+    }
+  }
+
+  void _syncSse() {
+    final sse = _sse;
+    if (sse == null) return;
+    if (_lifecycleUp && _tabUp) {
+      sse.resume(); // no-op when already up
+    } else {
+      sse.suspend();
+    }
+  }
+
+  void _connectSse() {
+    final app = context.read<AppState>();
+    _sseSub?.cancel();
+    _sse?.disconnect();
+    final sse = SseChannel(
+      baseUrl: app.baseUrl,
+      channel: 'tables',
+      sessionToken: app.client.sessionToken,
+    );
+    _sse = sse;
+    _sseSub = sse.stream.listen(_onSseEvent);
+    sse.connect();
+  }
+
+  void _onSseEvent(SseEvent event) {
+    if (!mounted) return;
+    if (event.event != 'table_update') return;
+
+    final data = event.tryDecodeJson();
+    final raw = data?['tables'];
+    if (raw is! List) {
+      // Payload shape unexpected — fetch instead of rendering a stale floor
+      // (the web's fallback branch).
+      _load(quiet: true);
+      return;
+    }
+
+    // Parse defensively: one malformed row must never take down the floor.
+    final fresh = <CafeTable>[];
+    for (final row in raw.whereType<Map>()) {
+      try {
+        fresh.add(CafeTable.fromJson(Map<String, dynamic>.from(row)));
+      } catch (_) {}
+    }
+
+    setState(() {
+      _tables = fresh;
+      _loading = false;
+      _error = null;
+    });
+
+    // The snapshot carries tables only — one GET refreshes the open checks
+    // the badges read (kitchen board's _refreshLines pattern).
+    _refreshOrders();
+  }
+
+  Future<void> _refreshOrders() async {
+    final app = context.read<AppState>();
+    try {
+      final orders = await app.api.orders(openOnly: true);
+      if (!mounted) return;
+      setState(() => _openOrders = orders);
+    } catch (_) {
+      // The checks feed is allowed to fail on its own: the floor still
+      // renders from the pushed tables.
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    // Web visibilitychange parity: hidden screens pause the stream so a
+    // locked tablet never pins a Worker connection it cannot read.
+    if (state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.paused) {
+      _lifecycleUp = false;
+    } else if (state == AppLifecycleState.resumed) {
+      _lifecycleUp = true;
+    } else {
+      return; // inactive/detached: transient, leave the gates as they are
+    }
+    _syncSse();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    widget.activeTab?.removeListener(_onTabChanged);
+    _poll?.cancel();
+    _sseSub?.cancel();
+    _sse?.disconnect();
+    super.dispose();
   }
 
   Future<void> _claim(CafeTable t) async {
@@ -194,6 +343,8 @@ class _TablesScreenState extends State<TablesScreen> {
             const SizedBox(width: 10),
             _legendDot(pal.goldDark, 'Cleaning'),
             const Spacer(),
+            _LiveChip(connected: _sse?.connected),
+            const SizedBox(width: 8),
             Text(
               '${_tables.where((t) => t.status == "occupied").length}/${_tables.length} seated',
               style: TextStyle(
@@ -240,6 +391,49 @@ class _TablesScreenState extends State<TablesScreen> {
       Text(label,
           style: TextStyle(fontFamily: kFontBody, fontSize: 10.5, color: pal.muted)),
     ]);
+  }
+}
+
+/// The web's `tm-live-btn`: a green-pulsing Live chip while the tables
+/// stream is up, a dim Offline chip while the 15s poll carries the floor.
+class _LiveChip extends StatelessWidget {
+  final ValueNotifier<bool>? connected;
+  const _LiveChip({required this.connected});
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = Pal.of(context);
+    final listenable = connected;
+    if (listenable == null) return _chip(pal, false);
+    return ValueListenableBuilder<bool>(
+      valueListenable: listenable,
+      builder: (context, up, _) => _chip(pal, up),
+    );
+  }
+
+  Widget _chip(Pal pal, bool up) {
+    final color = up ? pal.success : pal.muted;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: up ? 0.12 : 0.07),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Row(children: [
+        Container(
+          width: 6,
+          height: 6,
+          decoration: BoxDecoration(shape: BoxShape.circle, color: color),
+        ),
+        const SizedBox(width: 4),
+        Text(up ? 'Live' : 'Offline',
+            style: TextStyle(
+                fontFamily: kFontBody,
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+                color: color)),
+      ]),
+    );
   }
 }
 

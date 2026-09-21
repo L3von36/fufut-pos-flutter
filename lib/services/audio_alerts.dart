@@ -5,6 +5,13 @@
 /// assets (assets/audio/, synthesized to match: 440→660 ding, 330+440 chime,
 /// 660/880/1100 triple beep). Mute persists per device, like the web's
 /// localStorage flags.
+///
+/// **Two independent mute flags**, mirroring the web's split: [play] is the
+/// kitchen board's path (gated by [muted], the web's `kitchen-audio-muted`)
+/// and [playOps] is the alerts banner's path (gated by [opsMuted], the
+/// web's `ops-alerts-muted`). Muting the kitchen must not silence the
+/// banner's "your table's food is up" ping and vice versa — they live on
+/// different screens in different rooms.
 library;
 
 import 'package:audioplayers/audioplayers.dart';
@@ -17,11 +24,16 @@ class AudioAlerts {
   static final AudioAlerts instance = AudioAlerts._();
 
   static const _muteKey = 'fufut.pos.kitchenAudioMuted';
+  static const _opsMuteKey = 'fufut.pos.opsAlertsMuted';
   final Map<AlertSound, AudioPlayer> _players = {};
   bool _muted = false;
+  bool _opsMuted = false;
   bool _loaded = false;
 
   bool get muted => _muted;
+
+  /// The alerts banner's own flag — independent of [muted].
+  bool get opsMuted => _opsMuted;
 
   Future<void> load() async {
     if (_loaded) return;
@@ -29,8 +41,10 @@ class AudioAlerts {
     try {
       final prefs = await SharedPreferences.getInstance();
       _muted = prefs.getBool(_muteKey) ?? false;
+      _opsMuted = prefs.getBool(_opsMuteKey) ?? false;
     } catch (_) {
       _muted = false;
+      _opsMuted = false;
     }
   }
 
@@ -42,8 +56,27 @@ class AudioAlerts {
     } catch (_) {}
   }
 
+  Future<void> setOpsMuted(bool m) async {
+    _opsMuted = m;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_opsMuteKey, m);
+    } catch (_) {}
+  }
+
+  /// The alerts banner's path — gated by [opsMuted] only, the web's
+  /// `playCriticalAlert` / `playOrderReady` checks verbatim.
+  Future<void> playOps(AlertSound sound) async {
+    if (_opsMuted) return;
+    await _play(sound);
+  }
+
   Future<void> play(AlertSound sound) async {
     if (_muted) return;
+    await _play(sound);
+  }
+
+  Future<void> _play(AlertSound sound) async {
     try {
       final player =
           _players.putIfAbsent(sound, () => AudioPlayer(playerId: 'alert-${sound.name}'));
