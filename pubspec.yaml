@@ -1,7 +1,7 @@
 name: fufut_pos
 description: "Fufut Coffee POS — Android & desktop point of sale for the Fufut floor."
 publish_to: "none"
-version: 1.0.5+6
+version: 1.0.6+7
 
 environment:
   sdk: ">=3.5.0 <4.0.0"
@@ -19,6 +19,29 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^5.0.0
+  flutter_launcher_icons: ^0.14.3
+
+# Launcher icons cut from the same brand asset the PWA install screen uses
+# (fufut-management/pos/public/pwa-icon-*.png): the teal FU FUT COFFEE seal.
+# The maskable PNG already carries the safe-zone padding, so it drops
+# straight in as the adaptive foreground over the brand teal.
+flutter_launcher_icons:
+  android: "ic_launcher"
+  image_path: "assets/icon/app_icon.png"
+  adaptive_icon_background: "#0F7B78"
+  adaptive_icon_foreground: "assets/icon/app_icon_maskable.png"
+  web:
+    generate: true
+    image_path: "assets/icon/app_icon.png"
+    background_color: "#0F7B78"
+    theme_color: "#0F7B78"
+  windows:
+    generate: true
+    image_path: "assets/icon/app_icon.png"
+    icon_size: 256
+  macos:
+    generate: true
+    image_path: "assets/icon/app_icon.png"
 
 flutter:
   uses-material-design: true

@@ -4,6 +4,8 @@ import 'package:provider/provider.dart';
 import '../api/api_client.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
+import '../state/order_scope.dart';
+import '../state/roles.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 import 'checkout_sheet.dart' show PaymentSheet;
@@ -73,10 +75,28 @@ class _OrdersScreenState extends State<OrdersScreen> {
       _error = null;
     });
     try {
-      final rows = await app.api.orders(openOnly: _openOnly);
+      // Role scoping runs before the status/search filters, exactly like the
+      // web OrdersView: a barista filtering "new" must not conjure the
+      // kitchen's tickets back into their list. The head-waiter's ctx comes
+      // from /api/tables — the server already narrows it to the tables
+      // assigned to them, so that set IS "my section".
+      final needsTables = app.roleKey == 'head-waiter';
+      final results = await Future.wait([
+        app.api.orders(openOnly: _openOnly),
+        if (needsTables) app.api.tables(),
+      ]);
+      final rows = results[0] as List<FufutOrder>;
+      final tables = needsTables
+          ? results[1] as List<CafeTable>
+          : const <CafeTable>[];
       if (!mounted) return;
+      final myTables = {for (final t in tables) t.number.toString()};
+      final scoped = rows
+          .where((o) => orderVisibleToRole(o, app.roleKey,
+              myId: app.user?.id, myTables: myTables))
+          .toList();
       setState(() {
-        _orders = rows;
+        _orders = scoped;
         _loading = false;
       });
     } on ApiError catch (e) {
@@ -131,6 +151,7 @@ class _OrdersScreenState extends State<OrdersScreen> {
   @override
   Widget build(BuildContext context) {
     final pal = Pal.of(context);
+    final roleKey = context.watch<AppState>().roleKey;
     final rows = _filtered;
     return Scaffold(
       backgroundColor: pal.bg,
@@ -241,11 +262,11 @@ class _OrdersScreenState extends State<OrdersScreen> {
                 : _error != null
                     ? _ErrorPane(message: _error!, onRetry: _load)
                     : rows.isEmpty
-                        ? const EmptyState(
+                        ? EmptyState(
                             icon: Icons.receipt_long,
                             title: 'No orders yet',
-                            hint:
-                                'New tickets appear here as the floor fires them.')
+                            hint: emptyOrdersHint(roleKey),
+                          )
                         : RefreshIndicator(
                             onRefresh: _load,
                             child: ListView.separated(
@@ -940,17 +961,35 @@ class _OrderDetailSheet extends StatelessWidget {
   final FufutOrder order;
   const _OrderDetailSheet({required this.order});
 
-  /// The kitchen/complete pipeline, matching the web's row actions.
-  static const _nextStatus = {
+  /// The kitchen pipeline's prep stages — the web's row actions, and the
+  /// web's gate with them: OrdersView shows "Start Prep" (new → preparing)
+  /// and "Ready" (preparing → ready) only to the two chef roles. This map
+  /// only feeds those two stages; "Complete" below is everyone's.
+  static const _prepNext = {
     'new': 'preparing',
     'preparing': 'ready',
-    'ready': 'fulfilled',
   };
 
   @override
   Widget build(BuildContext context) {
     final pal = Pal.of(context);
-    final next = _nextStatus[order.status.toLowerCase()];
+    final app = context.watch<AppState>();
+    final status = order.status.toLowerCase();
+    // Chef work sits behind the chef grant — the waiter reads the ticket,
+    // the kitchen moves it.
+    final prep = canAdvancePrep(app.roleKey)
+        ? _prepNext[status]
+        : null;
+    // "Complete" (ready → fulfilled) is deliberately ungated on the web:
+    // handing the guest their food is the floor's moment too.
+    final complete = status == 'ready' ? 'fulfilled' : null;
+    // Money moves only with the checkout grant (manager, cashier) — the
+    // floor never sees a settle button, same as OpenChecksView's Settle.
+    final maySettle = canCheckout(app.roleKey) && !order.isPaid;
+    // Station roles read only their own lines — barista the drinks, chefs
+    // the food; null shows the ticket unchanged.
+    final scoped = orderLinesForRole(order, app.roleKey);
+    final visibleLines = scoped ?? order.items;
     return SafeArea(
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
@@ -990,8 +1029,8 @@ class _OrderDetailSheet extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    if (order.items.isNotEmpty)
-                      for (final l in order.items)
+                    if (visibleLines.isNotEmpty)
+                      for (final l in visibleLines)
                         Padding(
                           padding: const EdgeInsets.symmetric(vertical: 4),
                           child: Row(
@@ -1037,6 +1076,19 @@ class _OrderDetailSheet extends StatelessWidget {
                               fontFamily: kFontBody,
                               fontSize: 11.5,
                               color: pal.body)),
+                    if (scoped != null) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        app.roleKey == 'barista'
+                            ? 'Drink lines only — food routes to the kitchen.'
+                            : 'Food lines only — drinks route to the bar.',
+                        style: TextStyle(
+                            fontFamily: kFontBody,
+                            fontSize: 10.5,
+                            fontStyle: FontStyle.italic,
+                            color: pal.faint),
+                      ),
+                    ],
                     if ((order.notes ?? '').isNotEmpty) ...[
                       const SizedBox(height: 10),
                       Container(
@@ -1086,18 +1138,37 @@ class _OrderDetailSheet extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 18),
-            if (!order.isPaid)
+            if (maySettle)
               FilledButton.icon(
                 onPressed: () => _settle(context),
                 icon: const Icon(Icons.payments_outlined, size: 19),
                 label: const Text('Settle — take payment'),
               ),
-            if (next != null) ...[
+            if (prep != null) ...[
               const SizedBox(height: 9),
               OutlinedButton.icon(
-                onPressed: () => _advance(context, next),
+                onPressed: () => _advance(context, prep),
                 icon: const Icon(Icons.arrow_forward_rounded, size: 18),
-                label: Text('Mark ${_title(next)}'),
+                label: Text('Mark ${_title(prep)}'),
+              ),
+            ],
+            if (complete != null) ...[
+              const SizedBox(height: 9),
+              OutlinedButton.icon(
+                onPressed: () => _advance(context, complete),
+                icon: const Icon(Icons.task_alt_rounded, size: 18),
+                label: Text('Mark ${_title(complete)}'),
+              ),
+            ],
+            if (!maySettle && prep == null && complete == null) ...[
+              const SizedBox(height: 14),
+              Text(
+                order.isPaid
+                    ? 'This check is settled.'
+                    : 'No actions for your role on this stage.',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                    fontFamily: kFontBody, fontSize: 11.5, color: pal.faint),
               ),
             ],
           ],

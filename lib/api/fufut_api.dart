@@ -15,6 +15,17 @@ library;
 import 'api_client.dart';
 import '../models/models.dart';
 
+/// Who the server says is signed in, plus the change-password flag — a
+/// manager-issued password has to be replaced before the server honors
+/// anything else, and the router treats that flag exactly like the web guard
+/// treats it (guard.js: "An account carrying a manager-issued password can go
+/// exactly one place").
+class SessionUser {
+  final StaffUser user;
+  final bool mustChangePassword;
+  const SessionUser(this.user, {this.mustChangePassword = false});
+}
+
 class FufutApi {
   final ApiClient client;
 
@@ -22,9 +33,10 @@ class FufutApi {
 
   // ── Auth ──────────────────────────────────────────────────────────────────
 
-  /// Login with a staff id or email. Returns the staff user; the session
-  /// cookie is captured inside [client].
-  Future<StaffUser> login(String account, String password) async {
+  /// Login with a staff id or email. Returns the staff user plus the
+  /// must-change-password flag; the session cookie is captured inside
+  /// [client].
+  Future<SessionUser> login(String account, String password) async {
     final body = account.contains('@')
         ? <String, dynamic>{'email': account.trim(), 'password': password}
         : <String, dynamic>{'staffId': account.trim(), 'password': password};
@@ -36,17 +48,20 @@ class FufutApi {
     }
     final user = StaffUser.fromJson(
         Map<String, dynamic>.from(res['user'] as Map));
-    return user;
+    return SessionUser(user,
+        mustChangePassword: res['mustChangePassword'] == true);
   }
 
   /// Session check. Returns the signed-in user or null (also null when the
   /// server is unreachable — the caller decides whether that is fatal).
-  Future<StaffUser?> me() async {
+  Future<SessionUser?> me() async {
     try {
       final res = await client.get('auth/me');
       if (res is Map && res['ok'] == true && res['user'] is Map) {
-        return StaffUser.fromJson(
-            Map<String, dynamic>.from(res['user'] as Map));
+        return SessionUser(
+          StaffUser.fromJson(Map<String, dynamic>.from(res['user'] as Map)),
+          mustChangePassword: res['mustChangePassword'] == true,
+        );
       }
       return null;
     } on ApiError catch (e) {

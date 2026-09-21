@@ -26,7 +26,15 @@ class ApiError implements Exception {
 
   ApiError(this.message, [this.status]);
 
-  bool get isAuthError => status == 401 || status == 403;
+  /// 401 only. A 403 is the server saying *this role may not do that* — the
+  /// session is fine and the person stays signed in (it used to log them out,
+  /// which turned every permission boundary into a sign-out loop). Handle
+  /// refusals with [isForbidden] instead: show the server's message and move
+  /// on.
+  bool get isAuthError => status == 401;
+
+  /// 403 — the role grant does not cover this action.
+  bool get isForbidden => status == 403;
 
   @override
   String toString() => message;

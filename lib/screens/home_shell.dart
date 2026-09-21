@@ -74,6 +74,18 @@ class _HomeShellState extends State<HomeShell> {
     _tab = defaultViewFor(app.roleKey);
   }
 
+  /// Permission guard for the *current* tab, not just new selections. A
+  /// mid-shift role edit (or a stale identity the server just corrected) can
+  /// leave the shell pointing at a screen the grant no longer covers — the
+  /// same bounce the web guard performs on every navigation.
+  void _guardTab(AppState app) {
+    if (_nav.any((e) => e.key == _tab)) return;
+    _tab = defaultViewFor(app.roleKey);
+    if (!_nav.any((e) => e.key == _tab)) {
+      _tab = _nav.isNotEmpty ? _nav.first.key : NavKey.settings;
+    }
+  }
+
   void _select(NavKey t) {
     // If the drawer is open (this is a drawer tap), close it first — even
     // when the destination does not change.
@@ -125,6 +137,7 @@ class _HomeShellState extends State<HomeShell> {
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
     _syncRole(app);
+    _guardTab(app);
 
     final width = MediaQuery.sizeOf(context).width;
     final wide = width >= 900;
@@ -149,7 +162,7 @@ class _HomeShellState extends State<HomeShell> {
                 _Sidebar(selected: _tab, nav: _nav, onSelect: _select),
                 Expanded(
                   child: SafeArea(
-                    top: false,
+                    top: true,
                     bottom: false,
                     child: Column(
                       children: [
@@ -169,15 +182,22 @@ class _HomeShellState extends State<HomeShell> {
             onDrawerChanged: (open) {
               if (open) HapticFeedback.selectionClick();
             },
-            body: Column(
-              children: [
-                _TopBar(
-                  title: titleFor(_tab),
-                  showMenuButton: true,
-                  onMenu: () => _scaffoldKey.currentState?.openDrawer(),
-                ),
-                Expanded(child: body),
-              ],
+            body: SafeArea(
+              // Top only: the bottom nav bar sits in the Scaffold's own
+              // inset handling, and double-padding it would strand the
+              // gesture bar area in page background.
+              top: true,
+              bottom: false,
+              child: Column(
+                children: [
+                  _TopBar(
+                    title: titleFor(_tab),
+                    showMenuButton: true,
+                    onMenu: () => _scaffoldKey.currentState?.openDrawer(),
+                  ),
+                  Expanded(child: body),
+                ],
+              ),
             ),
             bottomNavigationBar: _BottomNav(
               nav: _nav,

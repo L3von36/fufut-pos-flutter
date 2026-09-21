@@ -6,6 +6,7 @@ import '../api/api_client.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
 import '../state/cart.dart';
+import '../state/roles.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 import 'checkout_sheet.dart';
@@ -148,8 +149,15 @@ class _CartPanelState extends State<CartPanel> {
   @override
   Widget build(BuildContext context) {
     final cart = context.watch<CartState>();
+    final app = context.watch<AppState>();
     final pal = Pal.of(context);
     final dineIn = cart.orderType == 'dine-in';
+    // The checkout grant — manager and cashier, deliberately nobody else.
+    // The web's own words (pos/src/api/index.js): "Letting the floor see a
+    // Checkout button invited them to settle bills, which contradicted the
+    // design." So the floor's cart only ever fires the kitchen; the till
+    // settles when the guest is done.
+    final mayCheckout = canCheckout(app.roleKey);
 
     return Padding(
       padding: EdgeInsets.fromLTRB(14, widget.docked ? 12 : 0, 14, 12),
@@ -293,30 +301,44 @@ class _CartPanelState extends State<CartPanel> {
               ),
             ),
             const SizedBox(height: 10),
-            // Dine-in: kitchen first, then checkout. Takeaway/delivery:
-            // payment first — the web's settle-first flip.
+            // Dine-in: kitchen first, then checkout (checkout roles only).
+            // Takeaway/delivery without the grant: kitchen only — the tab
+            // lands unpaid and the cashier takes the money.
             FilledButton.icon(
-              onPressed: _sending ? null : (dineIn ? _sendToKitchen : _openReview),
+              onPressed: _sending
+                  ? null
+                  : (dineIn || !mayCheckout ? _sendToKitchen : _openReview),
               style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(44)),
-              icon: Icon(dineIn ? Icons.local_fire_department_rounded : Icons.payments_outlined,
+              icon: Icon(
+                  dineIn || !mayCheckout
+                      ? Icons.local_fire_department_rounded
+                      : Icons.payments_outlined,
                   size: 17),
-              label: Text(dineIn
+              label: Text(dineIn || !mayCheckout
                   ? 'Send to Kitchen'
                   : 'Take Payment — ${money(cart.grandTotal())}'),
             ),
-            const SizedBox(height: 7),
-            OutlinedButton.icon(
-              onPressed: _sending ? null : (dineIn ? _openReview : _sendToKitchen),
-              style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(44)),
-              icon: Icon(dineIn ? Icons.payments_outlined : Icons.local_fire_department_rounded,
-                  size: 16),
-              label: Text(dineIn ? 'Checkout' : 'Send to Kitchen'),
-            ),
+            if (mayCheckout) ...[
+              const SizedBox(height: 7),
+              OutlinedButton.icon(
+                onPressed:
+                    _sending ? null : (dineIn ? _openReview : _sendToKitchen),
+                style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(44)),
+                icon: Icon(
+                    dineIn
+                        ? Icons.payments_outlined
+                        : Icons.local_fire_department_rounded,
+                    size: 16),
+                label: Text(dineIn ? 'Checkout' : 'Send to Kitchen'),
+              ),
+            ],
             const SizedBox(height: 6),
             Text(
-              dineIn
-                  ? 'Send to Kitchen opens a tab for this table — settle it when they leave.'
-                  : 'Take Payment settles the bill immediately; the kitchen copy fires with it.',
+              !mayCheckout
+                  ? 'The order goes to the kitchen as an open tab — the cashier settles the bill.'
+                  : dineIn
+                      ? 'Send to Kitchen opens a tab for this table — settle it when they leave.'
+                      : 'Take Payment settles the bill immediately; the kitchen copy fires with it.',
               textAlign: TextAlign.center,
               style: TextStyle(fontFamily: kFontBody, fontSize: 10, color: pal.muted),
             ),

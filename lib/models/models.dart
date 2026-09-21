@@ -227,6 +227,7 @@ class FufutOrder {
   final String? created; // "2026-08-06 01:55:46" style local stamp
   final String? updatedAt;
   final String? createdByName;
+  final String? createdById; // the web's created_by — order scoping reads it
   final List<OrderItemLine> items; // parsed structured lines when present
   final String itemsRaw; // the legacy flat summary string
 
@@ -248,6 +249,7 @@ class FufutOrder {
     this.created,
     this.updatedAt,
     this.createdByName,
+    this.createdById,
     this.items = const [],
     this.itemsRaw = '',
   });
@@ -314,6 +316,7 @@ class FufutOrder {
       created: j['created'] as String?,
       updatedAt: j['updated_at'] as String?,
       createdByName: j['created_by_name'] as String?,
+      createdById: (j['created_by'] ?? j['created_by_id'])?.toString(),
       items: lines,
       itemsRaw: itemsRaw,
     );

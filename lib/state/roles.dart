@@ -194,6 +194,35 @@ const List<NavKey> kFallbackPermissions = [
   NavKey.openChecks,
 ];
 
+// ── Action grants ────────────────────────────────────────────────────────────
+// Navigation is half the matrix; the other half is who may press which button
+// inside a shared screen. These mirror the web POS exactly:
+//
+//  * `checkout` — the settlement grant. "deliberately NOT in the head-waiter's
+//    list" (pos/src/api/index.js): the floor takes orders and asks for the
+//    bill, the till takes the money. OpenChecksView's Settle, TablesView's
+//    checkout button and OrdersView's New Order all ride this gate.
+//  * prep advancing — OrdersView shows "Start Prep" / "Ready" only to the
+//    two chef roles (`auth.roleKey==='head-chef' || 'assistant-chef'`).
+//    Everyone else — the waiter included — sees tickets move; they do not
+//    move them. "Complete" (ready → fulfilled) is deliberately ungated on the
+//    web: handing the guest their food is the floor's moment too.
+//  * manager rides along everywhere by grant, except prep on the Orders
+//    screen (the web keeps that chef-only; the manager's kitchen board is the
+//    place to push tickets from).
+
+const Set<String> kCheckoutRoles = {'manager', 'cashier'};
+const Set<String> kPrepRoles = {'head-chef', 'assistant-chef'};
+
+/// May this role settle bills / open the payment sheet? (the web `checkout`
+/// grant — manager and cashier only).
+bool canCheckout(String? roleKey) =>
+    kCheckoutRoles.contains(roleKey ?? '');
+
+/// May this role advance kitchen stages from the Orders screen? (Start Prep /
+/// Mark Ready — chef work, chef roles only.)
+bool canAdvancePrep(String? roleKey) => kPrepRoles.contains(roleKey ?? '');
+
 /// "head-chef" → "Head Chef" for display.
 String roleTitle(String role) {
   if (role.isEmpty) return '';

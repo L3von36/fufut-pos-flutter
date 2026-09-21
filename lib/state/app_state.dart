@@ -18,9 +18,13 @@ import '../api/api_client.dart';
 import '../api/fufut_api.dart';
 import '../models/models.dart';
 
-/// The production API. A Pages proxy keeps browser cookies first-party; a
-/// native app has no such constraint and talks to the Worker directly.
-const String kDefaultBaseUrl = 'https://fufut-api.fufutcoffee.workers.dev';
+/// The production API. A Pages proxy keeps browser cookies first-party, so
+/// the web build talks to its own origin (relative `/api/...` — the same
+/// arrangement the web POS ships with); a native app has no such constraint
+/// and talks to the Worker directly.
+const String kDefaultBaseUrl = kIsWeb
+    ? ''
+    : 'https://fufut-api.fufutcoffee.workers.dev';
 
 class AppState extends ChangeNotifier {
   late ApiClient client;
@@ -86,8 +90,9 @@ class AppState extends ChangeNotifier {
     try {
       final fresh = await api.me();
       if (fresh != null) {
-        user = fresh;
-        roleKey = _normalizeRole(fresh.role);
+        user = fresh.user;
+        roleKey = _normalizeRole(fresh.user.role);
+        mustChangePassword = fresh.mustChangePassword;
         offlineIdentity = false;
         _rememberIdentity();
       } else {
@@ -112,8 +117,9 @@ class AppState extends ChangeNotifier {
 
   Future<void> login(String account, String password) async {
     final res = await api.login(account, password);
-    user = res;
-    roleKey = _normalizeRole(res.role);
+    user = res.user;
+    roleKey = _normalizeRole(res.user.role);
+    mustChangePassword = res.mustChangePassword;
     offlineIdentity = false;
     // The login POST's Set-Cookie carries the session; the client captured it.
     // On Flutter web the browser keeps the cookie itself (same-origin proxy
@@ -145,10 +151,21 @@ class AppState extends ChangeNotifier {
   Future<void> _clearSession() async {
     user = null;
     roleKey = null;
+    mustChangePassword = false;
     offlineIdentity = false;
     client.sessionToken = null;
     await _prefs?.remove(_kSession);
     await _prefs?.remove(_kIdentity);
+  }
+
+  /// Replace a manager-issued password. The server flips the flag off with
+  /// the same call; mirror it locally so the router releases the account into
+  /// the shell — the web clears mustChangePassword on the identical success
+  /// path (auth.js changePassword).
+  Future<void> changePassword(String current, String next) async {
+    await api.changePassword(current, next);
+    mustChangePassword = false;
+    notifyListeners();
   }
 
   void _rememberIdentity() {

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import 'screens/change_password_screen.dart';
 import 'screens/home_shell.dart';
 import 'screens/login_screen.dart';
 import 'state/app_state.dart';
@@ -80,9 +81,14 @@ class _RootGateState extends State<RootGate> {
     final app = context.watch<AppState>();
     if (!app.booted) {
       return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
+        body: SafeArea(child: Center(child: CircularProgressIndicator())),
       );
     }
-    return app.isLoggedIn ? const HomeShell() : const LoginScreen();
+    if (!app.isLoggedIn) return const LoginScreen();
+    // An account carrying a manager-issued password can go exactly one
+    // place — the server refuses every other endpoint, so the shell would
+    // only fill the screen with refusals. Same rule as the web guard.
+    if (app.mustChangePassword) return const ChangePasswordScreen();
+    return const HomeShell();
   }
 }
