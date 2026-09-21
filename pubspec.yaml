@@ -1,7 +1,7 @@
 name: fufut_pos
 description: "Fufut Coffee POS — Android & desktop point of sale for the Fufut floor."
 publish_to: "none"
-version: 1.0.2+3
+version: 1.0.5+6
 
 environment:
   sdk: ">=3.5.0 <4.0.0"
@@ -13,6 +13,7 @@ dependencies:
   provider: ^6.1.2
   shared_preferences: ^2.3.3
   intl: ^0.20.1
+  audioplayers: ^6.1.0
 
 dev_dependencies:
   flutter_test:
@@ -24,6 +25,7 @@ flutter:
 
   assets:
     - assets/images/
+    - assets/audio/
 
   fonts:
     - family: Inter

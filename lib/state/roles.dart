@@ -28,6 +28,9 @@ enum NavKey {
   delivery,
   waste,
   reports,
+  timeclock,
+  myPay,
+  myActivity,
   settings,
 }
 
@@ -68,6 +71,14 @@ const List<NavEntry> kAllNavEntries = [
       'Reports', section: 'Finance'),
   NavEntry(NavKey.waste, Icons.delete_outline, Icons.delete, 'Waste Log',
       section: 'Stock'),
+  // HR — self-service, every role carries the web grants timeclock / my-pay /
+  // my-activity, so the trio rides at the end of every list.
+  NavEntry(NavKey.timeclock, Icons.schedule_outlined, Icons.schedule,
+      'Time Clock', section: 'HR'),
+  NavEntry(NavKey.myPay, Icons.request_quote_outlined, Icons.request_quote,
+      'My Payslips', section: 'HR'),
+  NavEntry(NavKey.myActivity, Icons.insights_outlined, Icons.insights,
+      'My Activity', section: 'HR'),
   NavEntry(NavKey.settings, Icons.settings_outlined, Icons.settings,
       'Settings', section: 'System'),
 ];
@@ -153,6 +164,15 @@ const Map<String, List<NavKey>> kRolePermissions = {
   ],
 };
 
+/// The web grants `timeclock`, `my-pay` and `my-activity` to every role —
+/// the self-service trio. Appended after each role's own screens so the
+/// bottom bar (first three entries) stays untouched.
+const List<NavKey> kHrNavKeys = [
+  NavKey.timeclock,
+  NavKey.myPay,
+  NavKey.myActivity,
+];
+
 /// The screen a role lands on at sign-in — the web ROLE_DEFAULT_VIEW.
 const Map<String, NavKey> kRoleDefaultView = {
   'manager': NavKey.dashboard,
@@ -188,7 +208,7 @@ String roleTitle(String role) {
 List<NavEntry> navForRole(String? roleKey) {
   final keys =
       kRolePermissions[roleKey] ?? kFallbackPermissions;
-  return [...keys.map(_entry), _entry(NavKey.settings)];
+  return [...keys.map(_entry), ...kHrNavKeys.map(_entry), _entry(NavKey.settings)];
 }
 
 /// The first screen for [roleKey]. Unknown roles start on the till.
@@ -220,6 +240,12 @@ String titleFor(NavKey key) {
       return 'Waste Log';
     case NavKey.reports:
       return 'Reports';
+    case NavKey.timeclock:
+      return 'Time Clock';
+    case NavKey.myPay:
+      return 'My Payslips';
+    case NavKey.myActivity:
+      return 'My Activity';
     case NavKey.settings:
       return 'Settings';
   }

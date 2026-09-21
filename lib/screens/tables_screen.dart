@@ -101,11 +101,24 @@ class _TablesScreenState extends State<TablesScreen> {
       return;
     }
     final check = _checkFor(t);
+    // Bill-request write is head-waiter + manager, exactly the web's
+    // canRequestBill = ['head-waiter','manager'].
+    final app = context.read<AppState>();
+    final canRequestBill = app.roleKey == 'head-waiter' || app.roleKey == 'manager';
     showModalBottomSheet(
       context: context,
       builder: (ctx) => _TableSheet(
         table: t,
         check: check,
+        canRequestBill: canRequestBill,
+        onRequestBill: () {
+          Navigator.pop(ctx);
+          _requestBill(t);
+        },
+        onCancelBillRequest: () {
+          Navigator.pop(ctx);
+          _cancelBillRequest(t);
+        },
         onAddRound: () {
           Navigator.pop(ctx);
           _openMenuFor(t);
@@ -118,6 +131,32 @@ class _TablesScreenState extends State<TablesScreen> {
               },
       ),
     );
+  }
+
+  /// `POST /api/tables/:id/request-bill` — the party wants the bill; it
+  /// rides to the cashier's dashboard Bill Requests card.
+  Future<void> _requestBill(CafeTable t) async {
+    final app = context.read<AppState>();
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await app.api.requestBill(t.id);
+      showInfoOn(messenger, 'Bill requested for table ${t.number}');
+      await _load(quiet: true);
+    } catch (e) {
+      showErrorOn(messenger, e);
+    }
+  }
+
+  Future<void> _cancelBillRequest(CafeTable t) async {
+    final app = context.read<AppState>();
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await app.api.cancelBillRequest(t.id);
+      showInfoOn(messenger, 'Bill request withdrawn');
+      await _load(quiet: true);
+    } catch (e) {
+      showErrorOn(messenger, e);
+    }
   }
 
   @override
@@ -256,11 +295,27 @@ class _TableCard extends StatelessWidget {
                           fontFamily: kFontMono, fontSize: 10, color: pal.faint)),
               ]),
               const SizedBox(height: 2),
-              Text(
-                status == 'occupied' ? 'Seated' : status,
-                style: TextStyle(
-                    fontFamily: kFontBody, fontSize: 10, color: color),
-              ),
+              Row(children: [
+                Expanded(
+                  child: Text(
+                    status == 'occupied' ? 'Seated' : status,
+                    style: TextStyle(
+                        fontFamily: kFontBody, fontSize: 10, color: color),
+                  ),
+                ),
+                if (table.billRequested) ...[
+                  Icon(Icons.notifications_active,
+                      size: 11, color: pal.danger),
+                  const SizedBox(width: 3),
+                  Text('BILL',
+                      style: TextStyle(
+                          fontFamily: kFontBody,
+                          fontSize: 8.5,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 0.6,
+                          color: pal.danger)),
+                ],
+              ]),
             ],
           ),
         ),
@@ -272,13 +327,19 @@ class _TableCard extends StatelessWidget {
 class _TableSheet extends StatelessWidget {
   final CafeTable table;
   final FufutOrder? check;
+  final bool canRequestBill;
   final VoidCallback onAddRound;
+  final VoidCallback? onRequestBill;
+  final VoidCallback? onCancelBillRequest;
   final VoidCallback? onViewCheck;
 
   const _TableSheet({
     required this.table,
     required this.check,
     required this.onAddRound,
+    this.canRequestBill = false,
+    this.onRequestBill,
+    this.onCancelBillRequest,
     this.onViewCheck,
   });
 
@@ -325,6 +386,38 @@ class _TableSheet extends StatelessWidget {
                   onPressed: onViewCheck,
                   icon: const Icon(Icons.credit_card, size: 16),
                   label: const Text('Open check'),
+                ),
+              ),
+            ],
+            // Bill request — the web's "Ask for the Bill" flow. Occupied
+            // tables only, head-waiter / manager only.
+            if (canRequestBill && !table.billRequested) ...[
+              const SizedBox(height: 8),
+              SizedBox(
+                height: 36,
+                child: OutlinedButton.icon(
+                  onPressed: onRequestBill,
+                  style: OutlinedButton.styleFrom(
+                      side: BorderSide(color: pal.warning)),
+                  icon: const Icon(Icons.notifications_active_outlined,
+                      size: 16),
+                  label: Text('Ask for the Bill',
+                      style: TextStyle(color: pal.warning)),
+                ),
+              ),
+            ],
+            if (canRequestBill && table.billRequested) ...[
+              const SizedBox(height: 8),
+              SizedBox(
+                height: 36,
+                child: OutlinedButton.icon(
+                  onPressed: onCancelBillRequest,
+                  style: OutlinedButton.styleFrom(
+                      side: BorderSide(color: pal.danger)),
+                  icon: const Icon(Icons.notifications_off_outlined,
+                      size: 16),
+                  label: Text('Cancel Bill Request',
+                      style: TextStyle(color: pal.danger)),
                 ),
               ),
             ],

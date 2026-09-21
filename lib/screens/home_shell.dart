@@ -12,12 +12,15 @@ import '../widgets/common.dart';
 import 'cashdrawer_screen.dart';
 import 'delivery_screen.dart';
 import 'kitchen_board.dart';
-import 'manager_dashboard.dart';
+import 'my_activity_screen.dart';
+import 'my_payslips_screen.dart';
 import 'orders_screen.dart';
 import 'register_screen.dart';
 import 'reports_screen.dart';
+import 'role_dashboard.dart';
 import 'settings_screen.dart';
 import 'tables_screen.dart';
+import 'timeclock_screen.dart';
 import 'waste_screen.dart';
 
 /// App chrome — the web POS `AppLayout.vue`, re-thought as a native app.
@@ -85,7 +88,7 @@ class _HomeShellState extends State<HomeShell> {
     return _built.putIfAbsent(key, () {
       switch (key) {
         case NavKey.dashboard:
-          return ManagerDashboard(onNavigate: _select);
+          return RoleDashboard(onNavigate: _select);
         case NavKey.kitchen:
           return const KitchenBoard();
         case NavKey.barista:
@@ -106,6 +109,12 @@ class _HomeShellState extends State<HomeShell> {
           return const WasteScreen();
         case NavKey.reports:
           return const ReportsScreen();
+        case NavKey.timeclock:
+          return const TimeClockScreen();
+        case NavKey.myPay:
+          return const MyPayslipsScreen();
+        case NavKey.myActivity:
+          return const MyActivityScreen();
         case NavKey.settings:
           return const SettingsScreen();
       }

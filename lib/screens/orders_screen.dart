@@ -258,6 +258,11 @@ class _OrdersScreenState extends State<OrdersScreen> {
                               itemBuilder: (context, i) => _OrderTile(
                                 order: rows[i],
                                 accent: _accentFor(context, rows[i].status),
+                                showCheckActions:
+                                    _openOnly && _isActionable(rows[i]),
+                                onSplit: () => _splitFlow(rows[i]),
+                                onMove: () => _moveFlow(rows[i]),
+                                onMerge: () => _mergeFlow(rows[i]),
                               ),
                             ),
                           ),
@@ -270,6 +275,120 @@ class _OrdersScreenState extends State<OrdersScreen> {
   static String _cap(String s) => s.isEmpty
       ? s
       : '${s[0].toUpperCase()}${s.substring(1).toLowerCase()}';
+
+  /// Split / Move / Merge ride open, unpaid checks only — a settled or
+  /// cancelled ticket is money already counted.
+  bool _isActionable(FufutOrder o) =>
+      !o.isClosed && !o.isPaid && o.status.toLowerCase() != 'cancelled';
+
+  // ── Check operations — the web OpenChecksView's Split | Move | Merge ────
+
+  Future<void> _splitFlow(FufutOrder order) async {
+    final seats = await showModalBottomSheet<int>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Pal.of(context).surface,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (_) => _SplitSheet(order: order),
+    );
+    if (seats == null || !mounted) return;
+    final app = context.read<AppState>();
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final legs = await app.api.splitCheck(order.id, seats);
+      showInfoOn(messenger, 'Check split into $legs — reload to see the legs');
+      await _load();
+    } on ApiError catch (e) {
+      if (e.isAuthError && mounted) {
+        await app.sessionExpired();
+        return;
+      }
+      showErrorOn(messenger, e);
+    } catch (e) {
+      showErrorOn(messenger, e);
+    }
+  }
+
+  Future<void> _moveFlow(FufutOrder order) async {
+    final app = context.read<AppState>();
+    List<CafeTable> tables = const [];
+    try {
+      tables = await app.api.tables();
+    } catch (_) {
+      // The sheet still renders with an inline error.
+    }
+    if (!mounted) return;
+    final target = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Pal.of(context).surface,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      constraints: BoxConstraints(
+          maxWidth: 680,
+          maxHeight: MediaQuery.sizeOf(context).height * 0.85),
+      builder: (_) => _MoveTableSheet(
+          order: order, tables: tables),
+    );
+    if (target == null || !mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await app.api.transferCheck(order.id, target);
+      showInfoOn(messenger, 'Check moved to Table $target');
+      await _load();
+    } on ApiError catch (e) {
+      if (e.isAuthError && mounted) {
+        await app.sessionExpired();
+        return;
+      }
+      showErrorOn(messenger, e);
+    } catch (e) {
+      showErrorOn(messenger, e);
+    }
+  }
+
+  Future<void> _mergeFlow(FufutOrder order) async {
+    final others = _orders
+        .where((o) =>
+            o.id != order.id &&
+            !o.isClosed &&
+            !o.isPaid &&
+            o.status.toLowerCase() != 'cancelled')
+        .toList();
+    if (others.isEmpty) {
+      showInfo(context, 'No other open checks to merge with');
+      return;
+    }
+    final target = await showModalBottomSheet<FufutOrder>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Pal.of(context).surface,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      constraints: BoxConstraints(
+          maxWidth: 680,
+          maxHeight: MediaQuery.sizeOf(context).height * 0.85),
+      builder: (_) => _MergeSheet(source: order, others: others),
+    );
+    if (target == null || !mounted) return;
+    final app = context.read<AppState>();
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await app.api.mergeChecks(order.id, target.id);
+      showInfoOn(
+          messenger, 'Check ${shortId(order.id)} merged into ${shortId(target.id)}');
+      await _load();
+    } on ApiError catch (e) {
+      if (e.isAuthError && mounted) {
+        await app.sessionExpired();
+        return;
+      }
+      showErrorOn(messenger, e);
+    } catch (e) {
+      showErrorOn(messenger, e);
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -567,8 +686,19 @@ class _KpiStrip extends StatelessWidget {
 class _OrderTile extends StatelessWidget {
   final FufutOrder order;
   final Color accent;
+  final bool showCheckActions;
+  final VoidCallback? onSplit;
+  final VoidCallback? onMove;
+  final VoidCallback? onMerge;
 
-  const _OrderTile({required this.order, required this.accent});
+  const _OrderTile({
+    required this.order,
+    required this.accent,
+    this.showCheckActions = false,
+    this.onSplit,
+    this.onMove,
+    this.onMerge,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -723,6 +853,18 @@ class _OrderTile extends StatelessWidget {
                           ],
                         ],
                       ),
+                      // Line 5: Split | Move | Merge — open checks only,
+                      // exactly the web OpenChecksView's action row.
+                      if (showCheckActions) ...[
+                        const SizedBox(height: 8),
+                        Row(children: [
+                          _CheckAction(icon: Icons.call_split, label: 'Split', onTap: onSplit),
+                          const SizedBox(width: 6),
+                          _CheckAction(icon: Icons.open_with, label: 'Move', onTap: onMove),
+                          const SizedBox(width: 6),
+                          _CheckAction(icon: Icons.merge, label: 'Merge', onTap: onMerge),
+                        ]),
+                      ],
                     ],
                   ),
                 ),
@@ -1079,6 +1221,338 @@ class _ErrorPane extends StatelessWidget {
                     TextStyle(fontFamily: kFontBody, fontSize: 12.5, color: pal.body)),
             const SizedBox(height: 12),
             OutlinedButton(onPressed: onRetry, child: const Text('Retry')),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Check operations — Split · Move · Merge sheets (the web OpenChecksView).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Compact inline action button of the check's action row.
+class _CheckAction extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback? onTap;
+
+  const _CheckAction({required this.icon, required this.label, this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = Pal.of(context);
+    return Expanded(
+      child: SizedBox(
+        height: 28,
+        child: OutlinedButton.icon(
+          onPressed: onTap,
+          style: OutlinedButton.styleFrom(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            minimumSize: Size.zero,
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            side: BorderSide(color: pal.border),
+            textStyle: const TextStyle(
+                fontFamily: kFontBody,
+                fontSize: 10.5,
+                fontWeight: FontWeight.w600),
+          ),
+          icon: Icon(icon, size: 12, color: pal.primary),
+          label: Text(label, style: TextStyle(color: pal.body)),
+        ),
+      ),
+    );
+  }
+}
+
+/// Split: pick the number of seats / splits (2–10), preview the per-seat
+/// share, then `POST /api/orders/:id/split {seatCount}`.
+class _SplitSheet extends StatefulWidget {
+  final FufutOrder order;
+  const _SplitSheet({required this.order});
+
+  @override
+  State<_SplitSheet> createState() => _SplitSheetState();
+}
+
+class _SplitSheetState extends State<_SplitSheet> {
+  int _seats = 2;
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = Pal.of(context);
+    final perHead = widget.order.total / _seats;
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const SheetHandle(),
+            const SizedBox(height: 6),
+            Text('Split Check',
+                style: T.screenTitle.copyWith(color: pal.heading)),
+            Text('${shortId(widget.order.id)} · ${money(widget.order.total)}',
+                style: TextStyle(
+                    fontFamily: kFontMono,
+                    fontSize: 11.5,
+                    color: pal.muted)),
+            const SizedBox(height: 14),
+            Text('NUMBER OF SEATS / SPLITS',
+                style: TextStyle(
+                    fontFamily: kFontBody,
+                    fontSize: 9.5,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.8,
+                    color: pal.muted)),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (var n = 2; n <= 10; n++)
+                  ChoiceChip(
+                    label: Text('$n'),
+                    selected: _seats == n,
+                    labelStyle: TextStyle(
+                        fontFamily: kFontMono,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                        color: _seats == n ? Colors.white : pal.body),
+                    selectedColor: pal.primary,
+                    backgroundColor: pal.sunken,
+                    side: BorderSide(
+                        color: _seats == n ? pal.primary : pal.border),
+                    showCheckmark: false,
+                    visualDensity: VisualDensity.compact,
+                    onSelected: (_) => setState(() => _seats = n),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: pal.tintBg,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('PER SEAT',
+                          style: TextStyle(
+                              fontFamily: kFontBody,
+                              fontSize: 9,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: 0.8,
+                              color: pal.muted)),
+                      const SizedBox(height: 2),
+                      Text(money(perHead),
+                          style: TextStyle(
+                              fontFamily: kFontMono,
+                              fontSize: 16,
+                              fontWeight: FontWeight.w700,
+                              color: pal.primary)),
+                    ],
+                  ),
+                ),
+                Text('$_seats checks',
+                    style: TextStyle(
+                        fontFamily: kFontBody,
+                        fontSize: 11.5,
+                        color: pal.muted)),
+              ]),
+            ),
+            const SizedBox(height: 14),
+            SizedBox(
+              height: 40,
+              child: FilledButton.icon(
+                onPressed: () => Navigator.pop(context, _seats),
+                icon: const Icon(Icons.call_split, size: 17),
+                label: Text('Split into $_seats'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Move: pick the destination table, then
+/// `POST /api/orders/:id/transfer {tableNumber}`.
+class _MoveTableSheet extends StatelessWidget {
+  final FufutOrder order;
+  final List<CafeTable> tables;
+
+  const _MoveTableSheet({required this.order, required this.tables});
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = Pal.of(context);
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const SheetHandle(),
+            const SizedBox(height: 6),
+            Text('Move Check',
+                style: T.screenTitle.copyWith(color: pal.heading)),
+            Text(
+                '${shortId(order.id)} · ${order.tableNum != null && order.tableNum!.isNotEmpty ? 'from Table ${order.tableNum}' : money(order.total)}',
+                style: TextStyle(
+                    fontFamily: kFontMono,
+                    fontSize: 11.5,
+                    color: pal.muted)),
+            const SizedBox(height: 12),
+            Flexible(
+              child: tables.isEmpty
+                  ? Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 18),
+                      child: Center(
+                        child: Text('Tables could not be loaded',
+                            style: TextStyle(
+                                fontFamily: kFontBody,
+                                fontSize: 11.5,
+                                color: pal.faint)),
+                      ),
+                    )
+                  : ListView(
+                      shrinkWrap: true,
+                      children: [
+                        for (final t in tables)
+                          if (t.number != order.tableNum)
+                            InkWell(
+                              onTap: () => Navigator.pop(context, t.number),
+                              borderRadius: BorderRadius.circular(8),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                    vertical: 8, horizontal: 4),
+                                child: Row(children: [
+                                  Container(
+                                    width: 7,
+                                    height: 7,
+                                    decoration: BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        color: t.status == 'available'
+                                            ? pal.success
+                                            : (t.status == 'occupied'
+                                                ? pal.warning
+                                                : pal.info)),
+                                  ),
+                                  const SizedBox(width: 9),
+                                  Expanded(
+                                    child: Text(
+                                        'Table ${t.number}'
+                                        '${(t.section ?? '').isNotEmpty ? ' — ${t.section}' : ''}'
+                                        '${t.seats != null ? ' (${t.seats} seats)' : ''}',
+                                        style: TextStyle(
+                                            fontFamily: kFontBody,
+                                            fontSize: 12.5,
+                                            fontWeight: FontWeight.w600,
+                                            color: pal.heading)),
+                                  ),
+                                  Text(t.status,
+                                      style: TextStyle(
+                                          fontFamily: kFontBody,
+                                          fontSize: 10.5,
+                                          color: pal.muted)),
+                                ]),
+                              ),
+                            ),
+                      ],
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Merge: pick the target check, then
+/// `POST /api/orders/merge {sourceOrderId, targetOrderId}`.
+class _MergeSheet extends StatelessWidget {
+  final FufutOrder source;
+  final List<FufutOrder> others;
+
+  const _MergeSheet({required this.source, required this.others});
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = Pal.of(context);
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const SheetHandle(),
+            const SizedBox(height: 6),
+            Text('Merge Into…',
+                style: T.screenTitle.copyWith(color: pal.heading)),
+            Text(
+                'moves ${shortId(source.id)} (${money(source.total)}) onto the check you pick',
+                style: TextStyle(
+                    fontFamily: kFontBody,
+                    fontSize: 11,
+                    color: pal.muted)),
+            const SizedBox(height: 12),
+            Flexible(
+              child: ListView(
+                shrinkWrap: true,
+                children: [
+                  for (final o in others)
+                    InkWell(
+                      onTap: () => Navigator.pop(context, o),
+                      borderRadius: BorderRadius.circular(8),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                            vertical: 8, horizontal: 4),
+                        child: Row(children: [
+                          Icon(Icons.credit_card,
+                              size: 15, color: pal.primary),
+                          const SizedBox(width: 9),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                    '${shortId(o.id)} · ${o.tableNum != null && o.tableNum!.isNotEmpty ? 'Table ${o.tableNum}' : (o.customer ?? 'Walk-in')}',
+                                    style: TextStyle(
+                                        fontFamily: kFontBody,
+                                        fontSize: 12.5,
+                                        fontWeight: FontWeight.w600,
+                                        color: pal.heading)),
+                                Text(o.itemsRaw,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                        fontFamily: kFontBody,
+                                        fontSize: 10.5,
+                                        color: pal.muted)),
+                              ],
+                            ),
+                          ),
+                          Text(money(o.total),
+                              style: T.mono.copyWith(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                  color: pal.heading)),
+                        ]),
+                      ),
+                    ),
+                ],
+              ),
+            ),
           ],
         ),
       ),

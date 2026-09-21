@@ -372,6 +372,8 @@ class CafeTable {
   final String? section;
   final String status; // available | occupied | reserved
   final int? seats;
+  final String? guests;
+  final String? billRequestedAt; // when the party asked for the bill
 
   const CafeTable({
     required this.id,
@@ -379,7 +381,11 @@ class CafeTable {
     this.section,
     required this.status,
     this.seats,
+    this.guests,
+    this.billRequestedAt,
   });
+
+  bool get billRequested => billRequestedAt != null && billRequestedAt!.isNotEmpty;
 
   factory CafeTable.fromJson(Map<String, dynamic> j) => CafeTable(
         id: (j['id'] ?? '') as String,
@@ -387,6 +393,9 @@ class CafeTable {
         section: j['section'] as String?,
         status: (j['status'] ?? 'available') as String,
         seats: j['seats'] is int ? j['seats'] as int : int.tryParse('${j['seats']}'),
+        guests: j['guests']?.toString(),
+        billRequestedAt:
+            (j['bill_requested_at'] ?? j['billRequestedAt'])?.toString(),
       );
 }
 
@@ -585,6 +594,527 @@ class DeliveryJob {
         itemsRaw: (j['order_items'] ?? j['items'])?.toString(),
         paymentStatus: (j['order_payment_status'] ?? j['payment_status'])?.toString(),
         created: (j['created'] ?? j['assigned_at'])?.toString(),
+      );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cash drawer — sessions, Z-report, shift audit
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One drawer session (`GET /api/cashdrawer` rows, active or closed). Field
+/// names arrive both camelCase (newer handler) and snake_case (D1 columns);
+/// every alias is accepted.
+class DrawerSession {
+  final String id;
+  final String status; // open | closed
+  final double openingBal;
+  final double cashSales;
+  final double paidIn;
+  final double paidOut;
+  final double closingBal;
+  final double variance;
+  final String? opened;
+  final String? closed;
+  final String? openedBy;
+
+  const DrawerSession({
+    required this.id,
+    this.status = 'open',
+    this.openingBal = 0,
+    this.cashSales = 0,
+    this.paidIn = 0,
+    this.paidOut = 0,
+    this.closingBal = 0,
+    this.variance = 0,
+    this.opened,
+    this.closed,
+    this.openedBy,
+  });
+
+  /// opening float + cash sales + paid-in − paid-out — what the drawer
+  /// *should* count out to (server migration 020, web `expectedOf`).
+  double get expected => openingBal + cashSales + paidIn - paidOut;
+
+  factory DrawerSession.fromJson(Map<String, dynamic> j) => DrawerSession(
+        id: (j['id'] ?? '').toString(),
+        status: (j['status'] ?? 'open').toString(),
+        openingBal: _asDouble(j['openingBal'] ?? j['opening_balance']),
+        cashSales: _asDouble(j['cashSales'] ?? j['cash_sales']),
+        paidIn: _asDouble(j['paidIn'] ?? j['paid_in']),
+        paidOut: _asDouble(j['paidOut'] ?? j['paid_out']),
+        closingBal: _asDouble(j['closingBal'] ?? j['closing_balance']),
+        variance: _asDouble(j['variance']),
+        opened: (j['opened'] ?? j['opened_at'])?.toString(),
+        closed: (j['closed'] ?? j['closed_at'])?.toString(),
+        openedBy: (j['openedBy'] ?? j['opened_by'] ?? j['actor_name'])?.toString(),
+      );
+}
+
+/// `GET /api/cashdrawer` — the active session (null when the till is closed)
+/// plus the day's sessions.
+class CashDrawerState {
+  final DrawerSession? active;
+  final List<DrawerSession> drawers;
+
+  const CashDrawerState({this.active, this.drawers = const []});
+
+  factory CashDrawerState.fromJson(Map<String, dynamic> j) => CashDrawerState(
+        active: j['active'] is Map
+            ? DrawerSession.fromJson(
+                Map<String, dynamic>.from(j['active'] as Map))
+            : null,
+        drawers: (j['drawers'] as List? ?? const [])
+            .whereType<Map>()
+            .map((m) => DrawerSession.fromJson(Map<String, dynamic>.from(m)))
+            .toList(),
+      );
+}
+
+/// One payment-method row of the Z-report.
+class ZReportPayment {
+  final String method;
+  final int count;
+  final double total;
+  const ZReportPayment({required this.method, required this.count, required this.total});
+
+  factory ZReportPayment.fromJson(Map<String, dynamic> j) => ZReportPayment(
+        method: (j['method'] ?? 'other').toString(),
+        count: _asInt(j['count']),
+        total: _asDouble(j['total']),
+      );
+}
+
+/// The cash reconciliation block of a Z-report.
+class ZReportCash {
+  final double openingFloat;
+  final double cashSales;
+  final double paidIn;
+  final double paidOut;
+  final double expected;
+  final double counted;
+  final double variance;
+
+  const ZReportCash({
+    this.openingFloat = 0,
+    this.cashSales = 0,
+    this.paidIn = 0,
+    this.paidOut = 0,
+    this.expected = 0,
+    this.counted = 0,
+    this.variance = 0,
+  });
+
+  factory ZReportCash.fromJson(Map<String, dynamic> j) => ZReportCash(
+        openingFloat: _asDouble(j['openingFloat'] ?? j['opening_float']),
+        cashSales: _asDouble(j['cashSales'] ?? j['cash_sales']),
+        paidIn: _asDouble(j['paidIn'] ?? j['paid_in']),
+        paidOut: _asDouble(j['paidOut'] ?? j['paid_out']),
+        expected: _asDouble(j['expected']),
+        counted: _asDouble(j['counted'] ?? j['closingBal'] ?? j['closing_balance']),
+        variance: _asDouble(j['variance']),
+      );
+}
+
+/// `GET /api/cashdrawer/:id/z-report` — the fiscal close-out of one shift.
+/// Parsed defensively: anything missing renders as a dash, never an error.
+class ZReport {
+  final String zNumber;
+  final String drawerId;
+  final String? openedAt;
+  final String? closedAt;
+  final String status;
+  final ZReportCash cash;
+  final List<ZReportPayment> payments;
+  final double serviceCharge;
+  final double tips;
+  final int zCount;
+  final double cumulativeCashSales;
+
+  const ZReport({
+    this.zNumber = '',
+    this.drawerId = '',
+    this.openedAt,
+    this.closedAt,
+    this.status = 'closed',
+    this.cash = const ZReportCash(),
+    this.payments = const [],
+    this.serviceCharge = 0,
+    this.tips = 0,
+    this.zCount = 0,
+    this.cumulativeCashSales = 0,
+  });
+
+  factory ZReport.fromJson(Map<String, dynamic> j) {
+    final cashRaw = j['cashReconciliation'] is Map
+        ? Map<String, dynamic>.from(j['cashReconciliation'] as Map)
+        : const <String, dynamic>{};
+    final grand = j['grandTotals'] is Map
+        ? Map<String, dynamic>.from(j['grandTotals'] as Map)
+        : const <String, dynamic>{};
+    return ZReport(
+      zNumber: (j['header'] is Map
+              ? (j['header'] as Map)['zNumber']
+              : j['zNumber'])
+          ?.toString() ??
+          '',
+      drawerId: (j['header'] is Map
+              ? (j['header'] as Map)['drawerId']
+              : j['drawerId'])
+          ?.toString() ??
+          '',
+      openedAt: (j['header'] is Map
+              ? ((j['header'] as Map)['openedAt'] ?? (j['header'] as Map)['opened'])
+              : j['openedAt'])
+          ?.toString(),
+      closedAt: (j['header'] is Map
+              ? ((j['header'] as Map)['closedAt'] ?? (j['header'] as Map)['closed'])
+              : j['closedAt'])
+          ?.toString(),
+      status: (j['header'] is Map
+              ? ((j['header'] as Map)['status'] ?? 'closed')
+              : j['status'] ?? 'closed')
+          .toString(),
+      cash: cashRaw.isEmpty ? const ZReportCash() : ZReportCash.fromJson(cashRaw),
+      payments: (j['paymentBreakdown'] as List? ?? const [])
+          .whereType<Map>()
+          .map((m) => ZReportPayment.fromJson(Map<String, dynamic>.from(m)))
+          .toList(),
+      serviceCharge: _asDouble(j['serviceCharge'] ?? j['service_charge']),
+      tips: _asDouble(j['tips']),
+      zCount: _asInt(grand['zCount']),
+      cumulativeCashSales: _asDouble(grand['cumulativeCashSales']),
+    );
+  }
+}
+
+/// One row of `GET /api/cashdrawer/shift-log` — the audit timeline.
+class ShiftLogEntry {
+  final String at;
+  final String action;
+  final String reason;
+  final String actorName;
+
+  const ShiftLogEntry({
+    required this.at,
+    required this.action,
+    this.reason = '',
+    this.actorName = '',
+  });
+
+  factory ShiftLogEntry.fromJson(Map<String, dynamic> j) => ShiftLogEntry(
+        at: (j['at'] ?? j['created'] ?? '').toString(),
+        action: (j['action'] ?? '').toString(),
+        reason: (j['reason'] ?? '').toString(),
+        actorName: (j['actorName'] ?? j['actor_name'] ?? '').toString(),
+      );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HR — time clock, payslips, audit (My Activity), handover
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One punch of the time clock (`timeclock/me`, `timeclock/me/history`).
+class TimeclockEntry {
+  final String id;
+  final String? date;
+  final String? clockIn;
+  final String? clockOut;
+  final String? created;
+  final bool onBreak;
+
+  const TimeclockEntry({
+    required this.id,
+    this.date,
+    this.clockIn,
+    this.clockOut,
+    this.created,
+    this.onBreak = false,
+  });
+
+  factory TimeclockEntry.fromJson(Map<String, dynamic> j) => TimeclockEntry(
+        id: (j['id'] ?? '').toString(),
+        date: (j['date'] ?? j['work_date'])?.toString(),
+        clockIn: (j['clockIn'] ?? j['clock_in'])?.toString(),
+        clockOut: (j['clockOut'] ?? j['clock_out'])?.toString(),
+        created: j['created']?.toString(),
+        // Break state rides the entry under whatever key the handler chose;
+        // every known alias is accepted.
+        onBreak: (j['on_break'] ??
+                j['onBreak'] ??
+                j['break_started'] ??
+                j['breakStarted'] ??
+                j['in_break']) ==
+            true,
+      );
+}
+
+/// `GET /api/timeclock/me` — am I on shift right now?
+class TimeclockMe {
+  final bool clockedIn;
+  final TimeclockEntry? entry;
+
+  const TimeclockMe({required this.clockedIn, this.entry});
+
+  factory TimeclockMe.fromJson(Map<String, dynamic> j) => TimeclockMe(
+        clockedIn: j['clockedIn'] == true || j['clocked_in'] == true,
+        entry: j['entry'] is Map
+            ? TimeclockEntry.fromJson(
+                Map<String, dynamic>.from(j['entry'] as Map))
+            : null,
+      );
+}
+
+/// A staff row (`GET /api/staff`) — roster names.
+class StaffMember {
+  final String id;
+  final String name;
+  final String role;
+
+  const StaffMember({required this.id, required this.name, this.role = ''});
+
+  factory StaffMember.fromJson(Map<String, dynamic> j) => StaffMember(
+        id: (j['id'] ?? '').toString(),
+        name: (j['name'] ??
+                [j['firstName'], j['lastName']]
+                    .where((p) => p != null && '$p'.trim().isNotEmpty)
+                    .join(' '))
+            .toString(),
+        role: (j['role'] ?? '').toString(),
+      );
+}
+
+/// `GET /api/handovers/latest` → `{handover: …}` — snake_case on read.
+class Handover {
+  final String staffName;
+  final String created;
+  final String pendingOrders;
+  final String pendingTasks;
+  final String cashInfo;
+  final String problems;
+  final String customerIssues;
+  final String importantNotes;
+
+  const Handover({
+    this.staffName = '',
+    this.created = '',
+    this.pendingOrders = '',
+    this.pendingTasks = '',
+    this.cashInfo = '',
+    this.problems = '',
+    this.customerIssues = '',
+    this.importantNotes = '',
+  });
+
+  factory Handover.fromJson(Map<String, dynamic> j) => Handover(
+        staffName: (j['staffName'] ?? j['staff_name'] ?? '').toString(),
+        created: (j['created'] ?? '').toString(),
+        pendingOrders: (j['pending_orders'] ?? j['pendingOrders'] ?? '').toString(),
+        pendingTasks: (j['pending_tasks'] ?? j['pendingTasks'] ?? '').toString(),
+        cashInfo: (j['cash_info'] ?? j['cashInfo'] ?? '').toString(),
+        problems: (j['problems'] ?? '').toString(),
+        customerIssues:
+            (j['customer_issues'] ?? j['customerIssues'] ?? '').toString(),
+        importantNotes:
+            (j['important_notes'] ?? j['importantNotes'] ?? '').toString(),
+      );
+}
+
+/// One payslip row of `GET /api/payroll/me`.
+class Payslip {
+  final String id;
+  final String periodStart;
+  final String periodEnd;
+  final double baseSalary;
+  final double overtimePay;
+  final double bonuses;
+  final double deductions;
+  final double incomeTax;
+  final double pensionEmployee;
+  final double netPay;
+  final double tipsEarned;
+  final String runStatus;
+  final bool provisional;
+
+  const Payslip({
+    required this.id,
+    this.periodStart = '',
+    this.periodEnd = '',
+    this.baseSalary = 0,
+    this.overtimePay = 0,
+    this.bonuses = 0,
+    this.deductions = 0,
+    this.incomeTax = 0,
+    this.pensionEmployee = 0,
+    this.netPay = 0,
+    this.tipsEarned = 0,
+    this.runStatus = '',
+    this.provisional = false,
+  });
+
+  factory Payslip.fromJson(Map<String, dynamic> j) => Payslip(
+        id: (j['id'] ?? '').toString(),
+        periodStart: (j['period_start'] ?? j['periodStart'] ?? '').toString(),
+        periodEnd: (j['period_end'] ?? j['periodEnd'] ?? '').toString(),
+        baseSalary: _asDouble(j['base_salary'] ?? j['baseSalary']),
+        overtimePay: _asDouble(j['overtime_pay'] ?? j['overtimePay']),
+        bonuses: _asDouble(j['bonuses']),
+        deductions: _asDouble(j['deductions']),
+        incomeTax: _asDouble(j['income_tax'] ?? j['incomeTax']),
+        pensionEmployee:
+            _asDouble(j['pension_employee'] ?? j['pensionEmployee']),
+        netPay: _asDouble(j['net_pay'] ?? j['netPay']),
+        tipsEarned: _asDouble(j['tips_earned'] ?? j['tipsEarned']),
+        runStatus: (j['run_status'] ?? j['runStatus'] ?? '').toString(),
+        provisional: j['provisional'] == true,
+      );
+}
+
+/// `GET /api/payroll/me` — current contract + payslip history.
+class PayrollMe {
+  final double baseSalary;
+  final String salaryPeriod;
+  final String employmentType;
+  final List<Payslip> payslips;
+
+  const PayrollMe({
+    this.baseSalary = 0,
+    this.salaryPeriod = '',
+    this.employmentType = '',
+    this.payslips = const [],
+  });
+
+  bool get hasProvisional => payslips.any((p) => p.provisional);
+
+  factory PayrollMe.fromJson(Map<String, dynamic> j) {
+    final current = j['current'] is Map
+        ? Map<String, dynamic>.from(j['current'] as Map)
+        : const <String, dynamic>{};
+    return PayrollMe(
+      baseSalary: _asDouble(current['baseSalary'] ?? current['base_salary']),
+      salaryPeriod: (current['salaryPeriod'] ?? current['salary_period'] ?? '')
+          .toString(),
+      employmentType:
+          (current['employmentType'] ?? current['employment_type'] ?? '')
+              .toString(),
+      payslips: (j['payslips'] as List? ?? const [])
+          .whereType<Map>()
+          .map((m) => Payslip.fromJson(Map<String, dynamic>.from(m)))
+          .toList(),
+    );
+  }
+}
+
+/// One audit row (`GET /api/audit?actor_id=…`) — the My Activity feed.
+class AuditEntry {
+  final String id;
+  final String at;
+  final String entity;
+  final String action;
+  final String entityId;
+  final String reason;
+  final dynamic before;
+  final dynamic after;
+  final String actorName;
+  final String actorRole;
+
+  const AuditEntry({
+    required this.id,
+    required this.at,
+    this.entity = '',
+    this.action = '',
+    this.entityId = '',
+    this.reason = '',
+    this.before,
+    this.after,
+    this.actorName = '',
+    this.actorRole = '',
+  });
+
+  factory AuditEntry.fromJson(Map<String, dynamic> j) => AuditEntry(
+        id: (j['id'] ?? '').toString(),
+        at: (j['at'] ?? j['created'] ?? '').toString(),
+        entity: (j['entity'] ?? '').toString(),
+        action: (j['action'] ?? '').toString(),
+        entityId: (j['entity_id'] ?? j['entityId'] ?? '').toString(),
+        reason: (j['reason'] ?? '').toString(),
+        before: j['before'],
+        after: j['after'],
+        actorName: (j['actor_name'] ?? j['actorName'] ?? '').toString(),
+        actorRole: (j['actor_role'] ?? j['actorRole'] ?? '').toString(),
+      );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reservations (waiter dashboard) & kitchen line tracking
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One row of `GET /api/reservations`.
+class Reservation {
+  final String id;
+  final String name;
+  final String? date;
+  final String? time;
+  final int guests;
+  final String status;
+  final String? phone;
+
+  const Reservation({
+    required this.id,
+    this.name = '',
+    this.date,
+    this.time,
+    this.guests = 0,
+    this.status = '',
+    this.phone,
+  });
+
+  factory Reservation.fromJson(Map<String, dynamic> j) => Reservation(
+        id: (j['id'] ?? '').toString(),
+        name: (j['name'] ?? j['customer'] ?? j['guest_name'] ?? 'Guest').toString(),
+        date: (j['date'] ?? j['reservation_date'])?.toString(),
+        time: (j['time'] ?? j['reservation_time'])?.toString(),
+        guests: _asInt(j['guests'] ?? j['party_size']),
+        status: (j['status'] ?? '').toString(),
+        phone: (j['phone'] ?? j['customer_phone'])?.toString(),
+      );
+}
+
+/// One line of `GET /api/orders/items/active` — the kitchen's per-line
+/// tracking rows. `status` walks the same item flow: new → preparing →
+/// ready → served.
+class ActiveOrderItem {
+  final String id;
+  final String orderId;
+  final int lineNo;
+  final int qty;
+  final String name;
+  final String category;
+  final String course;
+  final String status;
+  final String? notes;
+
+  const ActiveOrderItem({
+    required this.id,
+    required this.orderId,
+    this.lineNo = 0,
+    this.qty = 1,
+    this.name = '',
+    this.category = '',
+    this.course = 'main',
+    this.status = 'new',
+    this.notes,
+  });
+
+  factory ActiveOrderItem.fromJson(Map<String, dynamic> j) => ActiveOrderItem(
+        id: (j['id'] ?? '').toString(),
+        orderId: (j['order_id'] ?? j['orderId'] ?? '').toString(),
+        lineNo: _asInt(j['line_no'] ?? j['lineNo']),
+        qty: _asInt(j['qty'] ?? j['quantity']),
+        name: (j['name'] ?? '').toString(),
+        category: (j['category'] ?? '').toString(),
+        course: (j['course'] ?? 'main').toString(),
+        status: (j['status'] ?? 'new').toString(),
+        notes: (j['notes'])?.toString(),
       );
 }
 

@@ -305,6 +305,297 @@ class FufutApi {
     }
   }
 
+  // ── Reservations (waiter dashboard) ───────────────────────────────────────
+
+  /// `GET /api/reservations` — today's book plus the upcoming days. A 403
+  /// (roles without the grant) reads as an empty book, never an error.
+  Future<List<Reservation>> reservations() async {
+    try {
+      final res = await client.get('reservations');
+      if (res is! List) return const [];
+      return res
+          .whereType<Map>()
+          .map((m) => Reservation.fromJson(Map<String, dynamic>.from(m)))
+          .toList();
+    } on ApiError catch (e) {
+      if (e.status == 403 || e.status == 404) return const [];
+      rethrow;
+    }
+  }
+
+  // ── Cash drawer — the till's full shift lifecycle ─────────────────────────
+
+  /// `GET /api/cashdrawer` — active session + today's drawers.
+  Future<CashDrawerState> cashdrawer() async {
+    final res = await client.get('cashdrawer');
+    if (res is Map) return CashDrawerState.fromJson(Map<String, dynamic>.from(res));
+    return const CashDrawerState();
+  }
+
+  /// `GET /api/cashdrawer/history` — past sessions with variance.
+  Future<List<DrawerSession>> cashdrawerHistory() async {
+    final res = await client.get('cashdrawer/history');
+    final list = res is Map ? res['drawers'] : res;
+    if (list is! List) return const [];
+    return list
+        .whereType<Map>()
+        .map((m) => DrawerSession.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  /// `GET /api/cashdrawer/shift-log` — who opened / closed / paid what.
+  Future<List<ShiftLogEntry>> cashdrawerShiftLog() async {
+    final res = await client.get('cashdrawer/shift-log');
+    final list = res is Map ? res['entries'] : res;
+    if (list is! List) return const [];
+    return list
+        .whereType<Map>()
+        .map((m) => ShiftLogEntry.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  /// `POST /api/cashdrawer/open {openingBal}` — start a shift with a float.
+  Future<void> openDrawer(double openingBal) async {
+    await client.post('cashdrawer/open', {'openingBal': _r2(openingBal)});
+  }
+
+  /// `POST /api/cashdrawer/close {id, closingBal, denominations}` — the Z
+  /// count. Denominations keys are the ETB notes: "200","100","50","20","10","5".
+  Future<void> closeDrawer(
+      String id, double closingBal, Map<String, int> denominations) async {
+    await client.post('cashdrawer/close', {
+      'id': id,
+      'closingBal': _r2(closingBal),
+      'denominations': {
+        for (final e in denominations.entries) e.key: e.value,
+      },
+    });
+  }
+
+  /// `POST /api/cashdrawer/paid-in {amount, reason}`.
+  Future<void> paidIn(double amount, String reason) async {
+    await client.post('cashdrawer/paid-in', {'amount': _r2(amount), 'reason': reason});
+  }
+
+  /// `POST /api/cashdrawer/paid-out {amount, reason}`.
+  Future<void> paidOut(double amount, String reason) async {
+    await client.post('cashdrawer/paid-out', {'amount': _r2(amount), 'reason': reason});
+  }
+
+  /// `POST /api/cashdrawer/pop {reason}` — pop the physical drawer.
+  Future<void> popDrawer(String reason) async {
+    await client.post('cashdrawer/pop', {'reason': reason});
+  }
+
+  /// `GET /api/cashdrawer/:id/z-report` — the fiscal close-out.
+  Future<ZReport> zReport(String id) async {
+    final res = await client.get('cashdrawer/$id/z-report');
+    if (res is Map) return ZReport.fromJson(Map<String, dynamic>.from(res));
+    return const ZReport();
+  }
+
+  // ── HR trio — time clock, payslips, my activity ───────────────────────────
+
+  /// `GET /api/timeclock/me` — on shift?
+  Future<TimeclockMe> timeclockMe() async {
+    final res = await client.get('timeclock/me');
+    if (res is Map) return TimeclockMe.fromJson(Map<String, dynamic>.from(res));
+    return const TimeclockMe(clockedIn: false);
+  }
+
+  /// `GET /api/timeclock/me/history` — my punches.
+  Future<List<TimeclockEntry>> timeclockHistory() async {
+    final res = await client.get('timeclock/me/history');
+    final list = res is Map ? res['entries'] : res;
+    if (list is! List) return const [];
+    return list
+        .whereType<Map>()
+        .map((m) => TimeclockEntry.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  /// `GET /api/timeclock` — the whole team's roster. Floor roles get a 403;
+  /// that reads as "no roster section", never an error.
+  Future<List<TimeclockEntry>> timeclockRoster() async {
+    try {
+      final res = await client.get('timeclock');
+      if (res is! List) return const [];
+      return res
+          .whereType<Map>()
+          .map((m) => TimeclockEntry.fromJson(Map<String, dynamic>.from(m)))
+          .toList();
+    } on ApiError catch (e) {
+      if (e.status == 403 || e.status == 404) return const [];
+      rethrow;
+    }
+  }
+
+  /// `GET /api/staff` — roster names. Empty on a 403, like the web.
+  Future<List<StaffMember>> staff() async {
+    try {
+      final res = await client.get('staff');
+      if (res is! List) return const [];
+      return res
+          .whereType<Map>()
+          .map((m) => StaffMember.fromJson(Map<String, dynamic>.from(m)))
+          .toList();
+    } on ApiError catch (e) {
+      if (e.status == 403 || e.status == 404) return const [];
+      rethrow;
+    }
+  }
+
+  Future<void> clockIn() async {
+    final res = await client.post('timeclock/clock-in', {});
+    if (res is Map && res['ok'] == false) {
+      throw ApiError((res['error'] as String?) ?? 'Could not clock in');
+    }
+  }
+
+  /// `POST /api/timeclock/clock-out` — refused while checks are open unless
+  /// [force] (the manager override, `{force:true}` on the wire).
+  Future<void> clockOut({bool force = false}) async {
+    final res = await client.post(
+        'timeclock/clock-out', force ? {'force': true} : {});
+    if (res is Map && res['ok'] == false) {
+      throw ApiError((res['error'] as String?) ?? 'Could not clock out');
+    }
+  }
+
+  Future<void> breakStart() => client.post('timeclock/break-start', {});
+
+  /// Returns the break length the server computed, when it says.
+  Future<int?> breakEnd() async {
+    final res = await client.post('timeclock/break-end', {});
+    if (res is Map && res['durationMin'] != null) {
+      return int.tryParse('${res['durationMin']}');
+    }
+    return null;
+  }
+
+  /// `GET /api/handovers/latest`.
+  Future<Handover?> latestHandover() async {
+    try {
+      final res = await client.get('handovers/latest');
+      final h = res is Map ? res['handover'] : null;
+      if (h is Map) return Handover.fromJson(Map<String, dynamic>.from(h));
+      return null;
+    } on ApiError catch (e) {
+      if (e.status == 403 || e.status == 404) return null;
+      rethrow;
+    }
+  }
+
+  /// `POST /api/handovers` — camelCase on write (the server stores both).
+  Future<void> postHandover({
+    required String pendingOrders,
+    required String pendingTasks,
+    required String cashInfo,
+    required String problems,
+    required String customerIssues,
+    required String importantNotes,
+  }) async {
+    await client.post('handovers', {
+      'pendingOrders': pendingOrders,
+      'pendingTasks': pendingTasks,
+      'cashInfo': cashInfo,
+      'problems': problems,
+      'customerIssues': customerIssues,
+      'importantNotes': importantNotes,
+    });
+  }
+
+  /// `GET /api/payroll/me` — my contract + payslips.
+  Future<PayrollMe> payrollMe() async {
+    final res = await client.get('payroll/me');
+    if (res is Map) return PayrollMe.fromJson(Map<String, dynamic>.from(res));
+    return const PayrollMe();
+  }
+
+  /// `GET /api/audit?actor_id=…&from=…` — my own audit trail.
+  Future<List<AuditEntry>> audit({
+    required String actorId,
+    required String from,
+    String? to,
+    int limit = 500,
+  }) async {
+    final q = 'audit?actor_id=$actorId&from=$from&limit=$limit'
+        '${to != null ? '&to=$to' : ''}';
+    final res = await client.get(q);
+    final list = res is Map ? res['entries'] : res;
+    if (list is! List) return const [];
+    return list
+        .whereType<Map>()
+        .map((m) => AuditEntry.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  // ── Checks — split / move / merge, bill requests, per-line kitchen flow ───
+
+  /// `POST /api/orders/:id/split {seatCount}` — returns the new check legs.
+  Future<int> splitCheck(String orderId, int seatCount) async {
+    final res =
+        await client.post('orders/$orderId/split', {'seatCount': seatCount});
+    if (res is Map && res['ok'] == false) {
+      throw ApiError((res['error'] as String?) ?? 'Could not split the check');
+    }
+    final splits = res is Map ? res['splits'] : null;
+    return splits is List ? splits.length : seatCount;
+  }
+
+  /// `POST /api/orders/:id/transfer {tableNumber}` — move the check. The
+  /// table number rides as a string, exactly like the web.
+  Future<void> transferCheck(String orderId, String tableNumber) async {
+    final res = await client
+        .post('orders/$orderId/transfer', {'tableNumber': tableNumber});
+    if (res is Map && res['ok'] == false) {
+      throw ApiError((res['error'] as String?) ?? 'Could not move the check');
+    }
+  }
+
+  /// `POST /api/orders/merge {sourceOrderId, targetOrderId}`.
+  Future<void> mergeChecks(String sourceOrderId, String targetOrderId) async {
+    final res = await client.post('orders/merge', {
+      'sourceOrderId': sourceOrderId,
+      'targetOrderId': targetOrderId,
+    });
+    if (res is Map && res['ok'] == false) {
+      throw ApiError((res['error'] as String?) ?? 'Could not merge checks');
+    }
+  }
+
+  /// `POST /api/tables/:id/request-bill` — the party wants the bill; it rides
+  /// to the cashier's dashboard as a bill request.
+  Future<void> requestBill(String tableId) async {
+    await client.post('tables/$tableId/request-bill', {});
+  }
+
+  /// `POST /api/tables/:id/cancel-bill-request`.
+  Future<void> cancelBillRequest(String tableId) async {
+    await client.post('tables/$tableId/cancel-bill-request', {});
+  }
+
+  // ── Kitchen per-line flow ─────────────────────────────────────────────────
+
+  /// `GET /api/orders/items/active` — one row per live order line.
+  Future<List<ActiveOrderItem>> orderItemsActive() async {
+    final res = await client.get('orders/items/active');
+    if (res is! List) return const [];
+    return res
+        .whereType<Map>()
+        .map((m) => ActiveOrderItem.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  /// `PUT /api/orders/:orderId/items/:itemId {status}` — advance one line.
+  /// Returns the order's new overall status when the server says
+  /// (`orderStatus`), e.g. `fulfilled` once every line is served.
+  Future<String?> advanceOrderItem(
+      String orderId, String itemId, String status) async {
+    final res = await client.put('orders/$orderId/items/$itemId', {'status': status});
+    return res is Map ? res['orderStatus']?.toString() : null;
+  }
+
   // ── Small helpers ─────────────────────────────────────────────────────────
 
   static double _r2(double v) => (v * 100).roundToDouble() / 100;
