@@ -53,9 +53,16 @@ void main() {
     // entries' own labels (Overview / Sales / Operations / … / System).
     expect(find.text('FU FUT'), findsWidgets);
     expect(find.text('SALES'), findsOneWidget);
-    expect(find.text('SYSTEM'), findsOneWidget);
     expect(find.text('Sign Out'), findsOneWidget);
     expect(find.text('Amanuel • Cashier'), findsOneWidget);
+    // The full parity nav (30 destinations) scrolls — System is at the
+    // bottom of the sidebar now, exactly like the web's sidebar.
+    await tester.scrollUntilVisible(
+      find.text('SYSTEM'),
+      200,
+      scrollable: find.byType(Scrollable).last,
+    );
+    expect(find.text('SYSTEM'), findsOneWidget);
   });
 
   testWidgets('phone drawer: opens, shows brand + theme row, switches tab',
@@ -72,7 +79,13 @@ void main() {
     expect(find.text('Sign Out'), findsOneWidget);
 
     // Jump to Settings from the drawer; the title switches and the
-    // drawer closes.
+    // drawer closes. The drawer scrolls now that every role carries the
+    // full parity nav.
+    await tester.scrollUntilVisible(
+      find.text('Settings'),
+      200,
+      scrollable: find.byType(Scrollable).last,
+    );
     await tester.tap(find.text('Settings'));
     await tester.pumpAndSettle();
     expect(find.text('Amanuel • Cashier'), findsNothing);

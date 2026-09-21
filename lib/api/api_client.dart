@@ -118,6 +118,19 @@ class ApiClient {
     return r;
   }
 
+  /// `DELETE` with a JSON body — the web POS `apiDelete` sends `{id}` in the
+  /// body rather than a query string, and the Worker reads it from there.
+  /// Like every write it never retries (a replayed delete is harmless here,
+  /// but the rule keeps the client honest).
+  Future<dynamic> delete(String endpoint, Map<String, dynamic> body) async {
+    final r = await _send(
+        () => http.delete(_uri(endpoint),
+            headers: _headers, body: jsonEncode(body)),
+        'DELETE',
+        endpoint);
+    return r;
+  }
+
   // ── Core send loop with retries ───────────────────────────────────────────
 
   Future<dynamic> _send(

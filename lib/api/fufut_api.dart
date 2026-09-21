@@ -185,7 +185,9 @@ class FufutApi {
   }
 
   /// Charge now: one POST carrying the payment breakdown, like the web POS
-  /// CheckoutView's no-tab flow.
+  /// CheckoutView's no-tab flow. [breakdown] carries split-bill legs when the
+  /// guest pays across methods; [tip]/[discount] ride the same body with the
+  /// audited [discountReason].
   Future<String> chargeNow({
     required String itemsSummary,
     required List<OrderItemLine> lines,
@@ -200,6 +202,8 @@ class FufutApi {
     String? notes,
     double tip = 0,
     double discount = 0,
+    String? discountReason,
+    List<PaymentLine>? breakdown,
     double deliveryFee = 0,
   }) async {
     final res = await client.post('orders', {
@@ -209,11 +213,14 @@ class FufutApi {
       'total': _r2(total),
       'status': 'new',
       'payment': paymentLabel,
-      'paymentBreakdown': [payment.toJson()],
+      'paymentBreakdown':
+          (breakdown ?? [payment]).map((p) => p.toJson()).toList(),
       'tip': _r2(tip),
       'tipType': tip > 0 ? 'fixed' : 'none',
       'discount': _r2(discount),
       'discountType': discount > 0 ? 'fixed' : 'none',
+      if (discountReason != null && discountReason.isNotEmpty)
+        'discountReason': discountReason,
       'type': orderType,
       if (tableNum != null && tableNum.isNotEmpty) 'tableNum': tableNum,
       'customer': (customer != null && customer.isNotEmpty) ? customer : 'Walk-in',
@@ -227,14 +234,19 @@ class FufutApi {
   }
 
   /// Settle an open tab with a PUT — mirrors CheckoutView's settlement body.
+  /// [tip] lands on the check (the staff's cut), [breakdown] carries split
+  /// legs when the guest pays across methods.
   Future<void> settleOrder(
-      FufutOrder order, String paymentLabel, PaymentLine payment) async {
+      FufutOrder order, String paymentLabel, PaymentLine payment,
+      {double tip = 0, List<PaymentLine>? breakdown}) async {
     await client.put('orders/${order.id}', {
       'status': 'served',
       'payment': paymentLabel,
       'total': _r2(order.total),
       'subtotal': _r2(order.subtotal),
-      'paymentBreakdown': [payment.toJson()],
+      if (tip > 0) ...{'tip': _r2(tip), 'tipType': 'fixed'},
+      'paymentBreakdown':
+          (breakdown ?? [payment]).map((p) => p.toJson()).toList(),
     });
   }
 
@@ -645,6 +657,713 @@ class FufutApi {
   /// for everyone else; the banner's bulk button is manager-gated to match).
   Future<void> acknowledgeAllAlerts() async {
     await client.post('alerts/acknowledge-all', {});
+  }
+
+  // ── Backoffice — the manager/accountant/chef domains (web parity) ────────
+
+  // Menu management (`MenuMgmtView.vue`)
+
+  /// `POST /api/menu` — catalogue add (manager).
+  Future<void> postMenu(Map<String, dynamic> payload) async {
+    final res = await client.post('menu', payload);
+    if (res is Map && res['ok'] == false) {
+      throw ApiError((res['error'] as String?) ?? 'Could not save the item');
+    }
+  }
+
+  /// `PUT /api/menu/:id` — catalogue edit (manager).
+  Future<void> updateMenu(String id, Map<String, dynamic> payload) async {
+    final res = await client.put('menu/$id', payload);
+    if (res is Map && res['ok'] == false) {
+      throw ApiError((res['error'] as String?) ?? 'Could not save the item');
+    }
+  }
+
+  /// `DELETE /api/menu/:id` (manager).
+  Future<void> deleteMenu(String id) async {
+    await client.delete('menu/$id', {'id': id});
+  }
+
+  /// `PUT /api/menu/:id/availability {available}` — the dish-86 toggle,
+  /// chef-permitted; the server stamps changedBy/changedAt.
+  Future<void> setAvailability(String id, bool available) async {
+    final res = await client.put('menu/$id/availability', {'available': available});
+    if (res is Map && res['ok'] == false) {
+      throw ApiError((res['error'] as String?) ?? 'Could not change availability');
+    }
+  }
+
+  // Tables management (`TablesView.vue` manager tools)
+
+  /// `POST /api/tables` — add a table to the floor (manager).
+  Future<void> addTable({
+    required String number,
+    required int capacity,
+    String? section,
+    String? name,
+    String shape = 'square',
+  }) async {
+    final res = await client.post('tables', {
+      'number': number,
+      'capacity': capacity,
+      if (section != null && section.isNotEmpty) 'section': section,
+      if (name != null && name.isNotEmpty) 'name': name,
+      'shape': shape,
+    });
+    if (res is Map && res['ok'] == false) {
+      throw ApiError((res['error'] as String?) ?? 'Could not add the table');
+    }
+  }
+
+  /// `DELETE /api/tables/:id` (manager).
+  Future<void> deleteTable(String id) async {
+    await client.delete('tables/$id', {'id': id});
+  }
+
+  /// `PUT /api/tables/:id` — generic edit (status quick-set, guests,
+  /// server assignment) without touching seating.
+  Future<void> updateTable(String id, Map<String, dynamic> payload) async {
+    final res = await client.put('tables/$id', payload);
+    if (res is Map && res['ok'] == false) {
+      throw ApiError((res['error'] as String?) ?? 'Could not update the table');
+    }
+  }
+
+  // Orders extras (`OrdersView.vue` quick-sale, QR accept, `ReportsView.vue`)
+
+  /// `GET /api/orders/pending` — guest QR orders waiting to be accepted.
+  Future<List<FufutOrder>> pendingOrders() async {
+    final res = await client.get('orders/pending');
+    if (res is! List) return const [];
+    return res
+        .whereType<Map>()
+        .map((m) => FufutOrder.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  /// `POST /api/orders/:id/accept` — accept a QR order into the kitchen.
+  Future<void> acceptOrder(String id) async {
+    await client.post('orders/$id/accept', {});
+  }
+
+  /// `GET /api/orders/timing?from=` — kitchen time-to-table rows, one per
+  /// category ({category, served, averageMinutes, fastestMinutes,
+  /// slowestMinutes}). The top-level `sampled` count is folded into each row
+  /// for the section header.
+  Future<List<Map<String, dynamic>>> orderTiming(String fromIso) async {
+    final res = await client.get('orders/timing?from=$fromIso');
+    if (res is! Map) return const [];
+    final sampled = res['sampled'];
+    final cats = res['categories'];
+    if (cats is! List) return const [];
+    return cats
+        .whereType<Map>()
+        .map((m) => Map<String, dynamic>.from(m)
+          ..['sampled'] = sampled)
+        .toList();
+  }
+
+  // Reservations (`ReservationsView.vue`)
+
+  /// `GET /api/reservations/availability?date&time&duration` — table ids
+  /// already held at that slot.
+  Future<Set<String>> reservationAvailability(
+      String date, String time, int durationMin) async {
+    final res = await client.get(
+        'reservations/availability?date=$date&time=$time&duration=$durationMin');
+    final list = res is Map ? res['taken'] ?? res['tableIds'] : res;
+    if (list is! List) return const {};
+    return list.map((e) => e.toString()).toSet();
+  }
+
+  /// `POST /api/reservations` — book a table. A 409 clash carries the
+  /// server's message ("Table 7 is taken at that time").
+  Future<void> postReservation({
+    required String name,
+    required int guests,
+    required String date,
+    required String time,
+    required String tableNum,
+    String? phone,
+    int durationMin = 90,
+  }) async {
+    final res = await client.post('reservations', {
+      'name': name.trim(),
+      'guests': guests,
+      'date': date,
+      'time': time,
+      'tableNum': tableNum,
+      if (phone != null && phone.isNotEmpty) 'phone': phone,
+      'duration_min': durationMin,
+      'status': 'new',
+    });
+    if (res is Map && res['ok'] == false) {
+      throw ApiError((res['error'] as String?) ?? 'Could not book the table');
+    }
+  }
+
+  /// `PUT /api/reservations/:id {status}` — confirm / complete / cancel.
+  Future<void> updateReservation(String id, String status) async {
+    await client.put('reservations/$id', {'status': status});
+  }
+
+  /// `POST /api/reservations/:id/release` — free a no-show hold.
+  Future<void> releaseReservation(String id) async {
+    await client.post('reservations/$id/release', {});
+  }
+
+  // Expenses (`ExpensesView.vue`) — manager + accountant's write domain
+
+  /// `GET /api/expenses`.
+  Future<List<Expense>> expenses() async {
+    final res = await client.get('expenses');
+    if (res is! List) return const [];
+    return res
+        .whereType<Map>()
+        .map((m) => Expense.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  Future<void> postExpense({
+    required String category,
+    required String description,
+    required double amount,
+    required String date,
+  }) async {
+    final res = await client.post('expenses', {
+      'category': category,
+      'description': description.trim(),
+      'amount': _r2(amount),
+      'date': date,
+    });
+    if (res is Map && res['ok'] == false) {
+      throw ApiError((res['error'] as String?) ?? 'Could not record the expense');
+    }
+  }
+
+  Future<void> updateExpense(String id, Map<String, dynamic> payload) async {
+    final res = await client.put('expenses/$id', payload);
+    if (res is Map && res['ok'] == false) {
+      throw ApiError((res['error'] as String?) ?? 'Could not save the expense');
+    }
+  }
+
+  Future<void> deleteExpense(String id) async {
+    await client.delete('expenses/$id', {'id': id});
+  }
+
+  // Customers (`CustomersView.vue`)
+
+  /// `GET /api/customers[?q=]`.
+  Future<List<Customer>> customers({String query = ''}) async {
+    final res = await client.get(query.isEmpty ? 'customers' : 'customers?q=$query');
+    final list = res is Map ? res['customers'] : res;
+    if (list is! List) return const [];
+    return list
+        .whereType<Map>()
+        .map((m) => Customer.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  /// `POST /api/customers` — add a loyalty profile.
+  Future<void> postCustomer({
+    required String name,
+    String phone = '',
+    String email = '',
+    String notes = '',
+  }) async {
+    final res = await client.post('customers', {
+      'name': name.trim(),
+      'phone': phone.trim(),
+      'email': email.trim(),
+      'notes': notes.trim(),
+    });
+    if (res is Map && res['ok'] == false) {
+      throw ApiError((res['error'] as String?) ?? 'Could not add the customer');
+    }
+  }
+
+  /// `POST /api/customers/:id/points {points, description}` — returns the
+  /// new balance.
+  Future<int?> adjustCustomerPoints(
+      String id, int points, String description) async {
+    final res = await client.post('customers/$id/points', {
+      'points': points,
+      'description': description.trim(),
+    });
+    if (res is Map && res['ok'] == false) {
+      throw ApiError((res['error'] as String?) ?? 'Could not adjust points');
+    }
+    return res is Map && res['newBalance'] != null
+        ? int.tryParse('${res['newBalance']}')
+        : null;
+  }
+
+  // Inventory (`InventoryView.vue`) + stock control (`StockControlView.vue`)
+
+  /// `GET /api/inventory` — the stock catalogue.
+  Future<List<InventoryItem>> inventory() async {
+    try {
+      final res = await client.get('inventory');
+      if (res is! List) return const [];
+      return res
+          .whereType<Map>()
+          .map((m) => InventoryItem.fromJson(Map<String, dynamic>.from(m)))
+          .toList();
+    } on ApiError catch (e) {
+      // Any refusal (400/403/404) reads as "no catalogue visible" — the
+      // waste screen's free-text path keeps working for the cleaner. A 401
+      // is still fatal (the session is gone).
+      if (e.isAuthError) rethrow;
+      return const [];
+    }
+  }
+
+  /// `POST /api/inventory` — catalogue add (manager + head-chef).
+  Future<void> postInventory({
+    required String name,
+    required String category,
+    required String unit,
+    required double quantity,
+    required double minLevel,
+    double cost = 0,
+  }) async {
+    final res = await client.post('inventory', {
+      'name': name.trim(),
+      'category': category,
+      'unit': unit,
+      'quantity': quantity,
+      'minLevel': minLevel,
+      'cost': _r2(cost),
+    });
+    if (res is Map && res['ok'] == false) {
+      throw ApiError((res['error'] as String?) ?? 'Could not add the item');
+    }
+  }
+
+  /// `PUT /api/inventory/:id` — catalogue fields only; the server refuses
+  /// direct quantity writes (the ledger owns stock).
+  Future<void> updateInventory(String id, Map<String, dynamic> payload) async {
+    final res = await client.put('inventory/$id', payload);
+    if (res is Map && res['ok'] == false) {
+      throw ApiError((res['error'] as String?) ?? 'Could not save the item');
+    }
+  }
+
+  /// `POST /api/inventory/:id/adjust {newQty|qty, reason}` — the audited
+  /// ledger adjustment. Returns the new stock level when the server says.
+  Future<double?> adjustInventory(String id, double newQty, String reason) async {
+    final res = await client.post('inventory/$id/adjust', {
+      'newQty': newQty,
+      'reason': reason.trim(),
+    });
+    if (res is Map && res['ok'] == false) {
+      throw ApiError((res['error'] as String?) ?? 'Could not adjust stock');
+    }
+    final s = res is Map ? res['stock'] : null;
+    return s is num
+        ? s.toDouble()
+        : s is String ? double.tryParse(s) : null;
+  }
+
+  /// `DELETE /api/inventory/:id` (manager).
+  Future<void> deleteInventory(String id) async {
+    await client.delete('inventory/$id', {'id': id});
+  }
+
+  /// `GET /api/inventory/reorder` — the buying list.
+  Future<List<ReorderRow>> inventoryReorder() async {
+    final res = await client.get('inventory/reorder');
+    final list = res is Map ? res['items'] ?? res['rows'] : res;
+    if (list is! List) return const [];
+    return list
+        .whereType<Map>()
+        .map((m) => ReorderRow.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  /// `GET /api/inventory/variance?from&to` — expected vs actual.
+  Future<List<VarianceRow>> inventoryVariance(String fromIso, String toIso) async {
+    final res =
+        await client.get('inventory/variance?from=$fromIso&to=$toIso');
+    final list = res is Map ? res['rows'] ?? res['items'] : res;
+    if (list is! List) return const [];
+    return list
+        .whereType<Map>()
+        .map((m) => VarianceRow.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  /// `GET /api/inventory/snapshot?date=` — stock as of end of that day.
+  Future<List<SnapshotRow>> inventorySnapshot(String date) async {
+    final res = await client.get('inventory/snapshot?date=$date');
+    final list = res is Map ? res['rows'] ?? res['items'] : res;
+    if (list is! List) return const [];
+    return list
+        .whereType<Map>()
+        .map((m) => SnapshotRow.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  /// `GET /api/inventory/forecast?from&to`.
+  Future<List<ForecastRow>> inventoryForecast(String fromIso, String toIso) async {
+    final res =
+        await client.get('inventory/forecast?from=$fromIso&to=$toIso');
+    final list = res is Map ? res['rows'] ?? res['items'] : res;
+    if (list is! List) return const [];
+    return list
+        .whereType<Map>()
+        .map((m) => ForecastRow.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  /// `GET /api/inventory/capacity` — what can we make right now.
+  Future<List<CapacityRow>> inventoryCapacity() async {
+    final res = await client.get('inventory/capacity');
+    final list = res is Map ? res['rows'] ?? res['items'] : res;
+    if (list is! List) return const [];
+    return list
+        .whereType<Map>()
+        .map((m) => CapacityRow.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  /// `POST /api/inventory/count {items:[{inventoryId, countedQty, reason}]}`
+  /// — post a physical count; blank rows are never treated as zero.
+  Future<void> postInventoryCount(
+      List<Map<String, dynamic>> items, String notes) async {
+    final res = await client.post('inventory/count', {
+      'items': items,
+      if (notes.trim().isNotEmpty) 'notes': notes.trim(),
+    });
+    if (res is Map && res['ok'] == false) {
+      throw ApiError((res['error'] as String?) ?? 'Could not post the count');
+    }
+  }
+
+  // Waste — manager delete (`WasteView.vue`)
+
+  /// `DELETE /api/waste/:id` (manager only on the web).
+  Future<void> deleteWaste(String id) async {
+    await client.delete('waste/$id', {'id': id});
+  }
+
+  // Recipes (`RecipesView.vue`)
+
+  /// `GET /api/recipes` — the BOM list.
+  Future<List<RecipeRow>> recipes() async {
+    final res = await client.get('recipes');
+    final list = res is Map ? res['recipes'] : res;
+    if (list is! List) return const [];
+    return list
+        .whereType<Map>()
+        .map((m) => RecipeRow.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  /// `GET /api/recipes/:id` — full detail with lines.
+  Future<RecipeRow?> recipeDetail(String id) async {
+    final res = await client.get('recipes/$id');
+    final row = res is Map ? res['recipe'] ?? res : null;
+    if (row is! Map) return null;
+    return RecipeRow.fromJson(Map<String, dynamic>.from(row));
+  }
+
+  /// `GET /api/recipes/:id/capacity`.
+  Future<RecipeCapacity> recipeCapacity(String id) async {
+    final res = await client.get('recipes/$id/capacity');
+    if (res is Map) {
+      return RecipeCapacity.fromJson(Map<String, dynamic>.from(res));
+    }
+    return const RecipeCapacity();
+  }
+
+  /// `GET /api/recipes/:id/versions`.
+  Future<List<RecipeVersion>> recipeVersions(String id) async {
+    final res = await client.get('recipes/$id/versions');
+    final list = res is Map ? res['versions'] : res;
+    if (list is! List) return const [];
+    return list
+        .whereType<Map>()
+        .map((m) => RecipeVersion.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  /// `POST /api/recipes` — create the next version of a recipe.
+  Future<void> postRecipe({
+    required String menuItemId,
+    required String name,
+    String variant = '',
+    double yieldQty = 1,
+    String notes = '',
+    required List<Map<String, dynamic>> lines,
+  }) async {
+    final res = await client.post('recipes', {
+      'menuItemId': menuItemId,
+      'name': name,
+      if (variant.isNotEmpty) 'variant': variant,
+      'yieldQty': yieldQty,
+      if (notes.isNotEmpty) 'notes': notes,
+      'lines': lines,
+    });
+    if (res is Map && res['ok'] == false) {
+      throw ApiError((res['error'] as String?) ?? 'Could not save the recipe');
+    }
+  }
+
+  /// `GET /api/units` — measurement units grouped by dimension. The server
+  /// answers `{ok, units: {mass: [...], volume: [...], …}}`; a bare list is
+  /// accepted too (older shape).
+  Future<List<UnitRow>> units() async {
+    final res = await client.get('units');
+    final List rows;
+    if (res is List) {
+      rows = res;
+    } else if (res is Map && res['units'] is Map) {
+      rows = [
+        for (final e in (res['units'] as Map).entries)
+          ...(e.value is List
+              ? (e.value as List)
+                  .whereType<Map>()
+                  .map((m) => Map<String, dynamic>.from(m))
+                  .map((m) => {...m, 'dimension': m['dimension'] ?? e.key})
+              : const <Map<String, dynamic>>[]),
+      ];
+    } else {
+      return const [];
+    }
+    return rows
+        .whereType<Map>()
+        .map((m) => UnitRow.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  // Suppliers (`SuppliersView.vue`)
+
+  /// `GET /api/suppliers` — vendor directory with money joined.
+  Future<List<Supplier>> suppliers() async {
+    final res = await client.get('suppliers');
+    if (res is! List) return const [];
+    return res
+        .whereType<Map>()
+        .map((m) => Supplier.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  /// `GET /api/suppliers/:id` — statement ({supplier, totals, purchases}).
+  Future<Map<String, dynamic>?> supplierStatement(String id) async {
+    final res = await client.get('suppliers/$id');
+    return res is Map ? Map<String, dynamic>.from(res) : null;
+  }
+
+  /// `POST /api/suppliers` (manager).
+  Future<void> postSupplier(Map<String, dynamic> payload) async {
+    final res = await client.post('suppliers', payload);
+    if (res is Map && res['ok'] == false) {
+      throw ApiError((res['error'] as String?) ?? 'Could not save the supplier');
+    }
+  }
+
+  /// `PUT /api/suppliers/:id` (manager).
+  Future<void> updateSupplier(String id, Map<String, dynamic> payload) async {
+    final res = await client.put('suppliers/$id', payload);
+    if (res is Map && res['ok'] == false) {
+      throw ApiError((res['error'] as String?) ?? 'Could not save the supplier');
+    }
+  }
+
+  // Purchases (`PurchasesView.vue`)
+
+  /// `GET /api/purchases[?from=&to=]`.
+  Future<List<Purchase>> purchases({String? from, String? to}) async {
+    final q = [
+      if (from != null && from.isNotEmpty) 'from=$from',
+      if (to != null && to.isNotEmpty) 'to=$to',
+    ].join('&');
+    final res =
+        await client.get(q.isEmpty ? 'purchases' : 'purchases?$q');
+    if (res is! List) return const [];
+    return res
+        .whereType<Map>()
+        .map((m) => Purchase.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  /// `GET /api/purchases/:id` — the note with its item lines.
+  Future<Purchase?> purchaseDetail(String id) async {
+    final res = await client.get('purchases/$id');
+    if (res is! Map) return null;
+    return Purchase.fromJson(Map<String, dynamic>.from(res));
+  }
+
+  /// `POST /api/purchases` — record goods received (manager).
+  Future<void> postPurchase({
+    required String supplierId,
+    required String date,
+    required List<Map<String, dynamic>> items,
+    required double total,
+    double paid = 0,
+    String paymentMethod = 'cash',
+    String notes = '',
+  }) async {
+    final res = await client.post('purchases', {
+      'supplierId': supplierId,
+      'date': date,
+      'items': items,
+      'total': _r2(total),
+      'paid': _r2(paid),
+      'paymentMethod': paymentMethod,
+      if (notes.isNotEmpty) 'notes': notes,
+    });
+    if (res is Map && res['ok'] == false) {
+      throw ApiError((res['error'] as String?) ?? 'Could not record the purchase');
+    }
+  }
+
+  /// `POST /api/purchases/analyse` — the projection preview for one line.
+  Future<PurchaseAnalyse> analysePurchase({
+    required String inventoryId,
+    required double qty,
+    required String unit,
+    required double totalCost,
+  }) async {
+    final res = await client.post('purchases/analyse', {
+      'inventoryId': inventoryId,
+      'qty': qty,
+      'unit': unit,
+      'totalCost': _r2(totalCost),
+    });
+    if (res is Map) {
+      return PurchaseAnalyse.fromJson(Map<String, dynamic>.from(res));
+    }
+    return const PurchaseAnalyse();
+  }
+
+  /// `POST /api/purchases/:id/pay {amount, method}` — pay a supplier.
+  Future<void> payPurchase(String id, double amount, String method) async {
+    final res = await client.post(
+        'purchases/$id/pay', {'amount': _r2(amount), 'method': method});
+    if (res is Map && res['ok'] == false) {
+      throw ApiError((res['error'] as String?) ?? 'Could not record the payment');
+    }
+  }
+
+  // Shifts (`ShiftsView.vue`) — the roster
+
+  /// `GET /api/shifts` — the roster. Manager-only on the server; other
+  /// roles get the 403 and read an empty list (view-only screen never
+  /// renders for them anyway).
+  Future<List<ShiftRow>> shifts() async {
+    try {
+      final res = await client.get('shifts');
+      if (res is! List) return const [];
+      return res
+          .whereType<Map>()
+          .map((m) => ShiftRow.fromJson(Map<String, dynamic>.from(m)))
+          .toList();
+    } on ApiError catch (e) {
+      if (e.status == 403 || e.status == 404) return const [];
+      rethrow;
+    }
+  }
+
+  /// `POST /api/shifts` (manager).
+  Future<void> postShift({
+    required String staffId,
+    required String shiftType,
+    required String date,
+    required String start,
+    required String end,
+  }) async {
+    final res = await client.post('shifts', {
+      'staffId': staffId,
+      'shiftType': shiftType,
+      'date': date,
+      'start': start,
+      'end': end,
+    });
+    if (res is Map && res['ok'] == false) {
+      throw ApiError((res['error'] as String?) ?? 'Could not add the shift');
+    }
+  }
+
+  /// `PUT /api/shifts/:id` (manager).
+  Future<void> updateShift(String id, Map<String, dynamic> payload) async {
+    final res = await client.put('shifts/$id', payload);
+    if (res is Map && res['ok'] == false) {
+      throw ApiError((res['error'] as String?) ?? 'Could not save the shift');
+    }
+  }
+
+  /// `DELETE /api/shifts/:id` (manager).
+  Future<void> deleteShift(String id) async {
+    await client.delete('shifts/$id', {'id': id});
+  }
+
+  // Alerts dashboard (`AlertsDashboardView.vue`) + audit log + reports extras
+
+  /// `GET /api/alerts?status=<open|acknowledged|resolved>&limit=`.
+  Future<List<OpsAlert>> alertsByStatus(String status, {int limit = 100}) async {
+    final res = await client.get('alerts?status=$status&limit=$limit');
+    final List rows;
+    if (res is List) {
+      rows = res;
+    } else if (res is Map && res['alerts'] is List) {
+      rows = res['alerts'] as List;
+    } else {
+      return const [];
+    }
+    return rows
+        .whereType<Map>()
+        .map((m) => OpsAlert.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  /// `GET /api/audit?entity=&action=&actor_id=&from=&to=&limit=` — the
+  /// admin audit trail (manager).
+  Future<List<AuditEntry>> auditFiltered({
+    String? entity,
+    String? action,
+    String? actorId,
+    String? from,
+    String? to,
+    int limit = 500,
+  }) async {
+    final q = StringBuffer('audit?limit=$limit');
+    if (entity != null && entity.isNotEmpty) q.write('&entity=$entity');
+    if (action != null && action.isNotEmpty) q.write('&action=$action');
+    if (actorId != null && actorId.isNotEmpty) q.write('&actor_id=$actorId');
+    if (from != null && from.isNotEmpty) q.write('&from=$from');
+    if (to != null && to.isNotEmpty) q.write('&to=$to');
+    final res = await client.get(q.toString());
+    final list = res is Map ? res['entries'] : res;
+    if (list is! List) return const [];
+    return list
+        .whereType<Map>()
+        .map((m) => AuditEntry.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  /// `GET /api/reports/staff-performance` → `.staff`.
+  Future<List<Map<String, dynamic>>> staffPerformance() async {
+    final res = await client.get('reports/staff-performance');
+    final list = res is Map ? res['staff'] : res;
+    if (list is! List) return const [];
+    return list
+        .whereType<Map>()
+        .map((m) => Map<String, dynamic>.from(m))
+        .toList();
+  }
+
+  /// `GET /api/reports/hourly-heatmap` → `.hours` (7×24 grid rows).
+  Future<List<Map<String, dynamic>>> hourlyHeatmap() async {
+    final res = await client.get('reports/hourly-heatmap');
+    final list = res is Map ? res['hours'] : res;
+    if (list is! List) return const [];
+    return list
+        .whereType<Map>()
+        .map((m) => Map<String, dynamic>.from(m))
+        .toList();
   }
 
   // ── Small helpers ─────────────────────────────────────────────────────────

@@ -6,6 +6,7 @@ import '../models/models.dart';
 import '../state/app_state.dart';
 import '../state/cart.dart';
 import '../theme.dart';
+import '../widgets/backoffice.dart';
 import '../widgets/common.dart';
 import 'cart_sheet.dart' show DecimalTextInputFormatter, OrderContextEditor;
 
@@ -143,7 +144,7 @@ class _ReviewSheetState extends State<ReviewSheet> {
 
   Future<void> _pay() async {
     final cart = context.read<CartState>();
-    final line = await showModalBottomSheet<PaymentLine>(
+    final result = await showModalBottomSheet<PaymentResult>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Pal.of(context).surface,
@@ -157,13 +158,16 @@ class _ReviewSheetState extends State<ReviewSheet> {
         child: const PaymentSheet(),
       ),
     );
-    if (line == null || !mounted) return;
+    if (result == null || !mounted) return;
+    final line = result.primary;
 
     final app = context.read<AppState>();
     final messenger = ScaffoldMessenger.of(context);
     final navigator = Navigator.of(context);
     final overlay = Pal.of(context).overlay;
-    final paid = cart.grandTotal();
+    final effTotal =
+        (cart.grandTotal() + result.tip - result.discount)
+            .clamp(0, double.infinity).toDouble();
     setState(() => _sending = true);
     try {
       await _claimTableIfDineIn(messenger);
@@ -171,14 +175,18 @@ class _ReviewSheetState extends State<ReviewSheet> {
         itemsSummary: cart.itemsSummary,
         lines: cart.serializedLines,
         subtotal: cart.subtotal,
-        total: cart.grandTotal(),
+        total: effTotal,
         orderType: cart.orderType,
         payment: line,
-        paymentLabel: line.method,
+        paymentLabel: result.breakdown.map((p) => p.method).toSet().join('+'),
         tableNum: cart.tableNum,
         customer: cart.customerName,
         customerPhone: cart.customerPhone,
         notes: cart.notes,
+        tip: result.tip,
+        discount: result.discount,
+        breakdown: result.breakdown,
+        discountReason: _discountReasonOf(result),
       );
       cart.clear();
       // Close the review sheet, then raise the success state above the app.
@@ -188,7 +196,7 @@ class _ReviewSheetState extends State<ReviewSheet> {
         barrierDismissible: true,
         barrierColor: overlay,
         pageBuilder: (_, __, ___) =>
-            SuccessSheet(orderId: id, total: paid),
+            SuccessSheet(orderId: id, total: effTotal),
         transitionsBuilder: (_, anim, __, child) =>
             FadeTransition(opacity: anim, child: child),
       ));
@@ -201,6 +209,9 @@ class _ReviewSheetState extends State<ReviewSheet> {
       if (mounted) setState(() => _sending = false);
     }
   }
+
+  static String? _discountReasonOf(PaymentResult result) =>
+      result.discount > 0 ? 'discount applied at checkout' : null;
 
   /// Dine-in: claim the table first, same rule as the cart panel.
   Future<void> _claimTableIfDineIn(ScaffoldMessengerState messenger) async {
@@ -356,13 +367,33 @@ class _MiniStepper extends StatelessWidget {
 
 class PaymentSheet extends StatefulWidget {
   /// When non-null, the sheet charges exactly this amount and does not
-  /// touch the cart state.
+  /// touch the cart state (discount editing hides — the check's totals are
+  /// already on the server; tip stays available, like the web settle flow).
   final double? fixedTotal;
 
   const PaymentSheet({super.key, this.fixedTotal});
 
   @override
   State<PaymentSheet> createState() => _PaymentSheetState();
+}
+
+/// What the payment sheet hands back — one primary leg (or a full split set)
+/// plus the tip and manager discount the caller bakes into the totals.
+class PaymentResult {
+  final PaymentLine primary;
+  final List<PaymentLine> splits; // empty = single payment
+  final double tip;
+  final double discount;
+
+  const PaymentResult({
+    required this.primary,
+    this.splits = const [],
+    this.tip = 0,
+    this.discount = 0,
+  });
+
+  List<PaymentLine> get breakdown =>
+      splits.isNotEmpty ? splits : [primary];
 }
 
 class _PaymentSheetState extends State<PaymentSheet> {
@@ -374,9 +405,21 @@ class _PaymentSheetState extends State<PaymentSheet> {
     ('cbe', 'CBE Birr', Icons.grid_view_outlined),
     ('bank', 'Bank Transfer', Icons.account_balance_outlined),
   ];
+  static const _digitalMethods = {'telebirr', 'cbe', 'bank', 'mobile'};
 
   final _tender = TextEditingController();
+  final _reference = TextEditingController();
+  final _tipCustom = TextEditingController();
+  final _discountC = TextEditingController();
+  final _discountReason = TextEditingController();
   String _method = 'cash';
+  String _tipMode = 'none'; // none | p10 | p15 | fixed
+  String _discountMode = 'none'; // none | p10 | p20 | fixed
+  bool _splitting = false;
+  final List<(String, TextEditingController)> _splitLegs = [];
+
+  bool get _isManager =>
+      context.read<AppState>().roleKey == 'manager';
 
   @override
   void initState() {
@@ -389,18 +432,76 @@ class _PaymentSheetState extends State<PaymentSheet> {
     }
   }
 
-  double get _total =>
-      widget.fixedTotal ?? context.read<CartState>().grandTotal();
+  @override
+  void dispose() {
+    _reference.dispose();
+    _tipCustom.dispose();
+    _discountC.dispose();
+    _discountReason.dispose();
+    for (final (_, c) in _splitLegs) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  /// The base the tip/discount arithmetic works on: the bill itself.
+  double get _base => widget.fixedTotal ?? context.read<CartState>().grandTotal();
+
+  double get _tipValue {
+    switch (_tipMode) {
+      case 'p10':
+        return _r2(_base * 0.10);
+      case 'p15':
+        return _r2(_base * 0.15);
+      case 'fixed':
+        return _r2(double.tryParse(_tipCustom.text) ?? 0);
+      default:
+        return 0;
+    }
+  }
+
+  double get _discountValue {
+    if (!_isManager) return 0;
+    final v = double.tryParse(_discountC.text) ?? 0;
+    switch (_discountMode) {
+      case 'p10':
+        return _r2(_base * 0.10);
+      case 'p20':
+        return _r2(_base * 0.20);
+      case 'fixed':
+        return _r2(v);
+      default:
+        return 0;
+    }
+  }
+
+  double get _total => (_base + _tipValue - _discountValue)
+      .clamp(0, double.infinity).toDouble();
 
   double get _tenderedValue => double.tryParse(_tender.text) ?? 0;
 
+  double get _splitRemaining {
+    final paid = _splitLegs
+        .map((leg) => double.tryParse(leg.$2.text) ?? 0)
+        .fold<double>(0, (s, v) => s + v);
+    return _r2(_total - paid);
+  }
+
+  bool get _splitValid =>
+      _splitLegs.isNotEmpty &&
+      _splitLegs.every((leg) => (double.tryParse(leg.$2.text) ?? 0) > 0) &&
+      _splitRemaining.abs() <= 0.005;
+
   bool get _canPay {
+    if (_splitting) return _splitValid;
     if (_method == 'cash') return _tenderedValue + 0.005 >= _total;
     return true;
   }
 
   double get _change =>
       _tenderedValue > _total ? _tenderedValue - _total : 0;
+
+  static double _r2(double v) => (v * 100).roundToDouble() / 100;
 
   @override
   Widget build(BuildContext context) {
@@ -428,54 +529,104 @@ class _PaymentSheetState extends State<PaymentSheet> {
                         fontSize: 14, color: pal.primary)),
               ],
             ),
-            const SizedBox(height: 10),
-            // 3-col method card grid.
-            GridView.count(
-              crossAxisCount: 3,
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              mainAxisSpacing: 6,
-              crossAxisSpacing: 6,
-              childAspectRatio: 1.55,
-              children: [
-                for (final (value, label, icon) in _methods)
-                  _MethodCard(
-                    icon: icon,
-                    label: label,
-                    active: _method == value,
-                    onTap: () => setState(() => _method = value),
-                  ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            if (_method == 'cash') ..._cashPanel(pal) else ...[
-              Container(
-                padding: const EdgeInsets.symmetric(vertical: 16),
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  color: pal.sunken.withValues(alpha: 0.5),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Column(
-                  children: [
-                    Icon(_methods
-                        .firstWhere((m) => m.$1 == _method)
-                        .$3,
-                        size: 24,
-                        color: pal.primary),
-                    const SizedBox(height: 6),
-                    Text(
-                      'Collect the ${_methods.firstWhere((m) => m.$1 == _method).$2.toLowerCase()} payment, '
-                      'then process it.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                          fontFamily: kFontBody,
-                          fontSize: 11.5,
-                          color: pal.muted),
+            const SizedBox(height: 8),
+            _tipCard(pal),
+            if (_isManager && widget.fixedTotal == null) ...[
+              const SizedBox(height: 6),
+              _discountCard(pal),
+            ],
+            const SizedBox(height: 8),
+            if (_splitting) ...[
+              _splitCard(pal),
+            ] else ...[
+              // 3-col method card grid.
+              GridView.count(
+                crossAxisCount: 3,
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                mainAxisSpacing: 6,
+                crossAxisSpacing: 6,
+                childAspectRatio: 1.55,
+                children: [
+                  for (final (value, label, icon) in _methods)
+                    _MethodCard(
+                      icon: icon,
+                      label: label,
+                      active: _method == value,
+                      onTap: () => setState(() => _method = value),
                     ),
-                  ],
-                ),
+                ],
               ),
+              const SizedBox(height: 10),
+              if (_method == 'cash') ..._cashPanel(pal) else ...[
+                if (_digitalMethods.contains(_method)) _referencePanel(pal),
+                Container(
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: pal.sunken.withValues(alpha: 0.5),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Column(
+                    children: [
+                      Icon(_methods
+                          .firstWhere((m) => m.$1 == _method)
+                          .$3,
+                          size: 24,
+                          color: pal.primary),
+                      const SizedBox(height: 6),
+                      Text(
+                        'Collect the ${_methods.firstWhere((m) => m.$1 == _method).$2.toLowerCase()} payment, '
+                        'then process it.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                            fontFamily: kFontBody,
+                            fontSize: 11.5,
+                            color: pal.muted),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+              const SizedBox(height: 8),
+              Row(children: [
+                Expanded(
+                  child: InkWell(
+                    onTap: () => setState(() {
+                      _splitting = true;
+                      if (_splitLegs.isEmpty) {
+                        _splitLegs.add(('cash', TextEditingController()));
+                        _splitLegs.add(('telebirr', TextEditingController()));
+                      }
+                    }),
+                    borderRadius: BorderRadius.circular(8),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 7),
+                      decoration: BoxDecoration(
+                        color: pal.sunken.withValues(alpha: 0.5),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: pal.border),
+                      ),
+                      child: Row(children: [
+                        Icon(Icons.call_split, size: 14, color: pal.muted),
+                        const SizedBox(width: 6),
+                        Text('Split the bill across methods',
+                            style: TextStyle(
+                                fontFamily: kFontBody,
+                                fontSize: 11.5, color: pal.body)),
+                        const Spacer(),
+                        Text('SPLIT',
+                            style: TextStyle(
+                                fontFamily: kFontBody,
+                                fontSize: 10,
+                                fontWeight: FontWeight.w800,
+                                color: pal.primary)),
+                      ]),
+                    ),
+                  ),
+                ),
+              ]),
             ],
             const SizedBox(height: 12),
             SizedBox(
@@ -494,6 +645,353 @@ class _PaymentSheetState extends State<PaymentSheet> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  /// Tip card — none / 10% / 15% / fixed (the web CheckoutView tip presets).
+  Widget _tipCard(Pal pal) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+      decoration: BoxDecoration(
+        color: pal.surface,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: pal.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            Icon(Icons.volunteer_activism_outlined,
+                size: 13, color: pal.gold),
+            const SizedBox(width: 5),
+            Text('TIP — GOES TO STAFF, NOT THE HOUSE',
+                style: TextStyle(
+                    fontFamily: kFontBody,
+                    fontSize: 9,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.7,
+                    color: pal.muted)),
+            const Spacer(),
+            if (_tipValue > 0)
+              Text('+${money(_tipValue)}',
+                  style: T.mono.copyWith(
+                      fontSize: 11, fontWeight: FontWeight.w700,
+                      color: pal.gold)),
+          ]),
+          const SizedBox(height: 6),
+          Row(children: [
+            for (final (mode, label) in [
+              ('none', 'None'), ('p10', '10%'), ('p15', '15%'),
+            ])
+              Padding(
+                padding: const EdgeInsets.only(right: 6),
+                child: InkWell(
+                  onTap: () => setState(() => _tipMode = mode),
+                  borderRadius: BorderRadius.circular(6),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 9, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: _tipMode == mode ? pal.gold : pal.sunken,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(label,
+                        style: TextStyle(
+                            fontFamily: kFontBody,
+                            fontSize: 10.5,
+                            fontWeight: FontWeight.w700,
+                            color: _tipMode == mode
+                                ? Colors.white : pal.body)),
+                  ),
+                ),
+              ),
+            SizedBox(
+              width: 92,
+              height: 26,
+              child: TextField(
+                controller: _tipCustom,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                inputFormatters: [DecimalTextInputFormatter()],
+                onChanged: (_) => setState(() => _tipMode = 'fixed'),
+                style: T.mono.copyWith(fontSize: 11, color: pal.heading),
+                decoration: InputDecoration(
+                    hintText: 'ETB fixed',
+                    hintStyle: TextStyle(
+                        fontFamily: kFontMono,
+                        fontSize: 9.5, color: pal.faint),
+                    isDense: true,
+                    filled: true,
+                    fillColor: pal.sunken,
+                    contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 7, vertical: 5)),
+              ),
+            ),
+          ]),
+        ],
+      ),
+    );
+  }
+
+  /// Manager discount card — the web discount section is manager-only, and
+  /// so is this one.
+  Widget _discountCard(Pal pal) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+      decoration: BoxDecoration(
+        color: pal.surface,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: pal.dangerBorder),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            Icon(Icons.percent, size: 13, color: pal.danger),
+            const SizedBox(width: 5),
+            Text('MANAGER DISCOUNT',
+                style: TextStyle(
+                    fontFamily: kFontBody,
+                    fontSize: 9,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.7,
+                    color: pal.muted)),
+            const Spacer(),
+            if (_discountValue > 0)
+              Text('−${money(_discountValue)}',
+                  style: T.mono.copyWith(
+                      fontSize: 11, fontWeight: FontWeight.w700,
+                      color: pal.danger)),
+          ]),
+          const SizedBox(height: 6),
+          Row(children: [
+            for (final (mode, label) in [
+              ('none', 'None'), ('p10', '10%'), ('p20', '20%'),
+            ])
+              Padding(
+                padding: const EdgeInsets.only(right: 6),
+                child: InkWell(
+                  onTap: () => setState(() => _discountMode = mode),
+                  borderRadius: BorderRadius.circular(6),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 9, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: _discountMode == mode ? pal.danger : pal.sunken,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(label,
+                        style: TextStyle(
+                            fontFamily: kFontBody,
+                            fontSize: 10.5,
+                            fontWeight: FontWeight.w700,
+                            color: _discountMode == mode
+                                ? Colors.white : pal.body)),
+                  ),
+                ),
+              ),
+            SizedBox(
+              width: 74,
+              height: 26,
+              child: TextField(
+                controller: _discountC,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                inputFormatters: [DecimalTextInputFormatter()],
+                onChanged: (_) => setState(() => _discountMode = 'fixed'),
+                style: T.mono.copyWith(fontSize: 11, color: pal.heading),
+                decoration: InputDecoration(
+                    hintText: 'ETB',
+                    hintStyle: TextStyle(
+                        fontFamily: kFontMono,
+                        fontSize: 9.5, color: pal.faint),
+                    isDense: true,
+                    filled: true,
+                    fillColor: pal.sunken,
+                    contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 7, vertical: 5)),
+              ),
+            ),
+            const SizedBox(width: 6),
+            Expanded(
+              child: TextField(
+                controller: _discountReason,
+                style: TextStyle(
+                    fontFamily: kFontBody, fontSize: 10.5, color: pal.heading),
+                decoration: InputDecoration(
+                    hintText: 'Reason (audited)',
+                    hintStyle: TextStyle(
+                        fontFamily: kFontBody,
+                        fontSize: 9.5, color: pal.faint),
+                    isDense: true,
+                    filled: true,
+                    fillColor: pal.sunken,
+                    contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 7, vertical: 5)),
+              ),
+            ),
+          ]),
+        ],
+      ),
+    );
+  }
+
+  /// Digital reference panel — the Telebirr / CBE / bank reference the web
+  /// payment panel collects (its receipt auto-verify rides the browser; the
+  /// reference number is the portable half).
+  Widget _referencePanel(Pal pal) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: TextField(
+        controller: _reference,
+        style: T.mono.copyWith(fontSize: 12, color: pal.heading),
+        decoration: InputDecoration(
+            labelText: 'Reference / transaction number (optional)',
+            labelStyle: TextStyle(
+                fontFamily: kFontBody, fontSize: 10.5, color: pal.muted),
+            isDense: true,
+            filled: true,
+            fillColor: pal.sunken),
+      ),
+    );
+  }
+
+  /// Split card — per-method legs with the remaining tracker; valid when
+  /// the legs land on the total (the web split-bill contract).
+  Widget _splitCard(Pal pal) {
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: pal.surface,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+            color: _splitValid ? pal.successBorder : pal.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(children: [
+            Icon(Icons.call_split, size: 14, color: pal.primary),
+            const SizedBox(width: 5),
+            Expanded(
+              child: Text('SPLIT BILL — ${_splitLegs.length} LEGS',
+                  style: TextStyle(
+                      fontFamily: kFontBody,
+                      fontSize: 9.5,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0.7,
+                      color: pal.muted)),
+            ),
+            InkWell(
+              onTap: () => setState(() => _splitting = false),
+              child: Text('Close',
+                  style: TextStyle(
+                      fontFamily: kFontBody,
+                      fontSize: 10.5,
+                      fontWeight: FontWeight.w700,
+                      color: pal.muted)),
+            ),
+          ]),
+          const SizedBox(height: 8),
+          for (var i = 0; i < _splitLegs.length; i++)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Row(children: [
+                SizedBox(
+                  width: 120,
+                  height: 30,
+                  child: DropdownButtonFormField<String>(
+                    initialValue: _splitLegs[i].$1,
+                    isDense: true,
+                    dropdownColor: pal.surface,
+                    style: TextStyle(
+                        fontFamily: kFontBody,
+                        fontSize: 11, color: pal.heading),
+                    decoration: InputDecoration(
+                        isDense: true,
+                        filled: true,
+                        fillColor: pal.sunken,
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 6)),
+                    items: [
+                      for (final (value, label, _) in _methods)
+                        DropdownMenuItem(value: value, child: Text(label)),
+                    ],
+                    onChanged: (v) =>
+                        setState(() => _splitLegs[i] =
+                            (v ?? 'cash', _splitLegs[i].$2)),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: SizedBox(
+                    height: 30,
+                    child: TextField(
+                      controller: _splitLegs[i].$2,
+                      keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true),
+                      inputFormatters: [DecimalTextInputFormatter()],
+                      onChanged: (_) => setState(() {}),
+                      style: T.mono.copyWith(
+                          fontSize: 11.5, color: pal.heading),
+                      decoration: InputDecoration(
+                          hintText: 'Amount ETB',
+                          hintStyle: TextStyle(
+                              fontFamily: kFontMono,
+                              fontSize: 9.5, color: pal.faint),
+                          isDense: true,
+                          filled: true,
+                          fillColor: pal.sunken),
+                    ),
+                  ),
+                ),
+                if (_splitLegs.length > 1)
+                  InkWell(
+                    onTap: () => setState(() {
+                      _splitLegs[i].$2.dispose();
+                      _splitLegs.removeAt(i);
+                    }),
+                    child: Padding(
+                      padding: const EdgeInsets.all(5),
+                      child: Icon(Icons.close,
+                          size: 13, color: pal.danger),
+                    ),
+                  ),
+              ]),
+            ),
+          RowAction('+ Add leg',
+              () => setState(() => _splitLegs.add(
+                  ('cash', TextEditingController())))),
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+            decoration: BoxDecoration(
+              color: _splitRemaining.abs() <= 0.005
+                  ? pal.successBg
+                  : pal.warningBg,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                  color: _splitRemaining.abs() <= 0.005
+                      ? pal.successBorder
+                      : pal.warningBorder),
+            ),
+            child: Row(children: [
+              Text('REMAINING',
+                  style: TextStyle(
+                      fontFamily: kFontBody,
+                      fontSize: 9.5,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0.7,
+                      color: pal.muted)),
+              const Spacer(),
+              Text(money(_splitRemaining),
+                  style: T.price.copyWith(
+                      fontSize: 14,
+                      color: _splitRemaining.abs() <= 0.005
+                          ? pal.success
+                          : pal.warning)),
+            ]),
+          ),
+        ],
       ),
     );
   }
@@ -638,6 +1136,26 @@ class _PaymentSheetState extends State<PaymentSheet> {
   }
 
   void _confirm(BuildContext context) {
+    if (_splitting) {
+      final splits = [
+        for (final (method, c) in _splitLegs)
+          PaymentLine(
+            method: method,
+            amount: double.tryParse(c.text) ?? 0,
+            reference: _digitalMethods.contains(method) &&
+                    _reference.text.trim().isNotEmpty
+                ? _reference.text.trim()
+                : null,
+          ),
+      ];
+      Navigator.of(context).pop(PaymentResult(
+        primary: splits.first,
+        splits: splits,
+        tip: _tipValue,
+        discount: _discountValue,
+      ));
+      return;
+    }
     final line = PaymentLine(
       method: _method,
       amount: _total,
@@ -645,13 +1163,21 @@ class _PaymentSheetState extends State<PaymentSheet> {
       change: _method == 'cash'
           ? (_tenderedValue > _total ? _tenderedValue - _total : 0)
           : null,
+      reference: _digitalMethods.contains(_method) &&
+              _reference.text.trim().isNotEmpty
+          ? _reference.text.trim()
+          : null,
     );
     if (widget.fixedTotal == null && context.mounted) {
       final cart = context.read<CartState>();
       cart.setPaymentMethod(_method);
       if (_method == 'cash') cart.setTendered(_tenderedValue);
     }
-    Navigator.of(context).pop(line);
+    Navigator.of(context).pop(PaymentResult(
+      primary: line,
+      tip: _tipValue,
+      discount: _discountValue,
+    ));
   }
 }
 

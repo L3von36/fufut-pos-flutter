@@ -8,7 +8,7 @@ import '../state/order_scope.dart';
 import '../state/roles.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
-import 'checkout_sheet.dart' show PaymentSheet;
+import 'checkout_sheet.dart' show PaymentResult, PaymentSheet;
 
 /// Order history + open checks — the waiter dashboard.
 ///
@@ -1239,8 +1239,9 @@ class _OrderDetailSheet extends StatelessWidget {
   Future<void> _settle(BuildContext context) async {
     final app = context.read<AppState>();
     // fixedTotal: the bill is already on the server — the sheet must not
-    // read the cart (there is none in this flow).
-    final line = await showModalBottomSheet<PaymentLine>(
+    // read the cart (there is none in this flow). Tip stays available, and
+    // the split-bill legs ride the same breakdown.
+    final result = await showModalBottomSheet<PaymentResult>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Pal.of(context).surface,
@@ -1251,11 +1252,13 @@ class _OrderDetailSheet extends StatelessWidget {
           maxHeight: MediaQuery.sizeOf(context).height * 0.9),
       builder: (_) => PaymentSheet(fixedTotal: order.total),
     );
-    if (line == null || !context.mounted) return;
+    if (result == null || !context.mounted) return;
+    final line = result.primary;
     final messenger = ScaffoldMessenger.of(context);
     final navigator = Navigator.of(context);
     try {
-      await app.api.settleOrder(order, line.method, line);
+      await app.api.settleOrder(order, line.method, line,
+          tip: result.tip, breakdown: result.breakdown);
       navigator.pop();
       showInfoOn(
           messenger, 'Tab settled — ${money(line.amount)} via ${line.method}');

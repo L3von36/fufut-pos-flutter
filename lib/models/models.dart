@@ -1064,6 +1064,8 @@ class Reservation {
   final int guests;
   final String status;
   final String? phone;
+  final String? tableNum;
+  final int durationMin;
 
   const Reservation({
     required this.id,
@@ -1073,6 +1075,8 @@ class Reservation {
     this.guests = 0,
     this.status = '',
     this.phone,
+    this.tableNum,
+    this.durationMin = 0,
   });
 
   factory Reservation.fromJson(Map<String, dynamic> j) => Reservation(
@@ -1083,6 +1087,8 @@ class Reservation {
         guests: _asInt(j['guests'] ?? j['party_size']),
         status: (j['status'] ?? '').toString(),
         phone: (j['phone'] ?? j['customer_phone'])?.toString(),
+        tableNum: (j['tableNum'] ?? j['table_number'] ?? j['table_id'])?.toString(),
+        durationMin: _asInt(j['duration_min'] ?? j['durationMin'] ?? 0),
       );
 }
 
@@ -1183,8 +1189,717 @@ class OpsAlert {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Backoffice — inventory, suppliers, purchases, expenses, customers, shifts,
+// recipes and the stock-control reports. The manager/accountant/chef half of
+// the web POS (`InventoryView.vue`, `SuppliersView.vue`, `PurchasesView.vue`,
+// `ExpensesView.vue`, `CustomersView.vue`, `ShiftsView.vue`,
+// `RecipesView.vue`, `StockControlView.vue`).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One row of `GET /api/inventory`. Stock never changes directly — the
+/// ledger does (`adjust`, `count`, `waste`, purchases) — so this is the
+/// catalogue row plus the level the ledger last left it at.
+class InventoryItem {
+  final String id;
+  final String name;
+  final String category;
+  final String unit;
+  final double stock;
+  final double minLevel;
+  final double cost;
+
+  const InventoryItem({
+    required this.id,
+    this.name = '',
+    this.category = '',
+    this.unit = '',
+    this.stock = 0,
+    this.minLevel = 0,
+    this.cost = 0,
+  });
+
+  bool get isLow => minLevel > 0 && stock <= minLevel;
+
+  factory InventoryItem.fromJson(Map<String, dynamic> j) => InventoryItem(
+        id: (j['id'] ?? '').toString(),
+        name: (j['name'] ?? '').toString(),
+        category: (j['category'] ?? 'Other').toString(),
+        unit: (j['unit'] ?? '').toString(),
+        stock: _asDouble(j['stock'] ?? j['quantity'] ?? j['qty']),
+        minLevel: _asDouble(j['minLevel'] ?? j['min_level'] ?? j['reorderPoint'] ?? j['reorder_point']),
+        cost: _asDouble(j['cost'] ?? j['avg_cost'] ?? j['avgCost']),
+      );
+}
+
+/// One row of `GET /api/suppliers` — the vendor directory with the money
+/// picture joined in (purchase count / total / paid / balance).
+class Supplier {
+  final String id;
+  final String name;
+  final String category;
+  final String contact;
+  final String phone;
+  final String email;
+  final String address;
+  final String supplies;
+  final String notes;
+  final int purchaseCount;
+  final double total;
+  final double paid;
+
+  const Supplier({
+    required this.id,
+    this.name = '',
+    this.category = '',
+    this.contact = '',
+    this.phone = '',
+    this.email = '',
+    this.address = '',
+    this.supplies = '',
+    this.notes = '',
+    this.purchaseCount = 0,
+    this.total = 0,
+    this.paid = 0,
+  });
+
+  double get balance => total - paid;
+
+  factory Supplier.fromJson(Map<String, dynamic> j) => Supplier(
+        id: (j['id'] ?? '').toString(),
+        name: (j['name'] ?? '').toString(),
+        category: (j['category'] ?? '').toString(),
+        contact: (j['contact'] ?? '').toString(),
+        phone: (j['phone'] ?? '').toString(),
+        email: (j['email'] ?? '').toString(),
+        address: (j['address'] ?? '').toString(),
+        supplies: (j['supplies'] ?? '').toString(),
+        notes: (j['notes'] ?? '').toString(),
+        purchaseCount: _asInt(j['purchaseCount'] ?? j['purchase_count'] ?? j['purchases'] ?? 0),
+        total: _asDouble(j['total'] ?? j['totalPurchased'] ?? j['total_purchased']),
+        paid: _asDouble(j['paid']),
+      );
+}
+
+/// One item line of a purchase (`GET /api/purchases/:id` lines).
+class PurchaseLine {
+  final String inventoryId;
+  final String name;
+  final double qty;
+  final String unit;
+  final double totalCost;
+
+  const PurchaseLine({
+    this.inventoryId = '',
+    this.name = '',
+    this.qty = 0,
+    this.unit = '',
+    this.totalCost = 0,
+  });
+
+  factory PurchaseLine.fromJson(Map<String, dynamic> j) => PurchaseLine(
+        inventoryId: (j['inventoryId'] ?? j['inventory_id'] ?? '').toString(),
+        name: (j['itemName'] ?? j['item_name'] ?? j['name'] ?? '').toString(),
+        qty: _asDouble(j['qty'] ?? j['quantity']),
+        unit: (j['unit'] ?? '').toString(),
+        totalCost: _asDouble(j['totalCost'] ?? j['total_cost'] ?? j['cost']),
+      );
+}
+
+/// One row of `GET /api/purchases` — a goods-received note against a
+/// supplier, with what was paid and what is still owed.
+class Purchase {
+  final String id;
+  final String? date;
+  final String supplierId;
+  final String supplierName;
+  final double total;
+  final double paid;
+  final String notes;
+  final String? paymentMethod;
+  final List<PurchaseLine> lines;
+
+  const Purchase({
+    required this.id,
+    this.date,
+    this.supplierId = '',
+    this.supplierName = '',
+    this.total = 0,
+    this.paid = 0,
+    this.notes = '',
+    this.paymentMethod,
+    this.lines = const [],
+  });
+
+  double get owing => total - paid;
+
+  factory Purchase.fromJson(Map<String, dynamic> j) {
+    final sup = j['supplier'] is Map
+        ? Map<String, dynamic>.from(j['supplier'] as Map)
+        : const <String, dynamic>{};
+    return Purchase(
+      id: (j['id'] ?? '').toString(),
+      date: (j['date'] ?? j['created'])?.toString(),
+      supplierId: (j['supplierId'] ?? j['supplier_id'] ?? sup['id'] ?? '').toString(),
+      supplierName: (j['supplierName'] ?? j['supplier_name'] ?? sup['name'] ?? '').toString(),
+      total: _asDouble(j['total']),
+      paid: _asDouble(j['paid']),
+      notes: (j['notes'] ?? '').toString(),
+      paymentMethod: (j['paymentMethod'] ?? j['payment_method'])?.toString(),
+      lines: (j['lines'] as List? ?? const [])
+          .whereType<Map>()
+          .map((m) => PurchaseLine.fromJson(Map<String, dynamic>.from(m)))
+          .toList(),
+    );
+  }
+}
+
+/// `POST /api/purchases/analyse` — the per-line projection box the web
+/// record-purchase modal shows before committing (§41).
+class PurchaseAnalyse {
+  final double unitCost;
+  final double theoreticalServings;
+  final double ingredientCostPerServing;
+  final double potentialRevenue;
+  final List<String> problems;
+
+  const PurchaseAnalyse({
+    this.unitCost = 0,
+    this.theoreticalServings = 0,
+    this.ingredientCostPerServing = 0,
+    this.potentialRevenue = 0,
+    this.problems = const [],
+  });
+
+  factory PurchaseAnalyse.fromJson(Map<String, dynamic> j) => PurchaseAnalyse(
+        unitCost: _asDouble(j['unitCost'] ?? j['unit_cost']),
+        theoreticalServings:
+            _asDouble(j['theoreticalServings'] ?? j['theoretical_servings']),
+        ingredientCostPerServing: _asDouble(
+            j['ingredientCostPerServing'] ?? j['ingredient_cost_per_serving']),
+        potentialRevenue: _asDouble(j['potentialRevenue'] ?? j['potential_revenue']),
+        problems: (j['problems'] as List? ?? const [])
+            .map((p) => p.toString())
+            .toList(),
+      );
+}
+
+/// One row of `GET /api/expenses`.
+class Expense {
+  final String id;
+  final String category;
+  final String description;
+  final double amount;
+  final String? date;
+  final String? createdBy;
+
+  const Expense({
+    required this.id,
+    this.category = '',
+    this.description = '',
+    this.amount = 0,
+    this.date,
+    this.createdBy,
+  });
+
+  factory Expense.fromJson(Map<String, dynamic> j) => Expense(
+        id: (j['id'] ?? '').toString(),
+        category: (j['category'] ?? 'Other').toString(),
+        description: (j['description'] ?? '').toString(),
+        amount: _asDouble(j['amount']),
+        date: (j['date'] ?? j['created'])?.toString(),
+        createdBy: (j['createdBy'] ?? j['created_by'] ?? j['actorName'])?.toString(),
+      );
+}
+
+/// One row of `GET /api/customers` — the loyalty profile.
+class Customer {
+  final String id;
+  final String name;
+  final String phone;
+  final String email;
+  final String notes;
+  final int points;
+  final int visits;
+  final double totalSpent;
+
+  const Customer({
+    required this.id,
+    this.name = '',
+    this.phone = '',
+    this.email = '',
+    this.notes = '',
+    this.points = 0,
+    this.visits = 0,
+    this.totalSpent = 0,
+  });
+
+  factory Customer.fromJson(Map<String, dynamic> j) => Customer(
+        id: (j['id'] ?? '').toString(),
+        name: (j['name'] ?? '').toString(),
+        phone: (j['phone'] ?? '').toString(),
+        email: (j['email'] ?? '').toString(),
+        notes: (j['notes'] ?? '').toString(),
+        points: _asInt(j['points'] ?? 0),
+        visits: _asInt(j['visits'] ?? 0),
+        totalSpent: _asDouble(j['totalSpent'] ?? j['total_spent']),
+      );
+}
+
+/// One row of `GET /api/shifts` — the roster. Staff names ride the shift row
+/// or are joined client-side from `GET /api/staff`.
+class ShiftRow {
+  final String id;
+  final String staffId;
+  final String staffName;
+  final String role;
+  final String shiftType; // morning | afternoon | evening
+  final String? date;
+  final String? start;
+  final String? end;
+
+  const ShiftRow({
+    required this.id,
+    this.staffId = '',
+    this.staffName = '',
+    this.role = '',
+    this.shiftType = '',
+    this.date,
+    this.start,
+    this.end,
+  });
+
+  factory ShiftRow.fromJson(Map<String, dynamic> j) => ShiftRow(
+        id: (j['id'] ?? '').toString(),
+        staffId: (j['staffId'] ?? j['staff_id'] ?? '').toString(),
+        staffName: (j['staffName'] ?? j['staff_name'] ?? j['name'] ?? '').toString(),
+        role: (j['role'] ?? '').toString(),
+        shiftType: (j['shiftType'] ?? j['shift_type'] ?? j['type'] ?? '').toString(),
+        date: (j['date'] ?? j['shift_date'])?.toString(),
+        start: (j['start'] ?? j['start_time'])?.toString(),
+        end: (j['end'] ?? j['end_time'])?.toString(),
+      );
+}
+
+/// One ingredient line of a recipe (BOM row).
+class RecipeLineRow {
+  final String inventoryId;
+  final String name;
+  final double qty;
+  final String unit;
+  final bool isPackaging;
+  final double cost;
+
+  const RecipeLineRow({
+    this.inventoryId = '',
+    this.name = '',
+    this.qty = 0,
+    this.unit = '',
+    this.isPackaging = false,
+    this.cost = 0,
+  });
+
+  factory RecipeLineRow.fromJson(Map<String, dynamic> j) => RecipeLineRow(
+        inventoryId: (j['inventoryId'] ?? j['inventory_id'] ?? '').toString(),
+        name: (j['itemName'] ?? j['item_name'] ?? j['name'] ?? '').toString(),
+        qty: _asDouble(j['qty'] ?? j['quantity']),
+        unit: (j['unit'] ?? '').toString(),
+        isPackaging: (j['isPackaging'] ?? j['is_packaging'] ?? j['pkg']) == true,
+        cost: _asDouble(j['cost'] ?? j['lineCost'] ?? j['line_cost']),
+      );
+}
+
+/// One recipe of `GET /api/recipes` — the bill of materials behind a dish,
+/// versioned; every save creates the next version.
+class RecipeRow {
+  final String id;
+  final String menuItemId;
+  final String menuItemName;
+  final String variant;
+  final String name;
+  final double yieldQty;
+  final String notes;
+  final int version;
+  final String status;
+  final bool provisional;
+  final List<RecipeLineRow> lines;
+  final double ingredientCost;
+  final double packagingCost;
+  final double totalCost;
+  final double price;
+
+  const RecipeRow({
+    required this.id,
+    this.menuItemId = '',
+    this.menuItemName = '',
+    this.variant = '',
+    this.name = '',
+    this.yieldQty = 1,
+    this.notes = '',
+    this.version = 1,
+    this.status = 'active',
+    this.provisional = false,
+    this.lines = const [],
+    this.ingredientCost = 0,
+    this.packagingCost = 0,
+    this.totalCost = 0,
+    this.price = 0,
+  });
+
+  double get grossMarginPct =>
+      price > 0 ? ((price - totalCost) / price) * 100 : 0;
+
+  factory RecipeRow.fromJson(Map<String, dynamic> j) {
+    final lines = (j['lines'] as List? ?? const [])
+        .whereType<Map>()
+        .map((m) => RecipeLineRow.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+    final ingredients = _asDouble(
+        j['ingredientCost'] ?? j['ingredient_cost'] ?? j['ingredients_cost']);
+    final packaging = _asDouble(j['packagingCost'] ?? j['packaging_cost']);
+    return RecipeRow(
+      id: (j['id'] ?? '').toString(),
+      menuItemId: (j['menuItemId'] ?? j['menu_item_id'] ?? '').toString(),
+      menuItemName: (j['menuItemName'] ?? j['menu_item_name'] ?? j['item'] ?? j['name'] ?? '').toString(),
+      variant: (j['variant'] ?? '').toString(),
+      name: (j['name'] ?? j['menuItemName'] ?? j['item'] ?? '').toString(),
+      yieldQty: _asDouble(j['yieldQty'] ?? j['yield_qty'] ?? 1),
+      notes: (j['notes'] ?? '').toString(),
+      version: _asInt(j['version'] ?? 1),
+      status: (j['status'] ?? 'active').toString(),
+      provisional: j['provisional'] == true,
+      lines: lines,
+      ingredientCost: ingredients,
+      packagingCost: packaging,
+      totalCost: _asDouble(j['totalCost'] ?? j['total_cost']) != 0
+          ? _asDouble(j['totalCost'] ?? j['total_cost'])
+          : ingredients + packaging,
+      price: _asDouble(j['price'] ?? j['menuPrice'] ?? j['menu_price']),
+    );
+  }
+}
+
+/// One row of `GET /api/recipes/:id/versions`.
+class RecipeVersion {
+  final int version;
+  final String status;
+  final String? createdAt;
+  final String? createdBy;
+  final List<RecipeLineRow> lines;
+
+  const RecipeVersion({
+    this.version = 1,
+    this.status = '',
+    this.createdAt,
+    this.createdBy,
+    this.lines = const [],
+  });
+
+  factory RecipeVersion.fromJson(Map<String, dynamic> j) => RecipeVersion(
+        version: _asInt(j['version'] ?? 1),
+        status: (j['status'] ?? '').toString(),
+        createdAt: (j['createdAt'] ?? j['created_at'] ?? j['created'])?.toString(),
+        createdBy: (j['createdBy'] ?? j['created_by'] ?? j['actorName'])?.toString(),
+        lines: (j['lines'] as List? ?? const [])
+            .whereType<Map>()
+            .map((m) => RecipeLineRow.fromJson(Map<String, dynamic>.from(m)))
+            .toList(),
+      );
+}
+
+/// `GET /api/recipes/:id/capacity` — how many servings the current stock can
+/// produce and what runs out first.
+class RecipeCapacity {
+  final double servings;
+  final String limitingIngredient;
+  final List<RecipeLineRow> rows;
+
+  const RecipeCapacity({
+    this.servings = 0,
+    this.limitingIngredient = '',
+    this.rows = const [],
+  });
+
+  factory RecipeCapacity.fromJson(Map<String, dynamic> j) => RecipeCapacity(
+        servings: _asDouble(j['servings'] ?? j['capacity'] ?? j['canMake']),
+        limitingIngredient:
+            (j['limitingIngredient'] ?? j['limiting'] ?? '').toString(),
+        rows: (j['perIngredient'] as List? ?? j['rows'] as List? ?? j['lines'] as List? ?? const [])
+            .whereType<Map>()
+            .map((m) => RecipeLineRow.fromJson(Map<String, dynamic>.from(m)))
+            .toList(),
+      );
+}
+
+/// One row of `GET /api/inventory/reorder` — what to buy, from whom, how
+/// urgently.
+class ReorderRow {
+  final String id;
+  final String name;
+  final double stock;
+  final String unit;
+  final double reorderPoint;
+  final double suggestedQty;
+  final double estCost;
+  final String preferredSupplier;
+  final String urgency; // ok | soon | now
+
+  const ReorderRow({
+    required this.id,
+    this.name = '',
+    this.stock = 0,
+    this.unit = '',
+    this.reorderPoint = 0,
+    this.suggestedQty = 0,
+    this.estCost = 0,
+    this.preferredSupplier = '',
+    this.urgency = 'ok',
+  });
+
+  factory ReorderRow.fromJson(Map<String, dynamic> j) => ReorderRow(
+        id: (j['id'] ?? '').toString(),
+        name: (j['name'] ?? '').toString(),
+        stock: _asDouble(j['stock'] ?? j['inStock'] ?? j['in_stock']),
+        unit: (j['unit'] ?? '').toString(),
+        reorderPoint: _asDouble(j['reorderPoint'] ?? j['reorder_point'] ?? j['minLevel'] ?? j['min_level']),
+        suggestedQty: _asDouble(j['suggestedQty'] ?? j['suggested_qty'] ?? j['suggested']),
+        estCost: _asDouble(j['estCost'] ?? j['est_cost'] ?? j['estimatedCost']),
+        preferredSupplier: (j['preferredSupplier'] ?? j['preferred_supplier'] ?? j['supplier'] ?? '').toString(),
+        urgency: (j['urgency'] ?? 'ok').toString(),
+      );
+}
+
+/// One row of `GET /api/inventory/variance` — expected vs actual with the
+/// gap between them. "A question, not a finding" (web copy).
+class VarianceRow {
+  final String id;
+  final String name;
+  final String unit;
+  final double expected;
+  final double actual;
+  final double wasted;
+
+  const VarianceRow({
+    required this.id,
+    this.name = '',
+    this.unit = '',
+    this.expected = 0,
+    this.actual = 0,
+    this.wasted = 0,
+  });
+
+  double get variance => actual - expected;
+  double get variancePct =>
+      expected != 0 ? (variance / expected) * 100 : 0;
+
+  factory VarianceRow.fromJson(Map<String, dynamic> j) => VarianceRow(
+        id: (j['id'] ?? '').toString(),
+        name: (j['name'] ?? '').toString(),
+        unit: (j['unit'] ?? '').toString(),
+        expected: _asDouble(j['expected'] ?? j['expectedQty']),
+        actual: _asDouble(j['actual'] ?? j['actualQty']),
+        wasted: _asDouble(j['wasted'] ?? j['waste']),
+      );
+}
+
+/// One row of `GET /api/inventory/snapshot?date=` — stock as it stood at the
+/// end of a chosen day, and the ledger moves that day.
+class SnapshotRow {
+  final String id;
+  final String name;
+  final String unit;
+  final double stockThen;
+  final String basis; // recorded | estimated
+  final double stockNow;
+  final double bought;
+  final double consumed;
+  final double wasted;
+  final double adjusted;
+
+  const SnapshotRow({
+    required this.id,
+    this.name = '',
+    this.unit = '',
+    this.stockThen = 0,
+    this.basis = 'estimated',
+    this.stockNow = 0,
+    this.bought = 0,
+    this.consumed = 0,
+    this.wasted = 0,
+    this.adjusted = 0,
+  });
+
+  factory SnapshotRow.fromJson(Map<String, dynamic> j) => SnapshotRow(
+        id: (j['id'] ?? '').toString(),
+        name: (j['name'] ?? '').toString(),
+        unit: (j['unit'] ?? '').toString(),
+        stockThen: _asDouble(j['stockThen'] ?? j['stock_then'] ?? j['stockAtDate']),
+        basis: (j['basis'] ?? 'estimated').toString(),
+        stockNow: _asDouble(j['stockNow'] ?? j['stock_now']),
+        bought: _asDouble(j['bought'] ?? j['purchased']),
+        consumed: _asDouble(j['consumed'] ?? j['used']),
+        wasted: _asDouble(j['wasted'] ?? j['waste']),
+        adjusted: _asDouble(j['adjusted'] ?? j['adjustments']),
+      );
+}
+
+/// One row of `GET /api/inventory/forecast` — days of stock left at the
+/// recent usage rate, and when it runs out.
+class ForecastRow {
+  final String id;
+  final String name;
+  final String unit;
+  final double stock;
+  final double dailyUsage;
+  final double daysLeft;
+  final String? stockoutDate;
+  final String confidence;
+
+  const ForecastRow({
+    required this.id,
+    this.name = '',
+    this.unit = '',
+    this.stock = 0,
+    this.dailyUsage = 0,
+    this.daysLeft = 0,
+    this.stockoutDate,
+    this.confidence = '',
+  });
+
+  factory ForecastRow.fromJson(Map<String, dynamic> j) => ForecastRow(
+        id: (j['id'] ?? '').toString(),
+        name: (j['name'] ?? '').toString(),
+        unit: (j['unit'] ?? '').toString(),
+        stock: _asDouble(j['stock']),
+        dailyUsage: _asDouble(j['dailyUsage'] ?? j['daily_usage'] ?? j['avgDailyUsage']),
+        daysLeft: _asDouble(j['daysLeft'] ?? j['days_left']),
+        stockoutDate: (j['stockoutDate'] ?? j['stockout_date'])?.toString(),
+        confidence: (j['confidence'] ?? '').toString(),
+      );
+}
+
+/// One row of `GET /api/inventory/capacity` — servings possible per dish and
+/// what limits them.
+class CapacityRow {
+  final String menuItemId;
+  final String name;
+  final double servings;
+  final String limiting;
+
+  const CapacityRow({
+    this.menuItemId = '',
+    this.name = '',
+    this.servings = 0,
+    this.limiting = '',
+  });
+
+  factory CapacityRow.fromJson(Map<String, dynamic> j) => CapacityRow(
+        menuItemId: (j['menuItemId'] ?? j['menu_item_id'] ?? '').toString(),
+        name: (j['name'] ?? j['item'] ?? '').toString(),
+        servings: _asDouble(j['servings'] ?? j['capacity'] ?? j['canMake']),
+        limiting: (j['limitingIngredient'] ?? j['limiting'] ?? '').toString(),
+      );
+}
+
+/// One row of `GET /api/units` — measurement units grouped by dimension, so
+/// recipe/purchase line editors can offer only compatible units.
+class UnitRow {
+  final String unit;
+  final String dimension;
+
+  const UnitRow({required this.unit, required this.dimension});
+
+  factory UnitRow.fromJson(Map<String, dynamic> j) => UnitRow(
+        unit: (j['unit'] ?? j['name'] ?? '').toString(),
+        dimension: (j['dimension'] ?? j['type'] ?? '').toString(),
+      );
+}
+
+/// Client mirror of the SLA rules the server's cron sweep enforces — the
+/// AlertsDashboardView rules grid. Thresholds are display-only here; the
+/// server owns the actual timer.
+class AlertRuleMeta {
+  final String ruleId;
+  final String name;
+  final String watches;
+  final String threshold;
+  final List<OpsAlert> open;
+
+  const AlertRuleMeta({
+    required this.ruleId,
+    required this.name,
+    required this.watches,
+    required this.threshold,
+    this.open = const [],
+  });
+}
+
+/// The nine SLA rules the server sweep watches — verbatim metadata from the
+/// web AlertsDashboardView, joined with live open alerts by `ruleId`.
+const List<Map<String, String>> kAlertRules = [
+  {
+    'ruleId': 'order-preparing-too-long',
+    'name': 'Preparing too long',
+    'watches': 'Orders sitting in Preparing',
+    'threshold': '20 min warn · 40 min critical',
+  },
+  {
+    'ruleId': 'order-new-unaccepted',
+    'name': 'New order unaccepted',
+    'watches': 'New tickets nobody has started',
+    'threshold': '5 min',
+  },
+  {
+    'ruleId': 'order-ready-now',
+    'name': 'Order ready now',
+    'watches': 'Fresh off the pass, waiting pickup',
+    'threshold': 'immediate ping',
+  },
+  {
+    'ruleId': 'order-ready-not-served',
+    'name': 'Ready, not served',
+    'watches': 'Ready orders going cold on the pass',
+    'threshold': '10 min',
+  },
+  {
+    'ruleId': 'delivery-ready-unassigned',
+    'name': 'Delivery unassigned',
+    'watches': 'Ready delivery orders, no driver',
+    'threshold': '10 min',
+  },
+  {
+    'ruleId': 'delivery-in-transit-too-long',
+    'name': 'Delivery in transit',
+    'watches': 'Drivers out too long on a run',
+    'threshold': '45 min',
+  },
+  {
+    'ruleId': 'order-served-unpaid',
+    'name': 'Served but unpaid',
+    'watches': 'Guests served with an open check',
+    'threshold': '30 min',
+  },
+  {
+    'ruleId': 'reservation-no-show',
+    'name': 'Reservation no-show',
+    'watches': 'Booked parties never seated',
+    'threshold': '15 min past',
+  },
+  {
+    'ruleId': 'table-seated-too-long',
+    'name': 'Table seated too long',
+    'watches': 'Tables occupied well past a meal',
+    'threshold': '90 min',
+  },
+];
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// The business-day key of any server stamp — '' when the stamp is missing
+/// or too short to hold one. Screens render '—' for ''; they never throw.
+String dayKey(String? stamp) =>
+    stamp == null || stamp.length < 10 ? '' : stamp.substring(0, 10);
 
 double _asDouble(dynamic v) {
   if (v is num) return v.toDouble();

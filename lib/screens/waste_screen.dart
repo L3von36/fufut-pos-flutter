@@ -1,10 +1,7 @@
-/// Waste log — the cleaner's / barista's own screen, from the web
-/// `WasteView.vue`.
-///
-/// Today's entries at the top, the full log under it, and a compact inline
-/// form to record what was thrown away: item name, quantity, reason, and an
-/// optional estimated cost. A record that cannot say *why* it happened is
-/// refused by the server, so the form asks for the reason up front.
+/// Waste log — the cleaner's / barista's screen, from the web
+/// `WasteView.vue`. Two ways to log: pick a stock item (the server deducts
+/// it from inventory through the ledger) or free-text what is in your hands.
+/// Category summary cards like the web; delete is manager-only.
 library;
 
 import 'package:flutter/material.dart';
@@ -14,8 +11,15 @@ import '../api/api_client.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
 import '../theme.dart';
+import '../widgets/backoffice.dart';
 import '../widgets/common.dart';
 import '../widgets/dashboard.dart';
+
+const kWasteReasons = ['spoiled', 'overproduction', 'quality', 'damaged', 'other'];
+const kWasteCategories = [
+  'Coffee & Tea', 'Dairy', 'Bakery', 'Produce', 'Meat', 'Dry Goods',
+  'Beverages', 'Packaging', 'Other',
+];
 
 class WasteScreen extends StatefulWidget {
   const WasteScreen({super.key});
@@ -26,14 +30,10 @@ class WasteScreen extends StatefulWidget {
 
 class _WasteScreenState extends State<WasteScreen> {
   List<WasteEntry> _entries = [];
+  List<InventoryItem> _stock = [];
   bool _loading = true;
   Object? _error;
-  bool _formOpen = false;
-
-  final _name = TextEditingController();
-  final _qty = TextEditingController(text: '1');
-  final _cost = TextEditingController();
-  final _reason = TextEditingController();
+  String _category = 'All';
 
   @override
   void initState() {
@@ -41,22 +41,19 @@ class _WasteScreenState extends State<WasteScreen> {
     _load();
   }
 
-  @override
-  void dispose() {
-    _name.dispose();
-    _qty.dispose();
-    _cost.dispose();
-    _reason.dispose();
-    super.dispose();
-  }
+  String get _role => context.read<AppState>().roleKey ?? '';
+  bool get _canDelete => _role == 'manager';
 
   Future<void> _load({bool quiet = false}) async {
     final app = context.read<AppState>();
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
-      final entries = await app.api.wasteLog();
+      final entriesF = app.api.wasteLog();
+      final stockF = app.api.inventory(); // may 403 for cleaner → free-text path
+      final entries = await entriesF;
+      final stock = await stockF;
       if (!mounted) return;
-      setState(() { _entries = entries; _loading = false; });
+      setState(() { _entries = entries; _stock = stock; _loading = false; });
     } on ApiError catch (e) {
       if (!mounted) return;
       if (e.isAuthError) {
@@ -79,38 +76,148 @@ class _WasteScreenState extends State<WasteScreen> {
     return d.substring(0, 10) == today;
   }
 
-  Future<void> _submit() async {
-    final app = context.read<AppState>();
+  List<WasteEntry> get _filtered {
+    if (_category == 'All') return _entries;
+    return _entries
+        .where((w) => w.item.toLowerCase().contains(_category.toLowerCase()))
+        .toList();
+  }
+
+  Map<String, double> get _todayByCategory {
+    final map = <String, double>{};
+    for (final w in _entries.where(_isToday)) {
+      map[w.item] = (map[w.item] ?? 0) + w.cost;
+    }
+    return Map.fromEntries(
+        (map.entries.toList()..sort((a, b) => b.value.compareTo(a.value)))
+            .take(6));
+  }
+
+  Future<void> _logForm() async {
     final messenger = ScaffoldMessenger.of(context);
-    final name = _name.text.trim();
-    final qty = double.tryParse(_qty.text.replaceAll(',', '.')) ?? 0;
-    final reason = _reason.text.trim();
-    final cost = double.tryParse(_cost.text.replaceAll(',', '.')) ?? 0;
-    if (name.isEmpty) {
-      showErrorOn(messenger, ApiError('What was thrown away?'));
-      return;
-    }
-    if (qty <= 0) {
-      showErrorOn(messenger, ApiError('Quantity must be greater than zero'));
-      return;
-    }
-    if (reason.isEmpty) {
-      showErrorOn(messenger, ApiError('A reason is required'));
-      return;
-    }
+    final app = context.read<AppState>();
+    String? inventoryId; // null = free-text path
+    final nameC = TextEditingController();
+    final qtyC = TextEditingController(text: '1');
+    final costC = TextEditingController();
+    String reason = kWasteReasons.first;
+    String category = kWasteCategories.last;
+
+    await showFormSheet(
+      context,
+      title: 'Record waste',
+      body: () => StatefulBuilder(
+        builder: (ctx, setSheet) => Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (_stock.isNotEmpty) ...[
+              DropdownButton<String?>(
+                value: inventoryId,
+                isExpanded: true,
+                underline: const SizedBox(),
+                dropdownColor: Pal.of(ctx).surface,
+                hint: Text('Stock item (deducted from inventory)…',
+                    style: TextStyle(
+                        fontFamily: kFontBody,
+                        fontSize: 11.5, color: Pal.of(ctx).faint)),
+                items: [
+                  const DropdownMenuItem<String?>(
+                      value: '__free__', child: Text('Free-text item')),
+                  for (final s in _stock.take(100))
+                    DropdownMenuItem<String?>(
+                        value: s.id,
+                        child: Text('${s.name} (${s.stock.toStringAsFixed(0)} ${s.unit} left)',
+                            style: TextStyle(
+                                fontFamily: kFontBody,
+                                fontSize: 11.5, color: Pal.of(ctx).body))),
+                ],
+                onChanged: (v) => setSheet(() =>
+                    inventoryId = (v == '__free__' || v == null) ? null : v),
+              ),
+              const SizedBox(height: 8),
+            ],
+            if (inventoryId == null)
+              TextF('What was thrown away?', nameC, hint: 'e.g. Milk 1L')
+            else
+              Text('Free-text disabled while a stock item is picked',
+                  style: TextStyle(
+                      fontFamily: kFontBody,
+                      fontSize: 10.5, color: Pal.of(ctx).faint)),
+            SelectF(
+                label: 'Category', value: category,
+                options: kWasteCategories,
+                onChanged: (v) => setSheet(() => category = v)),
+            TextF('Quantity', qtyC, numeric: true),
+            SelectF(
+                label: 'Reason (required)', value: reason,
+                options: kWasteReasons,
+                onChanged: (v) => setSheet(() => reason = v)),
+            TextF('Estimated cost (ETB)', costC, numeric: true),
+          ],
+        ),
+      ),
+      onSave: () async {
+        final qty = double.tryParse(qtyC.text.replaceAll(',', '.')) ?? 0;
+        final cost = double.tryParse(costC.text.replaceAll(',', '.')) ?? 0;
+        if (qty <= 0) {
+          showErrorOn(messenger, ApiError('Quantity must be greater than zero'));
+          return;
+        }
+        final name = inventoryId == null
+            ? nameC.text.trim()
+            : _stock.where((s) => s.id == inventoryId).map((s) => s.name).firstOrNull ?? '';
+        if (name.isEmpty) {
+          showErrorOn(messenger, ApiError('What was thrown away?'));
+          return;
+        }
+        try {
+          await app.api.postWaste(
+            name: name,
+            qty: qty,
+            reason: reason,
+            cost: cost,
+            inventoryId: inventoryId,
+          );
+          showInfoOn(messenger,
+              inventoryId != null ? 'Waste recorded — stock deducted' : 'Waste recorded');
+          await _load(quiet: true);
+        } catch (e) {
+          showErrorOn(messenger, e);
+          rethrow;
+        }
+      },
+    );
+  }
+
+  Future<void> _delete(WasteEntry w) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final app = context.read<AppState>();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete waste entry?'),
+        content: Text('${w.item} — ${money(w.cost)}. This cannot be undone.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Keep')),
+          FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Pal.of(ctx).danger),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Delete')),
+        ],
+      ),
+    );
+    if (ok != true) return;
     try {
-      await app.api.postWaste(name: name, qty: qty, reason: reason, cost: cost);
-      showInfoOn(messenger, 'Waste recorded');
-      _name.clear();
-      _qty.text = '1';
-      _cost.clear();
-      _reason.clear();
-      if (mounted) setState(() => _formOpen = false);
+      await app.api.deleteWaste(w.id);
+      showInfoOn(messenger, 'Entry deleted');
       await _load(quiet: true);
     } catch (e) {
       showErrorOn(messenger, e);
     }
   }
+
+  static String _fmtQty(double q) =>
+      q == q.roundToDouble() ? q.toStringAsFixed(0) : q.toString();
 
   @override
   Widget build(BuildContext context) {
@@ -122,8 +229,9 @@ class _WasteScreenState extends State<WasteScreen> {
     }
     final pal = Pal.of(context);
     final today = _entries.where(_isToday).toList();
-    final todayCost =
-        today.fold<double>(0, (s, w) => s + w.cost);
+    final todayCost = today.fold<double>(0, (s, w) => s + w.cost);
+    final rows = _filtered;
+    final byCat = _todayByCategory;
 
     return RefreshIndicator(
       onRefresh: () => _load(quiet: true),
@@ -135,18 +243,14 @@ class _WasteScreenState extends State<WasteScreen> {
           Row(children: [
             Expanded(
               child: KpiCard(
-                label: 'Logged today',
-                value: '${today.length}',
-                icon: Icons.delete_outline,
-              ),
+                  label: 'Logged today', value: '${today.length}',
+                  icon: Icons.delete_outline),
             ),
             const SizedBox(width: 8),
             Expanded(
               child: KpiCard(
-                label: 'Est. cost',
-                value: money(todayCost),
-                icon: Icons.savings_outlined,
-              ),
+                  label: 'Est. cost', value: money(todayCost),
+                  icon: Icons.savings_outlined),
             ),
           ]),
           const SizedBox(height: 10),
@@ -154,25 +258,37 @@ class _WasteScreenState extends State<WasteScreen> {
           SizedBox(
             height: 34,
             child: FilledButton.icon(
-              onPressed: () => setState(() => _formOpen = !_formOpen),
-              icon: Icon(_formOpen ? Icons.close : Icons.add, size: 16),
-              label: Text(_formOpen ? 'Close form' : 'Record waste'),
+              onPressed: _logForm,
+              icon: const Icon(Icons.add, size: 16),
+              label: const Text('Record waste'),
             ),
           ),
-          if (_formOpen) ...[
+          const SizedBox(height: 10),
+          ChipSelect(
+            value: _category,
+            options: [('All', 'All items'), ...kWasteCategories.map((c) => (c, c))],
+            onChanged: (v) => setState(() => _category = v),
+          ),
+          if (byCat.isNotEmpty) ...[
             const SizedBox(height: 10),
-            _buildForm(pal),
+            SectionCard(
+              title: "Today's waste by item",
+              children: [
+                for (final e in byCat.entries)
+                  ListRow(head: e.key, trailing: money(e.value)),
+              ],
+            ),
           ],
-          const SizedBox(height: 12),
+          const SizedBox(height: 10),
           SectionCard(
             title: 'Log',
-            trailing: Text('${_entries.length} entries',
+            trailing: Text('${rows.length} entries',
                 style: TextStyle(
                     fontFamily: kFontMono,
                     fontSize: 10.5,
                     color: pal.faint)),
             children: [
-              if (_entries.isEmpty)
+              if (rows.isEmpty)
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 12),
                   child: Center(
@@ -184,92 +300,46 @@ class _WasteScreenState extends State<WasteScreen> {
                   ),
                 )
               else
-                for (final w in _entries.take(20))
+                for (final w in rows.take(30))
                   ListRow(
                     head: w.item,
                     rest:
                         '${_fmtQty(w.qty)}${w.unit ?? ''} · ${w.reason.isEmpty ? '—' : w.reason}${w.loggedBy != null ? ' · ${w.loggedBy}' : ''}',
                     trailing: w.cost > 0 ? money(w.cost) : '',
+                    trailingColor: w.cost > 0 ? pal.warning : null,
                   ),
             ],
           ),
-        ],
-      ),
-    );
-  }
-
-  static String _fmtQty(double q) =>
-      q == q.roundToDouble() ? q.toStringAsFixed(0) : q.toString();
-
-  Widget _buildForm(Pal pal) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: pal.surface,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: pal.border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text('What was thrown away?',
-              style: TextStyle(
-                  fontFamily: kFontBody,
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.w700,
-                  color: pal.heading)),
-          const SizedBox(height: 10),
-          Row(children: [
-            Expanded(
-              flex: 3,
-              child: TextFormField(
-                controller: _name,
-                decoration: const InputDecoration(
-                    hintText: 'Item (e.g. Milk 1L)'),
-                style: const TextStyle(fontSize: 12.5),
+          if (_canDelete && rows.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Center(
+                child: Text('Long-press an entry below to remove it (manager)',
+                    style: TextStyle(
+                        fontFamily: kFontBody, fontSize: 10, color: pal.faint)),
               ),
             ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: TextFormField(
-                controller: _qty,
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: true),
-                decoration: const InputDecoration(hintText: 'Qty'),
-                style: const TextStyle(fontSize: 12.5),
+          if (_canDelete)
+            for (final w in rows.take(10))
+              InkWell(
+                onLongPress: () => _delete(w),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: Row(children: [
+                    Icon(Icons.delete_outline, size: 12, color: pal.faint),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                          '${dayKey(w.date)} · ${w.item} · ${money(w.cost)}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              fontFamily: kFontBody,
+                              fontSize: 10.5, color: pal.muted)),
+                    ),
+                  ]),
+                ),
               ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: TextFormField(
-                controller: _cost,
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: true),
-                decoration: const InputDecoration(hintText: 'ETB cost'),
-                style: const TextStyle(fontSize: 12.5),
-              ),
-            ),
-          ]),
-          const SizedBox(height: 8),
-          TextFormField(
-            controller: _reason,
-            decoration: const InputDecoration(
-                hintText: 'Reason (spoiled, dropped, expired…)'),
-            style: const TextStyle(fontSize: 12.5),
-          ),
-          const SizedBox(height: 10),
-          SizedBox(
-            height: 34,
-            child: FilledButton(
-              onPressed: _submit,
-              style: FilledButton.styleFrom(
-                  textStyle: const TextStyle(
-                      fontFamily: kFontBody,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700)),
-              child: const Text('Save entry'),
-            ),
-          ),
         ],
       ),
     );

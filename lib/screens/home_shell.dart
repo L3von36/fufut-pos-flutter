@@ -10,16 +10,32 @@ import '../state/theme_controller.dart';
 import '../theme.dart';
 import '../widgets/alerts_banner.dart';
 import '../widgets/common.dart';
+import 'alerts_dashboard_screen.dart';
+import 'analytics_screen.dart';
+import 'audit_log_screen.dart';
 import 'cashdrawer_screen.dart';
+import 'customers_screen.dart';
 import 'delivery_screen.dart';
+import 'expenses_screen.dart';
+import 'inventory_screen.dart';
 import 'kitchen_board.dart';
+import 'menu_mgmt_screen.dart';
 import 'my_activity_screen.dart';
 import 'my_payslips_screen.dart';
 import 'orders_screen.dart';
+import 'pipeline_screen.dart';
+import 'pnl_screen.dart';
+import 'purchases_screen.dart';
+import 'recipes_screen.dart';
 import 'register_screen.dart';
 import 'reports_screen.dart';
+import 'reservations_screen.dart';
+import 'revenue_screen.dart';
 import 'role_dashboard.dart';
 import 'settings_screen.dart';
+import 'shifts_screen.dart';
+import 'stock_control_screen.dart';
+import 'suppliers_screen.dart';
 import 'tables_screen.dart';
 import 'timeclock_screen.dart';
 import 'waste_screen.dart';
@@ -109,6 +125,8 @@ class _HomeShellState extends State<HomeShell> {
       switch (key) {
         case NavKey.dashboard:
           return RoleDashboard(onNavigate: _select);
+        case NavKey.alertsDash:
+          return AlertsDashboardScreen(activeTab: activeTab, self: NavKey.alertsDash);
         case NavKey.kitchen:
           return KitchenBoard(activeTab: activeTab, self: NavKey.kitchen);
         case NavKey.barista:
@@ -119,18 +137,48 @@ class _HomeShellState extends State<HomeShell> {
               onNavigate: _select, activeTab: activeTab, self: NavKey.tables);
         case NavKey.menuView:
           return const RegisterScreen();
+        case NavKey.menuMgmt:
+          return const MenuMgmtScreen();
         case NavKey.orders:
           return const OrdersScreen();
         case NavKey.openChecks:
           return const OrdersScreen(openOnlyDefault: true);
+        case NavKey.pipeline:
+          return PipelineScreen(activeTab: activeTab, self: NavKey.pipeline);
+        case NavKey.reservations:
+          return const ReservationsScreen();
         case NavKey.cashdrawer:
           return CashDrawerScreen(onNavigate: _select);
         case NavKey.delivery:
           return const DeliveryScreen();
-        case NavKey.waste:
-          return const WasteScreen();
+        case NavKey.expenses:
+          return const ExpensesScreen();
+        case NavKey.pnl:
+          return const PnlScreen();
+        case NavKey.revenue:
+          return const RevenueScreen();
+        case NavKey.analytics:
+          return const AnalyticsScreen();
         case NavKey.reports:
           return const ReportsScreen();
+        case NavKey.inventory:
+          return const InventoryScreen();
+        case NavKey.recipes:
+          return const RecipesScreen();
+        case NavKey.stockControl:
+          return const StockControlScreen();
+        case NavKey.suppliers:
+          return const SuppliersScreen();
+        case NavKey.purchases:
+          return const PurchasesScreen();
+        case NavKey.waste:
+          return const WasteScreen();
+        case NavKey.shifts:
+          return const ShiftsScreen();
+        case NavKey.customers:
+          return const CustomersScreen();
+        case NavKey.audit:
+          return const AuditLogScreen();
         case NavKey.timeclock:
           return const TimeClockScreen();
         case NavKey.myPay:

@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../api/api_client.dart';
 import '../state/app_state.dart';
 import '../theme.dart';
+import '../widgets/backoffice.dart';
 import '../widgets/common.dart';
 
 /// Session + server settings. Deliberately small: this is the tablet's
@@ -23,6 +25,47 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void initState() {
     super.initState();
     _server.text = context.read<AppState>().baseUrl;
+  }
+
+  /// Voluntary password change — the same POST the forced flow uses, but
+  /// reachable any time (the web account menu's entry point).
+  Future<void> _changePassword(BuildContext context, AppState app) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final currentC = TextEditingController();
+    final nextC = TextEditingController();
+    final confirmC = TextEditingController();
+    await showFormSheet(
+      context,
+      title: 'Change password',
+      body: () => Column(
+        children: [
+          TextF('Current password', currentC),
+          TextF('New password (8+ chars, letters and numbers)', nextC),
+          TextF('Confirm new password', confirmC),
+        ],
+      ),
+      onSave: () async {
+        final next = nextC.text;
+        if (next.length < 8 ||
+            !RegExp(r'[A-Za-z]').hasMatch(next) ||
+            !RegExp(r'\d').hasMatch(next)) {
+          showErrorOn(messenger,
+              ApiError('New password needs 8+ characters with letters and numbers'));
+          return;
+        }
+        if (next != confirmC.text) {
+          showErrorOn(messenger, ApiError('The two new passwords do not match'));
+          return;
+        }
+        try {
+          await app.changePassword(currentC.text, next);
+          showInfoOn(messenger, 'Password updated');
+        } catch (e) {
+          showErrorOn(messenger, e);
+          rethrow;
+        }
+      },
+    );
   }
 
   @override
@@ -164,6 +207,42 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
         ),
         const SizedBox(height: 10),
+
+        // ── Change password (voluntary — the web ChangePasswordView flow) ──
+        if (app.isLoggedIn)
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: pal.surface,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: pal.border),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Password',
+                    style: TextStyle(
+                        fontFamily: kFontBody,
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w600,
+                        color: pal.heading)),
+                const SizedBox(height: 3),
+                Text('Replace the password you sign in with.',
+                    style: TextStyle(
+                        fontFamily: kFontBody, fontSize: 11, color: pal.faint)),
+                const SizedBox(height: 8),
+                SizedBox(
+                  height: 34,
+                  child: OutlinedButton.icon(
+                    onPressed: () => _changePassword(context, app),
+                    icon: const Icon(Icons.lock_outline, size: 15),
+                    label: const Text('Change password'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        if (app.isLoggedIn) const SizedBox(height: 10),
 
         // ── About ─────────────────────────────────────────────────────────
         Container(
