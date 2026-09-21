@@ -1,7 +1,7 @@
 name: fufut_pos
 description: "Fufut Coffee POS — Android & desktop point of sale for the Fufut floor."
 publish_to: "none"
-version: 1.0.6+7
+version: 1.0.7+8
 
 environment:
   sdk: ">=3.5.0 <4.0.0"
@@ -14,6 +14,10 @@ dependencies:
   shared_preferences: ^2.3.3
   intl: ^0.20.1
   audioplayers: ^6.1.0
+  # Regular dependency (not dev): main.dart calls preserve()/remove() to hold
+  # the native launch screen until the Flutter splash has painted its first
+  # frame, so there is no white flash between engine start and the brand boot.
+  flutter_native_splash: ^2.4.8
 
 dev_dependencies:
   flutter_test:
@@ -43,12 +47,34 @@ flutter_launcher_icons:
     generate: true
     image_path: "assets/icon/app_icon.png"
 
+# Boot splash cut from the same seal the launcher icons use. The background
+# is the exact midpoint of the in-app boot gradient (#0C5F5B → #0A4A47), so
+# the native splash hands off to the Flutter splash without a visible seam.
+flutter_native_splash:
+  color: "#0B5551"
+  color_dark: "#0B5551"
+  image: assets/branding/splash_logo.png
+  image_dark: assets/branding/splash_logo.png
+  android_12:
+    color: "#0B5551"
+    color_dark: "#0B5551"
+    image: assets/branding/splash_logo_android12.png
+    image_dark: assets/branding/splash_logo_android12.png
+  android_gravity: center
+  ios_content_mode: center
+  web_image_mode: center
+  fullscreen: false
+  android: true
+  ios: true
+  web: true
+
 flutter:
   uses-material-design: true
 
   assets:
     - assets/images/
     - assets/audio/
+    - assets/branding/
 
   fonts:
     - family: Inter
