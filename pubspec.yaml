@@ -54,16 +54,20 @@ flutter_launcher_icons:
 # Boot splash cut from the same seal the launcher icons use. The background
 # is the exact midpoint of the in-app boot gradient (#0C5F5B → #0A4A47), so
 # the native splash hands off to the Flutter splash without a visible seam.
+# The splash image is the same white launcher badge the Flutter splash hero
+# uses — the old splash_logo.png was dark teal on teal (contrast ~30) and read
+# as a ghost. android12 image is pre-padded: badge sits inside the system's
+# circular mask with a teal ring, landing at ~140dp on screen.
 flutter_native_splash:
   color: "#0B5551"
   color_dark: "#0B5551"
-  image: assets/branding/splash_logo.png
-  image_dark: assets/branding/splash_logo.png
+  image: assets/branding/splash_badge.png
+  image_dark: assets/branding/splash_badge.png
   android_12:
     color: "#0B5551"
     color_dark: "#0B5551"
-    image: assets/branding/splash_logo_android12.png
-    image_dark: assets/branding/splash_logo_android12.png
+    image: assets/branding/splash_badge_android12.png
+    image_dark: assets/branding/splash_badge_android12.png
   android_gravity: center
   ios_content_mode: center
   web_image_mode: center
