@@ -9,15 +9,51 @@ import 'package:fufut_pos/utils/csv.dart';
 void main() {
   // ── The grants matrix (web ROLE_PERMISSIONS verbatim) ────────────────────
 
-  test('every role carries the HR self-service trio', () {
-    for (final role in kRolePermissions.keys) {
-      final nav = navForRole(role);
-      for (final key in kHrNavKeys) {
-        expect(nav.any((e) => e.key == key), isTrue,
-            reason: '$role must carry ${key.name}');
-      }
-      expect(nav.last.key, NavKey.settings, reason: '$role: Settings last');
+  test('the HR self-service trio rides for the manager alone', () {
+    // Least-privilege pass: an employed team member never sees an HR tab.
+    // Clocking in and out still works for every account — the server's
+    // self-service routes never consulted the nav — but the screens stay
+    // off the staff drawer.
+    final managerNav = navForRole('manager').map((e) => e.key).toSet();
+    for (final key in kHrNavKeys) {
+      expect(managerNav.contains(key), isTrue, reason: 'manager must carry ${key.name}');
     }
+    for (final role in kRolePermissions.keys.where((r) => r != 'manager')) {
+      final keys = navForRole(role).map((e) => e.key).toSet();
+      for (final key in kHrNavKeys) {
+        expect(keys.contains(key), isFalse,
+            reason: '$role must NOT carry HR tab ${key.name}');
+      }
+      expect(keys.contains(NavKey.shifts), isFalse,
+          reason: '$role must NOT carry the Shifts roster');
+    }
+    // Settings stays last for everyone.
+    for (final role in kRolePermissions.keys) {
+      expect(navForRole(role).last.key, NavKey.settings, reason: '$role: Settings last');
+    }
+  });
+
+  test('least-privilege: staff roles carry only their job screens', () {
+    // The owner's call — procurement, stock intelligence, business reporting
+    // and the colleague/HR screens are backoffice reading, not line work.
+    final chef = kRolePermissions['head-chef']!;
+    for (final key in [NavKey.suppliers, NavKey.purchases, NavKey.stockControl, NavKey.reports, NavKey.expenses, NavKey.cashdrawer, NavKey.shifts]) {
+      expect(chef.contains(key), isFalse, reason: 'head-chef must not see ${key.name}');
+    }
+    for (final key in [NavKey.kitchen, NavKey.orders, NavKey.pipeline, NavKey.inventory, NavKey.recipes, NavKey.waste, NavKey.menuMgmt]) {
+      expect(chef.contains(key), isTrue, reason: 'head-chef lost ${key.name}');
+    }
+    final cashier = kRolePermissions['cashier']!;
+    for (final key in [NavKey.revenue, NavKey.analytics, NavKey.reports, NavKey.expenses, NavKey.pnl]) {
+      expect(cashier.contains(key), isFalse, reason: 'cashier must not see ${key.name}');
+    }
+    // Their own numbers stay: the dashboard and the drawer.
+    expect(cashier.contains(NavKey.cashdrawer), isTrue);
+    expect(cashier.contains(NavKey.dashboard), isTrue);
+    // The assistant cook never saw procurement either.
+    final assistant = kRolePermissions['assistant-chef']!;
+    expect(assistant.contains(NavKey.suppliers), isFalse);
+    expect(assistant.contains(NavKey.purchases), isFalse);
   });
 
   test('role landing screens match the web ROLE_DEFAULT_VIEW', () {

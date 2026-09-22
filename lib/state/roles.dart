@@ -176,8 +176,11 @@ const Map<String, List<NavKey>> kRolePermissions = {
     NavKey.audit,
     NavKey.customers,
   ],
-  // The kitchen board is home; the chef owns stock in (inventory, purchases,
-  // suppliers), the BOM (recipes, stock-control, menu-86) and the bin.
+  // The kitchen board is home; the chef owns the counts (inventory), the BOM
+  // (recipes) and the bin (waste). Suppliers, purchases, stock-control and
+  // reports were removed at the owner's direction — procurement, the stock
+  // intelligence screens and business reporting are backoffice reading, and
+  // the server matrix (fufut-api ROLE_ACCESS) refuses them to this role too.
   'head-chef': [
     NavKey.kitchen,
     NavKey.orders,
@@ -186,15 +189,11 @@ const Map<String, List<NavKey>> kRolePermissions = {
     NavKey.pipeline,
     NavKey.inventory,
     NavKey.recipes,
-    NavKey.stockControl,
-    NavKey.suppliers,
-    NavKey.purchases,
     NavKey.waste,
     NavKey.menuMgmt, // availability toggle only — the screen gates the CRUD
-    NavKey.reports,
   ],
-  // Cooks from the recipes: stock visibility and the BOM, no writes to
-  // suppliers/purchases, no waste management.
+  // Cooks from the recipes: stock visibility and the BOM. Writes no stock,
+  // no waste — the head chef owns both.
   'assistant-chef': [
     NavKey.kitchen,
     NavKey.orders,
@@ -224,8 +223,11 @@ const Map<String, List<NavKey>> kRolePermissions = {
     NavKey.alertsDash,
     NavKey.reservations,
   ],
-  // The till: drawer home, menu view for walk-in sales, checks to settle,
-  // and the revenue/analytics picture the web grants the cashier.
+  // The till: drawer home, menu view for walk-in sales, checks to settle, the
+  // floor and the book. Revenue, Analytics and Reports are manager and
+  // accountant reading — the cashier's own numbers live on the Dashboard and
+  // the Cash Drawer (whose tiles read /api/reports/dashboard, which the server
+  // still allows this role).
   'cashier': [
     NavKey.cashdrawer,
     NavKey.menuView,
@@ -235,9 +237,6 @@ const Map<String, List<NavKey>> kRolePermissions = {
     NavKey.dashboard,
     NavKey.alertsDash,
     NavKey.reservations,
-    NavKey.revenue,
-    NavKey.analytics,
-    NavKey.reports,
   ],
   'delivery-staff': [
     NavKey.delivery,
@@ -263,9 +262,11 @@ const Map<String, List<NavKey>> kRolePermissions = {
   ],
 };
 
-/// The web grants `timeclock`, `my-pay` and `my-activity` to every role —
-/// the self-service trio. Appended after each role's own screens so the
-/// bottom bar (first three entries) stays untouched.
+/// The web grants `timeclock`, `my-pay` and `my-activity` to the manager
+/// alone in the least-privilege pass — the HR section is the owner's, not the
+/// staff's. Clocking in and out still works for any signed-in account (the
+/// server's self-service routes), but the screens stay off the staff nav so
+/// an employed team member never sees an HR tab at all.
 const List<NavKey> kHrNavKeys = [
   NavKey.timeclock,
   NavKey.myPay,
@@ -331,12 +332,15 @@ String roleTitle(String role) {
       .join(' ');
 }
 
-/// Nav entries for [roleKey], Settings always last. Unknown roles fall back
-/// to the original cashier layout so nobody lands on an empty shell.
+/// Nav entries for [roleKey], Settings always last. The HR self-service trio
+/// rides for the manager only — staff see their job's screens and nothing
+/// else. Unknown roles fall back to the original cashier layout so nobody
+/// lands on an empty shell.
 List<NavEntry> navForRole(String? roleKey) {
   final keys =
       kRolePermissions[roleKey] ?? kFallbackPermissions;
-  return [...keys.map(_entry), ...kHrNavKeys.map(_entry), _entry(NavKey.settings)];
+  final hr = roleKey == 'manager' ? kHrNavKeys.map(_entry) : const Iterable<NavEntry>.empty();
+  return [...keys.map(_entry), ...hr, _entry(NavKey.settings)];
 }
 
 /// The first screen for [roleKey]. Unknown roles start on the till.

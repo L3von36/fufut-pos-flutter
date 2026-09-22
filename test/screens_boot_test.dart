@@ -97,8 +97,11 @@ void main() {
         // framework fails this block on either.
       }
 
-      // Close on the HR trio's last screen: no live channel holds a timer.
-      await tapNav(tester, 'My Activity');
+      // Close on the role's last screen — the HR trio's My Activity for the
+      // manager, the final job screen for everyone else (staff navs no longer
+      // carry HR). Already visited during the walk, so no new channel.
+      final last = navForRole(role).lastWhere((e) => e.key != NavKey.settings);
+      await tapNav(tester, last.label);
     });
   }
 
