@@ -101,39 +101,99 @@ class _SplashScreenState extends State<SplashScreen>
           child: Stack(
             alignment: Alignment.center,
             children: [
-              // Layered light: spotlight behind the hero, vignette at the
-              // rim — depth without a single extra widget on screen.
+              // Layered light, deliberately clean — no texture, no watermark:
+              //   1. a brand glow rising from the top (lighter teal)
+              //   2. a crisp radial stage light centered behind the badge
+              //   3. a grounding shade along the bottom edge
+              // The two glows ride fractional Alignments (not pixel offsets)
+              // so they track the hero across phone and desktop aspect
+              // ratios.
               Positioned.fill(
                 child: IgnorePointer(
                   child: FadeTransition(
                     opacity: _spot,
-                    child: const DecoratedBox(
-                      decoration: BoxDecoration(
-                        gradient: RadialGradient(
-                          center: Alignment(0.0, -0.35),
-                          radius: 0.9,
-                          colors: [
-                            Color(0x14FFFFFF), // 8% white bloom
-                            Color(0x00FFFFFF),
-                            Color(0x00000000),
-                            Color(0x1F032725), // rim shadow
-                          ],
-                          stops: [0.0, 0.42, 0.72, 1.0],
+                    child: const Stack(
+                      children: [
+                        // 1. Brand glow — a soft rise of lighter teal from
+                        //    the top edge, giving the field color depth.
+                        Align(
+                          alignment: Alignment(0.0, -1.18),
+                          child: SizedBox(
+                            width: 720,
+                            height: 500,
+                            child: DecoratedBox(
+                              decoration: BoxDecoration(
+                                gradient: RadialGradient(
+                                  colors: [
+                                    Color(0x2B2BB0A9), // ~17% light teal
+                                    Color(0x002BB0A9),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
                         ),
-                      ),
+                        // 2. Stage light — tight, centered on the hero so
+                        //    the badge reads as spotlit, not hazy.
+                        Align(
+                          alignment: Alignment(0.0, -0.2),
+                          child: SizedBox(
+                            width: 470,
+                            height: 470,
+                            child: DecoratedBox(
+                              decoration: BoxDecoration(
+                                gradient: RadialGradient(
+                                  colors: [
+                                    Color(0x22FFFFFF), // ~13% white
+                                    Color(0x00FFFFFF),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                        // 2b. Gold counter-glow — the brand's accent color
+                        //     breathing in from the bottom-right corner;
+                        //     turns the flat teal into a two-tone field.
+                        Align(
+                          alignment: Alignment(0.95, 0.95),
+                          child: IgnorePointer(
+                            child: SizedBox(
+                              width: 560,
+                              height: 560,
+                              child: DecoratedBox(
+                                decoration: BoxDecoration(
+                                  gradient: RadialGradient(
+                                    colors: [
+                                      Color(0x1AD6B36A), // ~10% brand gold
+                                      Color(0x00D6B36A),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                        // 3. Bottom shade — grounds the composition so the
+                        //    lower third doesn't float away.
+                        Positioned.fill(
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                begin: Alignment.bottomCenter,
+                                end: Alignment(0.0, -0.1), // only the lower third
+                                colors: [
+                                  Color(0x3804201E), // 22% deep shade
+                                  Color(0x0004201E),
+                                ],
+                                stops: [0.0, 0.42],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-                ),
-              ),
-              // Oversized openwork seal, cropped by the bottom-right corner
-              // — a watermark, invisible until you look for it.
-              Positioned(
-                right: -64,
-                bottom: -72,
-                child: FadeTransition(
-                  opacity: Tween(begin: 0.0, end: 0.055).animate(_spot),
-                  child: Image.asset('assets/branding/splash_seal.png',
-                      width: 340, height: 340),
                 ),
               ),
               // Hero + wordmark + ornament, vertically centered.
