@@ -228,6 +228,7 @@ class FufutOrder {
   final String? updatedAt;
   final String? createdByName;
   final String? createdById; // the web's created_by — order scoping reads it
+  final String? source; // qr | staff — how the order was placed
   final List<OrderItemLine> items; // parsed structured lines when present
   final String itemsRaw; // the legacy flat summary string
 
@@ -250,6 +251,7 @@ class FufutOrder {
     this.updatedAt,
     this.createdByName,
     this.createdById,
+    this.source,
     this.items = const [],
     this.itemsRaw = '',
   });
@@ -317,6 +319,7 @@ class FufutOrder {
       updatedAt: j['updated_at'] as String?,
       createdByName: j['created_by_name'] as String?,
       createdById: (j['created_by'] ?? j['created_by_id'])?.toString(),
+      source: j['source']?.toString(),
       items: lines,
       itemsRaw: itemsRaw,
     );
@@ -368,15 +371,61 @@ class StaffUser {
   }
 }
 
+/// The booking that currently holds a table (`tables[].reservedHold`).
+///
+/// The server enriches each table row with the active reservation that blocks
+/// it, so the floor plan can explain WHY a table cannot be seated. `blocksNow`
+/// is the server's own verdict (within the 60-minute seating lead); it is
+/// displayed, never second-guessed here.
+class TableHold {
+  final String id;
+  final String? name;
+  final String? startAt;
+  final String? endAt;
+  final int guests;
+  final bool blocksNow;
+
+  const TableHold({
+    required this.id,
+    this.name,
+    this.startAt,
+    this.endAt,
+    this.guests = 0,
+    this.blocksNow = false,
+  });
+
+  factory TableHold.fromJson(Map<String, dynamic> j) => TableHold(
+        id: (j['id'] ?? '').toString(),
+        name: j['name']?.toString(),
+        startAt: (j['startAt'] ?? j['start_at'])?.toString(),
+        endAt: (j['endAt'] ?? j['end_at'])?.toString(),
+        guests: int.tryParse('${j['guests'] ?? 0}') ?? 0,
+        blocksNow: j['blocksNow'] == true || j['blocksNow'] == 1,
+      );
+}
+
 /// A table on the floor plan (`GET /api/tables`).
+///
+/// The row shape is the web POS's exact contract: `name`, `shape`, `server`,
+/// `guests`, `seated_at`, `notes`, `bill_requested_at/_by`, `reservedHold`
+/// and `payment` all ride the same payload — the native floor plan renders
+/// every one of them, so nothing the web shows is dropped here.
 class CafeTable {
   final String id;
   final String number; // compared as a string everywhere in the system
   final String? section;
-  final String status; // available | occupied | reserved
+  final String status; // available | occupied | reserved | cleaning
   final int? seats;
   final String? guests;
   final String? billRequestedAt; // when the party asked for the bill
+  final String? name;
+  final String? shape; // round | square | long
+  final String? server; // assigned staff display name
+  final String? seatedAt; // ISO stamp when the party sat down
+  final String? notes;
+  final String? payment; // null | paid | partial | unpaid
+  final String? billRequestedBy;
+  final TableHold? reservedHold;
 
   const CafeTable({
     required this.id,
@@ -386,9 +435,26 @@ class CafeTable {
     this.seats,
     this.guests,
     this.billRequestedAt,
+    this.name,
+    this.shape,
+    this.server,
+    this.seatedAt,
+    this.notes,
+    this.payment,
+    this.billRequestedBy,
+    this.reservedHold,
   });
 
   bool get billRequested => billRequestedAt != null && billRequestedAt!.isNotEmpty;
+
+  /// Guests as an int for sums (the status strip's "{n} guests").
+  int get guestsCount => int.tryParse(guests ?? '') ?? 0;
+
+  /// The tile's size word — same buckets as the web: ≤4 Small, ≤6 Medium, else Large.
+  String get sizeLabel {
+    final c = seats ?? 0;
+    return c <= 4 ? 'Small' : c <= 6 ? 'Medium' : 'Large';
+  }
 
   factory CafeTable.fromJson(Map<String, dynamic> j) => CafeTable(
         id: (j['id'] ?? '') as String,
@@ -403,6 +469,46 @@ class CafeTable {
         guests: j['guests']?.toString(),
         billRequestedAt:
             (j['bill_requested_at'] ?? j['billRequestedAt'])?.toString(),
+        name: j['name']?.toString(),
+        shape: j['shape']?.toString(),
+        server: j['server']?.toString(),
+        seatedAt: (j['seated_at'] ?? j['seatedAt'])?.toString(),
+        notes: j['notes']?.toString(),
+        payment: j['payment']?.toString(),
+        billRequestedBy: (j['bill_requested_by'] ?? j['billRequestedBy'])?.toString(),
+        reservedHold: j['reservedHold'] is Map
+            ? TableHold.fromJson(
+                Map<String, dynamic>.from(j['reservedHold'] as Map))
+            : null,
+      );
+
+  /// Copy for the local edits the detail sheet makes (bill-request stamps,
+  /// seated_at from quick-status) without a code generator.
+  CafeTable copyWith({
+    String? status,
+    String? server,
+    String? guests,
+    String? seatedAt,
+    String? notes,
+    String? payment,
+    String? billRequestedAt,
+  }) =>
+      CafeTable(
+        id: id,
+        number: number,
+        section: section,
+        status: status ?? this.status,
+        seats: seats,
+        guests: guests ?? this.guests,
+        billRequestedAt: billRequestedAt ?? this.billRequestedAt,
+        name: name,
+        shape: shape,
+        server: server ?? this.server,
+        seatedAt: seatedAt ?? this.seatedAt,
+        notes: notes ?? this.notes,
+        payment: payment ?? this.payment,
+        billRequestedBy: billRequestedBy,
+        reservedHold: reservedHold,
       );
 }
 
@@ -876,8 +982,14 @@ class StaffMember {
   final String id;
   final String name;
   final String role;
+  final String status; // active | … — the floor plan filters assignees on it
 
-  const StaffMember({required this.id, required this.name, this.role = ''});
+  const StaffMember({
+    required this.id,
+    required this.name,
+    this.role = '',
+    this.status = '',
+  });
 
   factory StaffMember.fromJson(Map<String, dynamic> j) => StaffMember(
         id: (j['id'] ?? '').toString(),
@@ -887,6 +999,7 @@ class StaffMember {
                     .join(' '))
             .toString(),
         role: (j['role'] ?? '').toString(),
+        status: (j['status'] ?? 'active').toString(),
       );
 }
 

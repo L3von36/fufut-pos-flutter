@@ -1,41 +1,67 @@
-/// Floor plan — the web POS `TablesView.vue`, native.
+/// Floor plan — the web POS `TablesView.vue`, native, feature-for-feature.
 ///
-/// Table cards grouped by section, colored by state. Tap an open table to
-/// seat the party; tap an occupied one to open the menu against it (the cart
-/// carries the table number into the ticket) or to see its open check.
+/// Everything the web page renders, this screen renders; nothing added,
+/// nothing skipped:
 ///
-/// **Live via SSE** — the screen subscribes to the fufut-api `tables` event
-/// channel (the web's exact wire: a `table_update` snapshot carrying the
-/// full floor). Pushes replace the grid within seconds of any seat / claim /
-/// bill request from ANY device, then one quiet GET refreshes the open
-/// checks the payload does not carry (the badges). The header shows a
-/// Live / Offline chip — the web's `tm-live-btn` — and a 15s poll runs only
-/// while the stream is disconnected, the kitchen board's safety-net gate.
-/// The server role-gates the channel (403 for the kitchen roles); this
-/// screen is only reachable for roles whose nav grant includes tables, so
-/// no refused connection ever happens.
+///  • Toolbar — "Floor Plan" title, "{n} tables · {p}% occupied" subtitle,
+///    the Live/Offline SSE toggle (`tm-live-btn`), manager-only Add Table,
+///    and the manual refresh button with its "Refreshed" toast.
+///  • Pending strip — QR orders guests placed themselves, held back from the
+///    kitchen until somebody on the floor taps Accept. Absent entirely when
+///    nothing is waiting.
+///  • Zone picker — a dropdown (the web replaced chips with a select), fed by
+///    `GET /api/tables/sections` merged with the zones on the rows.
+///  • Status strip — four KPI chips that double as floor filters (tap twice
+///    to clear): Free/Seated/Reserved/Cleaning with seats/guests sub-counts.
+///  • Table cards — status pill, table icon + T-## number, server initials
+///    badge, capacity/size row, occupancy timer with urgency colors and the
+///    4-hour overdue badge, order count + running total, Open Tab badge,
+///    payment badge and the pulsing Bill Requested chip, reservation hold
+///    with its window label.
+///  • Detail panel — hold banner with the release rule and manager release,
+///    quick-status buttons (with the seated_at/newSeating/guests side
+///    effects), assigned-server dropdown (manager writes, everyone else
+///    reads with an explanation), guest count, table notes, the table's open
+///    checks, occupancy line, and the full action row: New Order / Add Round,
+///    Ask for the Bill / Cancel Bill Request, Go to Checkout (checkout
+///    grant), QR Code (manager), Close / Save Changes / Delete (manager).
+///  • QR modal — the same qrserver.com image the web draws, the guest URL,
+///    and Print QR Card (the web's print popup, native via a PDF card).
+///  • Add Table modal — number, name, capacity, zone, shape picker.
+///  • Live wiring — the same two SSE channels the web opens: `tables` for
+///    the floor plan and `kitchen` diffed for the "your table's food is
+///    ready" chime (capped at three per snapshot, exactly like the web).
+///    A 15s poll runs only while the stream is disconnected; timers tick
+///    every 10s and the pending feed polls every 30s, both web intervals.
 library;
 
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
 import 'package:provider/provider.dart';
 
 import '../api/api_client.dart';
 import '../api/sse/sse_channel.dart';
 import '../models/models.dart';
+import '../services/audio_alerts.dart';
 import '../state/app_state.dart';
 import '../state/cart.dart';
+import '../state/floor_plan.dart';
 import '../state/roles.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
-import '../widgets/dashboard.dart';
+import '../widgets/dashboard.dart' show LoadError;
+import 'checkout_sheet.dart' show PaymentResult, PaymentSheet;
 
 class TablesScreen extends StatefulWidget {
   final ValueChanged<NavKey>? onNavigate;
 
-  /// The shell's active-tab notifier — the kitchen board's keep-alive
-  /// contract. An offstage floor must not pin a Worker connection.
+  /// The shell's active-tab notifier — the keep-alive contract. An offstage
+  /// floor must not pin two Worker connections.
   final ValueNotifier<NavKey>? activeTab;
   final NavKey? self;
 
@@ -48,52 +74,95 @@ class TablesScreen extends StatefulWidget {
 class _TablesScreenState extends State<TablesScreen>
     with WidgetsBindingObserver {
   List<CafeTable> _tables = [];
-  List<FufutOrder> _openOrders = [];
+  List<FufutOrder> _orders = []; // floor-relevant orders (the web's filter)
+  List<FufutOrder> _pending = []; // guest QR orders waiting for Accept
+  List<String> _sections = [...defaultSections];
+  List<StaffMember> _staffServers = [];
   bool _loading = true;
   Object? _error;
 
-  // SSE live channel — one per screen instance, web useSSE parity.
-  SseChannel? _sse;
-  StreamSubscription<SseEvent>? _sseSub;
+  String _activeSection = 'All';
+  String _statusFilter = '';
+
+  // Reactive tick for the occupancy timers — the web's 10s `tick` counter.
+  Timer? _tickTimer;
+  int _tick = 0;
+
+  // Guest-order poll — the web's 30s `pendingInterval`.
+  Timer? _pendingTimer;
+
+  // Disconnected safety net — only runs while the tables stream is down
+  // (the kitchen board's gate; the web relies on manual refresh here, a
+  // native app on a flaky mobile link gets the poll instead).
+  Timer? _poll;
+
+  // Two independent SSE channels, exactly the web's pair:
+  //   1. `tables` — every table row, pushed when status/assignment changes.
+  //   2. `kitchen` — every active order, diffed for the ready chime.
+  SseChannel? _tablesSse;
+  StreamSubscription<SseEvent>? _tablesSub;
+  SseChannel? _kitchenSse;
+  StreamSubscription<SseEvent>? _kitchenSub;
 
   // Same two gates as the kitchen board: app foregrounded AND this screen
   // the shell's active tab (Offstage keep-alive).
   bool _lifecycleUp = true;
   bool _tabUp = true;
 
-  Timer? _poll;
+  String? _accepting; // pending order currently being accepted
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    AudioAlerts.instance.load();
     _tabUp = widget.self == null || widget.activeTab?.value == widget.self;
     widget.activeTab?.addListener(_onTabChanged);
-    _load();
+    _bootstrap();
+  }
+
+  Future<void> _bootstrap() async {
+    // The web's onMounted: all three feeds in parallel, zones merged after
+    // the tables land, then the channels open and the clocks start.
+    await Future.wait([_loadTables(), _loadOrders(), _loadPending()]);
+    if (!mounted) return;
+    await _loadSections();
+    if (!mounted) return;
+    setState(() {
+      _loading = false;
+      _error = _tables.isEmpty ? _error : null;
+    });
     if (_tabUp) _connectSse();
-    // Refresh fallback: only while SSE is NOT connected — when the stream
-    // is alive the server pushes every state change within seconds (the
-    // kitchen board's identical gate).
+    _tickTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      if (!_tabUp || !_lifecycleUp) return;
+      if (mounted) setState(() => _tick++);
+    });
+    _pendingTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (!_tabUp || !_lifecycleUp) return;
+      _loadPending();
+    });
     _poll = Timer.periodic(const Duration(seconds: 15), (_) {
-      if (!_tabUp) return;
-      final sse = _sse;
-      if (sse == null || !sse.connected.value) _load(quiet: true);
+      if (!_tabUp || !_lifecycleUp) return;
+      final sse = _tablesSse;
+      if (sse == null || !sse.connected.value) {
+        _loadTables(quiet: true);
+        _loadOrders(quiet: true);
+      }
     });
   }
 
-  Future<void> _load({bool quiet = false}) async {
+  // ── Data loading (each feed catches its own failures, like the web) ──────
+
+  Future<void> _loadTables({bool quiet = false}) async {
     final app = context.read<AppState>();
-    if (!quiet) setState(() { _loading = true; _error = null; });
+    if (!quiet) setState(() => _loading = true);
     try {
-      final results = await Future.wait([
-        app.api.tables(),
-        app.api.orders(openOnly: true),
-      ]);
+      final rows = await app.api.tables();
       if (!mounted) return;
       setState(() {
-        _tables = results[0] as List<CafeTable>;
-        _openOrders = results[1] as List<FufutOrder>;
-        _loading = false;
+        _tables = rows;
+        _error = null;
+        if (!quiet) _loading = false;
       });
     } on ApiError catch (e) {
       if (!mounted) return;
@@ -101,19 +170,156 @@ class _TablesScreenState extends State<TablesScreen>
         await app.sessionExpired();
         return;
       }
-      setState(() { _loading = false; _error = e; });
+      if (!quiet) setState(() { _loading = false; _error = e; });
     } catch (e) {
       if (!mounted) return;
-      setState(() { _loading = false; _error = e; });
+      if (!quiet) setState(() { _loading = false; _error = e; });
     }
   }
 
-  FufutOrder? _checkFor(CafeTable t) {
-    for (final o in _openOrders) {
-      if (o.tableNum == t.number && !o.isClosed) return o;
+  /// Orders the floor plan still cares about: kitchen-flow tickets whatever
+  /// their payment state, plus served-but-unpaid tabs. A fulfilled ticket
+  /// that HAS been paid is history and stays off the board. Filtering
+  /// 'fulfilled' outright — what this screen once did — is what hid unpaid
+  /// tabs from "Add Round", the open-tab badge and the detail dialog.
+  static bool _floorRelevant(FufutOrder o) {
+    final status = o.status.toLowerCase();
+    if (status == 'completed' || status == 'cancelled') return false;
+    final terminal = status == 'fulfilled' || status == 'served';
+    return !(terminal && (o.paymentStatus ?? '').toLowerCase() == 'paid');
+  }
+
+  Future<void> _loadOrders({bool quiet = true}) async {
+    final app = context.read<AppState>();
+    try {
+      final all = await app.api.orders();
+      if (!mounted) return;
+      setState(() => _orders = all.where(_floorRelevant).toList());
+    } on ApiError catch (e) {
+      if (e.isAuthError) await app.sessionExpired();
+      // The badges are allowed to fail on their own — the floor still renders.
+    } catch (_) {}
+  }
+
+  Future<void> _loadPending() async {
+    final app = context.read<AppState>();
+    try {
+      final rows = await app.api.pendingOrders();
+      if (!mounted) return;
+      setState(() => _pending = rows);
+    } catch (_) {
+      // A waiter cannot act on this failing, and the floor plan itself is
+      // the important thing on this screen — stay quiet, retry on the next
+      // poll (the web's loadPending catch).
+      if (!mounted) return;
+      setState(() => _pending = const []);
+    }
+  }
+
+  Future<void> _loadSections() async {
+    final app = context.read<AppState>();
+    try {
+      final serverList = await app.api.tableSections();
+      if (!mounted) return;
+      final merged = mergeSections(serverList, _tables);
+      if (merged.isNotEmpty) setState(() => _sections = merged);
+    } catch (_) {
+      // A failed read — the till is offline, the request timed out — is not
+      // an error: the last known list (or the defaults) keeps the floor
+      // working (the web's loadSections catch).
+    }
+  }
+
+  Future<void> _refreshAll() async {
+    await Future.wait([_loadTables(quiet: true), _loadOrders(), _loadPending()]);
+    if (!mounted) return;
+    showInfoOn(ScaffoldMessenger.of(context), 'Refreshed');
+  }
+
+  // ── Derived (the web's computed properties) ──────────────────────────────
+
+  List<CafeTable> get _filtered {
+    var t = _tables;
+    if (_activeSection != 'All') {
+      t = t.where((x) => x.section == _activeSection).toList();
+    }
+    if (_statusFilter.isNotEmpty) {
+      t = t.where((x) => x.status == _statusFilter).toList();
+    }
+    return t;
+  }
+
+  int _countOf(String status) =>
+      _tables.where((t) => t.status == status).length;
+
+  int get _occupiedSeats => _tables
+      .where((t) => t.status == 'occupied')
+      .fold<int>(0, (s, t) => s + t.guestsCount);
+
+  int get _availableSeats => _tables
+      .where((t) => t.status == 'available')
+      .fold<int>(0, (s, t) => s + (t.seats ?? 0));
+
+  int get _occupancyPercent => _tables.isEmpty
+      ? 0
+      : ((_countOf('occupied') / _tables.length) * 100).round();
+
+  /// Orders still open per table id — the "{n} Orders" badge.
+  Map<String, int> get _tableOrderCounts {
+    final map = <String, int>{};
+    for (final o in _orders) {
+      final tn = o.tableNum ?? '';
+      if (tn.isEmpty) continue;
+      final tbl = _tableByNumber(tn);
+      if (tbl == null) continue;
+      map[tbl.id] = (map[tbl.id] ?? 0) + 1;
+    }
+    return map;
+  }
+
+  Map<String, double> get _tableOrderTotals {
+    final map = <String, double>{};
+    for (final o in _orders) {
+      final tn = o.tableNum ?? '';
+      if (tn.isEmpty) continue;
+      final tbl = _tableByNumber(tn);
+      if (tbl == null) continue;
+      map[tbl.id] = (map[tbl.id] ?? 0) + o.total;
+    }
+    return map;
+  }
+
+  /// Table id → open (unpaid, non-cancelled) check, so the floor can badge
+  /// tables with a running tab the waiter has not settled yet.
+  Map<String, FufutOrder> get _tableOpenTab {
+    final map = <String, FufutOrder>{};
+    for (final o in _orders.where(isResumableCheck)) {
+      final tn = o.tableNum ?? '';
+      if (tn.isEmpty) continue;
+      final tbl = _tableByNumber(tn);
+      if (tbl == null) continue;
+      final existing = map[tbl.id];
+      if (existing == null ||
+          _createdMs(o) >= _createdMs(existing)) {
+        map[tbl.id] = o;
+      }
+    }
+    return map;
+  }
+
+  CafeTable? _tableByNumber(String num) {
+    for (final t in _tables) {
+      if (t.number == num) return t;
     }
     return null;
   }
+
+  static int _createdMs(FufutOrder o) =>
+      DateTime.tryParse(o.created ?? '')?.toUtc().millisecondsSinceEpoch ?? -1;
+
+  bool get _isManager => context.read<AppState>().roleKey == 'manager';
+
+  // ── Keep-alive / lifecycle ────────────────────────────────────────────────
 
   void _onTabChanged() {
     if (!mounted) return;
@@ -123,83 +329,135 @@ class _TablesScreenState extends State<TablesScreen>
     _syncSse();
     if (up) {
       // Back on stage: the floor may have moved while we were dark.
-      _load(quiet: true);
+      _loadTables(quiet: true);
+      _loadOrders();
+      _loadPending();
     }
   }
 
   void _syncSse() {
-    final sse = _sse;
-    if (sse == null) return;
-    if (_lifecycleUp && _tabUp) {
-      sse.resume(); // no-op when already up
-    } else {
-      sse.suspend();
+    final up = _lifecycleUp && _tabUp;
+    for (final sse in [_tablesSse, _kitchenSse]) {
+      if (sse == null) continue;
+      if (up) {
+        sse.resume(); // no-op when already up
+      } else {
+        sse.suspend();
+      }
     }
   }
 
   void _connectSse() {
     final app = context.read<AppState>();
-    _sseSub?.cancel();
-    _sse?.disconnect();
-    final sse = SseChannel(
+    _tablesSub?.cancel();
+    _tablesSse?.disconnect();
+    _kitchenSub?.cancel();
+    _kitchenSse?.disconnect();
+
+    final tablesSse = SseChannel(
       baseUrl: app.baseUrl,
       channel: 'tables',
       sessionToken: app.client.sessionToken,
     );
-    _sse = sse;
-    _sseSub = sse.stream.listen(_onSseEvent);
-    sse.connect();
+    _tablesSse = tablesSse;
+    _tablesSub = tablesSse.stream.listen(_onTablesEvent);
+    tablesSse.connect();
+
+    final kitchenSse = SseChannel(
+      baseUrl: app.baseUrl,
+      channel: 'kitchen',
+      sessionToken: app.client.sessionToken,
+    );
+    _kitchenSse = kitchenSse;
+    _kitchenSub = kitchenSse.stream.listen(_onKitchenEvent);
+    kitchenSse.connect();
+
+    // The web's toggle chip controls the tables channel; the kitchen channel
+    // follows the same switch (its only consumer is the ready chime).
   }
 
-  void _onSseEvent(SseEvent event) {
-    if (!mounted) return;
-    if (event.event != 'table_update') return;
-
-    final data = event.tryDecodeJson();
-    final raw = data?['tables'];
-    if (raw is! List) {
-      // Payload shape unexpected — fetch instead of rendering a stale floor
-      // (the web's fallback branch).
-      _load(quiet: true);
-      return;
+  void _toggleSse() {
+    final up = _tablesSse?.connected.value ?? false;
+    if (up) {
+      _tablesSse?.disconnect();
+      _kitchenSse?.disconnect();
+      if (mounted) setState(() {});
+    } else {
+      _connectSse();
     }
+  }
 
-    // Parse defensively: one malformed row must never take down the floor.
-    final fresh = <CafeTable>[];
+  void _onTablesEvent(SseEvent event) {
+    if (!mounted) return;
+    // The web registers table_update → loadTables, new_order/order_update →
+    // loadOrders. It refetches rather than applying the payload, so the
+    // render is always built from the same GET the web would make.
+    switch (event.event) {
+      case 'table_update':
+        _loadTables(quiet: true);
+        break;
+      case 'new_order':
+      case 'order_update':
+        _loadOrders();
+        break;
+    }
+  }
+
+  // Previous status per order id, used to detect a transition INTO ready.
+  // Without this, every SSE tick that finds a ready order would re-chime —
+  // the waiter would hear it every 10s until the order is served, which is
+  // worse than no notification at all. Snapshot BEFORE applying, compare,
+  // then replace (the web's prevOrderStatuses).
+  Map<String, String> _prevOrderStatuses = {};
+
+  void _onKitchenEvent(SseEvent event) {
+    if (event.event != 'new_order') return; // historical name = "snapshot"
+    final data = event.tryDecodeJson();
+    final raw = data?['orders'];
+    if (raw is! List) return;
+    if (!_tabUp || !_lifecycleUp) return; // chime only while on stage
+
+    final next = <FufutOrder>[];
     for (final row in raw.whereType<Map>()) {
       try {
-        fresh.add(CafeTable.fromJson(Map<String, dynamic>.from(row)));
+        next.add(FufutOrder.fromJson(Map<String, dynamic>.from(row)));
       } catch (_) {}
     }
-
-    setState(() {
-      _tables = fresh;
-      _loading = false;
-      _error = null;
-    });
-
-    // The snapshot carries tables only — one GET refreshes the open checks
-    // the badges read (kitchen board's _refreshLines pattern).
-    _refreshOrders();
-  }
-
-  Future<void> _refreshOrders() async {
-    final app = context.read<AppState>();
-    try {
-      final orders = await app.api.orders(openOnly: true);
-      if (!mounted) return;
-      setState(() => _openOrders = orders);
-    } catch (_) {
-      // The checks feed is allowed to fail on its own: the floor still
-      // renders from the pushed tables.
+    final myTables = _tables.map((t) => t.id).toSet();
+    final prev = _prevOrderStatuses;
+    final nextStatuses = <String, String>{
+      for (final o in next) o.id: o.status,
+    };
+    if (myTables.isEmpty) {
+      // No tables loaded yet — keep the map fresh so the first real
+      // snapshot does not fire a chime for an order that was already ready
+      // before we connected (the web's guard).
+      _prevOrderStatuses = nextStatuses;
+      return;
+    }
+    final newlyReady = <FufutOrder>[];
+    for (final o in next) {
+      final tid = o.tableNum ?? '';
+      if (tid.isEmpty || !myTables.contains(tid)) continue;
+      if (o.status == 'ready' && prev[o.id] != 'ready') newlyReady.add(o);
+    }
+    _prevOrderStatuses = nextStatuses;
+    // Sound + toast per newly-ready order. Cap at 3 so a chef hitting
+    // "Mark all ready" on a 10-top board does not chime ten times in a tick.
+    if (newlyReady.isEmpty || !mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    for (final o in newlyReady.take(3)) {
+      AudioAlerts.instance.play(AlertSound.orderReady);
+      showInfoOn(messenger,
+          'Table ${o.tableNum} — order ready, pick up from the pass');
     }
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
-    // Web visibilitychange parity: hidden screens pause the stream so a
-    // locked tablet never pins a Worker connection it cannot read.
+    // Web visibilitychange parity: hidden screens pause the streams so a
+    // locked tablet never pins Worker connections it cannot read.
     if (state == AppLifecycleState.hidden ||
         state == AppLifecycleState.paused) {
       _lifecycleUp = false;
@@ -215,190 +473,538 @@ class _TablesScreenState extends State<TablesScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     widget.activeTab?.removeListener(_onTabChanged);
+    _tickTimer?.cancel();
+    _pendingTimer?.cancel();
     _poll?.cancel();
-    _sseSub?.cancel();
-    _sse?.disconnect();
+    _tablesSub?.cancel();
+    _tablesSse?.disconnect();
+    _kitchenSub?.cancel();
+    _kitchenSse?.disconnect();
     super.dispose();
   }
 
-  Future<void> _claim(CafeTable t) async {
+  // ── Floor actions ────────────────────────────────────────────────────────
+
+  /// A guest's self-placed order joins the kitchen board.
+  Future<void> _acceptOrder(FufutOrder order) async {
+    if (_accepting != null) return;
+    setState(() => _accepting = order.id);
     final app = context.read<AppState>();
     final messenger = ScaffoldMessenger.of(context);
     try {
-      await app.api.claimTable(t);
-      showInfoOn(messenger, 'Table ${t.number} seated');
-      await _load(quiet: true);
-      // Straight into the order — the web jumps to the menu the same way.
-      if (mounted) {
-        context.read<CartState>().setTable(t.number);
-        widget.onNavigate?.call(NavKey.menuView);
+      await app.api.acceptOrder(order.id);
+      // Drop it immediately rather than waiting for the reload: the waiter
+      // has just tapped it and needs to see that it went (the web's comment).
+      if (!mounted) return;
+      setState(() {
+        _pending = _pending.where((o) => o.id != order.id).toList();
+      });
+      AudioAlerts.instance.play(AlertSound.newOrder);
+      showInfoOn(messenger,
+          'Sent to the kitchen — ${tableLabel(order.tableNum)}');
+      await _loadOrders();
+    } on ApiError catch (e) {
+      if (e.isAuthError) await app.sessionExpired();
+      if (!mounted) return;
+      setState(() => _accepting = null);
+      showErrorOn(messenger, e);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _accepting = null);
+      showErrorOn(messenger, e);
+    } finally {
+      if (mounted && _accepting == order.id) {
+        setState(() => _accepting = null);
       }
+    }
+  }
+
+  /// New Order / Add Round — wire the cart to the table's open check when
+  /// one exists (served-but-unpaid counts; that is how dessert gets sold)
+  /// and jump to the menu, exactly the web's newOrderForTable.
+  void _newOrderForTable(CafeTable t) {
+    final cart = context.read<CartState>();
+    if (t.status == 'occupied') {
+      final latest = latestResumableCheck(_orders, t.number);
+      if (latest != null) {
+        cart.startAddRound(orderId: latest.id, tableNum: t.number);
+        widget.onNavigate?.call(NavKey.menuView);
+        return;
+      }
+    }
+    cart.startNewOrderForTable(t.number);
+    widget.onNavigate?.call(NavKey.menuView);
+  }
+
+  /// Go to Checkout — the cashier settles the table's open check. The web
+  /// routes to /app/checkout with the check wired; here the same check opens
+  /// in the payment sheet and settles via the same PUT.
+  Future<void> _goToCheckout(CafeTable t) async {
+    final app = context.read<AppState>();
+    final latest = latestResumableCheck(_orders, t.number);
+    if (latest == null) {
+      showInfoOn(ScaffoldMessenger.of(context),
+          'No open check for table ${t.number}');
+      return;
+    }
+    // fixedTotal: the bill is already on the server — the sheet must not
+    // read the cart (there is none in this flow).
+    final result = await showModalBottomSheet<PaymentResult>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Pal.of(context).surface,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      constraints: BoxConstraints(
+          maxWidth: 680,
+          maxHeight: MediaQuery.sizeOf(context).height * 0.9),
+      builder: (_) => PaymentSheet(fixedTotal: latest.total),
+    );
+    if (result == null || !mounted) return;
+    final line = result.primary;
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await app.api.settleOrder(latest, line.method, line,
+          tip: result.tip, breakdown: result.breakdown);
+      showInfoOn(messenger,
+          'Tab settled — ${money(line.amount)} via ${line.method}');
+      await _loadTables(quiet: true);
+      await _loadOrders();
+    } on ApiError catch (e) {
+      if (e.isAuthError) await app.sessionExpired();
+      showErrorOn(messenger, e);
     } catch (e) {
       showErrorOn(messenger, e);
     }
   }
 
-  Future<void> _openMenuFor(CafeTable t) async {
-    context.read<CartState>().setTable(t.number);
-    widget.onNavigate?.call(NavKey.menuView);
-  }
-
-  void _tableTap(CafeTable t) {
-    final occupied = t.status == 'occupied';
-    if (!occupied) {
-      _claim(t);
-      return;
-    }
-    final check = _checkFor(t);
-    // Bill-request write is head-waiter + manager, exactly the web's
-    // canRequestBill = ['head-waiter','manager'].
-    final app = context.read<AppState>();
-    final canRequestBill = app.roleKey == 'head-waiter' || app.roleKey == 'manager';
-    showModalBottomSheet(
-      context: context,
-      builder: (ctx) => _TableSheet(
-        table: t,
-        check: check,
-        canRequestBill: canRequestBill,
-        onRequestBill: () {
-          Navigator.pop(ctx);
-          _requestBill(t);
-        },
-        onCancelBillRequest: () {
-          Navigator.pop(ctx);
-          _cancelBillRequest(t);
-        },
-        onAddRound: () {
-          Navigator.pop(ctx);
-          _openMenuFor(t);
-        },
-        onViewCheck: check == null
-            ? null
-            : () {
-                Navigator.pop(ctx);
-                widget.onNavigate?.call(NavKey.openChecks);
-              },
-      ),
-    );
-  }
-
-  /// `POST /api/tables/:id/request-bill` — the party wants the bill; it
-  /// rides to the cashier's dashboard Bill Requests card.
-  Future<void> _requestBill(CafeTable t) async {
+  Future<String?> _requestBill(CafeTable t) async {
     final app = context.read<AppState>();
     final messenger = ScaffoldMessenger.of(context);
     try {
       await app.api.requestBill(t.id);
-      showInfoOn(messenger, 'Bill requested for table ${t.number}');
-      await _load(quiet: true);
+      // Stamp the floor row so the chip stays up without waiting for the
+      // next push (the web updates both the copy and the row).
+      final stamp = DateTime.now().toUtc().toIso8601String();
+      _patchRow(t.id, billRequestedAt: stamp);
+      return stamp;
+    } on ApiError catch (e) {
+      if (e.isAuthError) await app.sessionExpired();
+      showErrorOn(messenger, e);
+      return null;
     } catch (e) {
       showErrorOn(messenger, e);
+      return null;
     }
   }
 
-  Future<void> _cancelBillRequest(CafeTable t) async {
+  Future<String?> _cancelBillRequest(CafeTable t) async {
     final app = context.read<AppState>();
     final messenger = ScaffoldMessenger.of(context);
     try {
       await app.api.cancelBillRequest(t.id);
-      showInfoOn(messenger, 'Bill request withdrawn');
-      await _load(quiet: true);
+      _patchRow(t.id, billRequestedAt: '');
+      return '';
+    } on ApiError catch (e) {
+      if (e.isAuthError) await app.sessionExpired();
+      showErrorOn(messenger, e);
+      return null;
+    } catch (e) {
+      showErrorOn(messenger, e);
+      return null;
+    }
+  }
+
+  void _patchRow(String id, {required String billRequestedAt}) {
+    setState(() {
+      _tables = [
+        for (final t in _tables)
+          if (t.id == id) t.copyWith(billRequestedAt: billRequestedAt) else t,
+      ];
+    });
+  }
+
+  /// Quick-status side effects live in the detail sheet; this is the PUT.
+  /// Returns null on success, the failure message otherwise (the sheet stays
+  /// open on failure, exactly like the web's saveDetail catch).
+  Future<String?> _saveTable(Map<String, dynamic> payload, String id) async {
+    final app = context.read<AppState>();
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await app.api.updateTable(id, payload);
+      showInfoOn(messenger, 'Table updated');
+      await _loadTables(quiet: true);
+      return null;
+    } on ApiError catch (e) {
+      if (e.isAuthError) await app.sessionExpired();
+      // The server refuses seating a held table with an explanation;
+      // surfacing it is the difference between an explanation and a wall.
+      await _loadTables(quiet: true);
+      return e.message;
+    } catch (e) {
+      await _loadTables(quiet: true);
+      return e.toString();
+    }
+  }
+
+  Future<bool> _deleteTable(CafeTable t) async {
+    final app = context.read<AppState>();
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await app.api.deleteTable(t.id);
+      showInfoOn(messenger, 'Table deleted');
+      await _loadTables(quiet: true);
+      return true;
+    } on ApiError catch (e) {
+      if (e.isAuthError) await app.sessionExpired();
+      showErrorOn(messenger, e);
+      return false;
+    } catch (e) {
+      showErrorOn(messenger, e);
+      return false;
+    }
+  }
+
+  Future<bool> _releaseHold(CafeTable t, TableHold hold) async {
+    final app = context.read<AppState>();
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await app.api.releaseReservation(hold.id);
+      showInfoOn(messenger, 'Table released');
+      await _loadTables(quiet: true);
+      return true;
+    } on ApiError catch (e) {
+      if (e.isAuthError) await app.sessionExpired();
+      showErrorOn(messenger, e);
+      return false;
+    } catch (e) {
+      showErrorOn(messenger, e);
+      return false;
+    }
+  }
+
+  Future<void> _openDetail(CafeTable t) async {
+    if (_isManager) _loadStaffServers();
+    final app = context.read<AppState>();
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Pal.of(context).surface,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      constraints: BoxConstraints(
+          maxWidth: 640, maxHeight: MediaQuery.sizeOf(context).height * 0.92),
+      builder: (_) => ChangeNotifierProvider.value(
+        value: app,
+        child: _DetailSheet(
+          table: t,
+          tables: _tables,
+          isManager: app.roleKey == 'manager',
+          canRequestBill:
+              ['head-waiter', 'manager'].contains(app.roleKey),
+          canCheckout: canCheckout(app.roleKey),
+          servers: _assignableServers(),
+          // The web's openDetail fetch: this table's open checks only.
+          onLoadOrders: () async {
+            final all = await app.api.orders();
+            return all
+                .where((o) => o.tableNum == t.number && isResumableCheck(o))
+                .toList();
+          },
+          onSave: (payload) => _saveTable(payload, t.id),
+          onDelete: () => _deleteTable(t),
+          onReleaseHold: (hold) => _releaseHold(t, hold),
+          onRequestBill: () => _requestBill(t),
+          onCancelBillRequest: () => _cancelBillRequest(t),
+          onNewOrder: () => _newOrderForTable(t),
+          onGoToCheckout: () => _goToCheckout(t),
+          onShowQr: () => _generateQr(t),
+        ),
+      ),
+    );
+  }
+
+  /// Roster of who can be assigned: active head-waiters, so the name stored
+  /// on the table is exactly the staff member's display name (the web's
+  /// assignableServers filter).
+  List<String> _assignableServers() {
+    return _staffServers
+        .where((s) =>
+            s.role.toLowerCase() == 'head-waiter' &&
+            s.status.toLowerCase() == 'active')
+        .map((s) => s.name.trim())
+        .where((n) => n.isNotEmpty)
+        .toList();
+  }
+
+  Future<void> _loadStaffServers() async {
+    if (_staffServers.isNotEmpty) return;
+    final app = context.read<AppState>();
+    try {
+      final staff = await app.api.staff();
+      if (mounted) setState(() => _staffServers = staff);
+    } catch (_) {
+      if (mounted) setState(() => _staffServers = const []);
+    }
+  }
+
+  Future<void> _generateQr(CafeTable t) async {
+    final app = context.read<AppState>();
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final res = await app.api.tableQr(t.id);
+      if (!mounted) return;
+      showInfoOn(messenger, 'QR Code generated for Table ${t.number}');
+      await showDialog<void>(
+        context: context,
+        builder: (_) => _QrModal(tableNumber: t.number, url: res.url),
+      );
+    } on ApiError catch (e) {
+      if (e.isAuthError) await app.sessionExpired();
+      showErrorOn(messenger, e);
     } catch (e) {
       showErrorOn(messenger, e);
     }
   }
 
+  Future<void> _openAddTable() async {
+    final app = context.read<AppState>();
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Pal.of(context).surface,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      constraints: BoxConstraints(
+          maxWidth: 560, maxHeight: MediaQuery.sizeOf(context).height * 0.9),
+      builder: (_) => _AddTableSheet(
+        sections: _sections,
+        defaultNumber: _tables.fold<int>(0, (m, t) {
+          final n = int.tryParse(t.number);
+          return n != null && n > m ? n : m;
+        }),
+        onAdd: ({required number, required capacity, section, name, shape = 'square'}) async {
+          final messenger = ScaffoldMessenger.of(context);
+          try {
+            await app.api.addTable(
+              number: number,
+              capacity: capacity,
+              section: section,
+              name: name,
+              shape: shape,
+            );
+            showInfoOn(messenger, 'Table added');
+            return null;
+          } on ApiError catch (e) {
+            if (e.isAuthError) await app.sessionExpired();
+            return e.message;
+          } catch (e) {
+            return e.toString();
+          }
+        },
+      ),
+    );
+    await _loadTables(quiet: true);
+  }
+
+  // ── Build ────────────────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
-    if (_loading && _tables.isEmpty) {
+    if (_loading && _tables.isEmpty && _error == null) {
       return const Center(child: CircularProgressIndicator());
     }
     if (_error != null && _tables.isEmpty) {
-      return LoadError(error: _error!, onRetry: () => _load());
+      return LoadError(error: _error!, onRetry: _bootstrap);
     }
     final pal = Pal.of(context);
-    // Section order: server rows grouped, sections alphabetically, unsectioned last.
-    final sections = <String, List<CafeTable>>{};
-    for (final t in _tables) {
-      sections.putIfAbsent(t.section?.trim().isNotEmpty == true
-          ? t.section!.trim()
-          : 'Floor', () => []).add(t);
+    final manager = _isManager;
+    final filtered = _filtered;
+
+    // Visible sections: the picked zone alone, or every zone that still has
+    // tables after the current filter (the web's visibleSections).
+    final List<String> visibleSections;
+    final Map<String, List<CafeTable>> bySection;
+    if (_activeSection != 'All') {
+      visibleSections = [_activeSection];
+    } else {
+      visibleSections = _sections
+          .where((s) => filtered.any((t) => t.section == s))
+          .toList();
     }
-    final names = sections.keys.toList()..sort();
+    bySection = {
+      for (final s in visibleSections)
+        s: filtered.where((t) => t.section == s).toList(),
+    };
+    final counts = _tableOrderCounts;
+    final totals = _tableOrderTotals;
+    final openTabs = _tableOpenTab;
 
     return RefreshIndicator(
-      onRefresh: () => _load(quiet: true),
+      onRefresh: _refreshAll,
       child: ListView(
-        padding: const EdgeInsets.all(14),
+        padding: const EdgeInsets.fromLTRB(14, 12, 14, 20),
         children: [
-          const GreetingHeader(),
-          const SizedBox(height: 12),
-          // Legend — the floor's color code, same hues as the web.
-          Row(children: [
-            _legendDot(pal.success, 'Free'),
-            const SizedBox(width: 10),
-            _legendDot(pal.warning, 'Occupied'),
-            const SizedBox(width: 10),
-            _legendDot(pal.info, 'Reserved'),
-            const SizedBox(width: 10),
-            _legendDot(pal.goldDark, 'Cleaning'),
-            const Spacer(),
-            _LiveChip(connected: _sse?.connected),
-            const SizedBox(width: 8),
-            Text(
-              '${_tables.where((t) => t.status == "occupied").length}/${_tables.length} seated',
-              style: TextStyle(
-                  fontFamily: kFontMono,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                  color: pal.muted),
-            ),
-          ]),
-          for (final name in names) ...[
-            const SizedBox(height: 14),
-            Text(name.toUpperCase(),
-                style: TextStyle(
-                    fontFamily: kFontBody,
-                    fontSize: 10,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 1.2,
-                    color: pal.muted)),
-            const SizedBox(height: 8),
-            GridView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 3,
-                mainAxisSpacing: 8,
-                crossAxisSpacing: 8,
-                childAspectRatio: 1.5,
-              ),
-              itemCount: sections[name]!.length,
-              itemBuilder: (context, i) =>
-                  _TableCard(table: sections[name]![i], onTap: _tableTap),
+          _Toolbar(
+            tableCount: _tables.length,
+            occupancyPercent: _occupancyPercent,
+            connected: _tablesSse?.connected,
+            onToggleSse: _toggleSse,
+            manager: manager,
+            onAddTable: _openAddTable,
+            onRefresh: _refreshAll,
+          ),
+          // Pending strip — absent entirely when nothing is waiting.
+          if (_pending.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            _PendingStrip(
+              pending: _pending,
+              accepting: _accepting,
+              onAccept: _acceptOrder,
             ),
           ],
+          const SizedBox(height: 14),
+          _ZonePicker(
+            sections: _sections,
+            value: _activeSection,
+            onChanged: (v) => setState(() => _activeSection = v),
+          ),
+          const SizedBox(height: 2),
+          _StatusStrip(
+            available: _countOf('available'),
+            availableSeats: _availableSeats,
+            occupied: _countOf('occupied'),
+            occupiedGuests: _occupiedSeats,
+            reserved: _countOf('reserved'),
+            cleaning: _countOf('cleaning'),
+            active: _statusFilter,
+            onToggle: (key) => setState(() {
+              _statusFilter = _statusFilter == key ? '' : key;
+            }),
+          ),
+          const SizedBox(height: 14),
+          if (filtered.isEmpty)
+            _EmptyState(section: _activeSection)
+          else
+            ...[
+              for (final entry in bySection.entries) ...[
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.baseline,
+                  textBaseline: TextBaseline.alphabetic,
+                  children: [
+                    Text(entry.key,
+                        style: TextStyle(
+                            fontFamily: kFontBody,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w800,
+                            color: pal.heading)),
+                    const SizedBox(width: 8),
+                    Text('${entry.value.length} tables',
+                        style: TextStyle(
+                            fontFamily: kFontBody,
+                            fontSize: 11,
+                            color: pal.muted)),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                _SectionGrid(
+                  tables: entry.value,
+                  counts: counts,
+                  totals: totals,
+                  openTabs: openTabs,
+                  onTap: _openDetail,
+                ),
+                const SizedBox(height: 16),
+              ],
+            ],
         ],
       ),
     );
   }
+}
 
-  Widget _legendDot(Color c, String label) {
+// ─────────────────────────────────────────────────────────────────────────────
+// Toolbar — "Floor Plan", counts, Live toggle, Add Table (manager), refresh.
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _Toolbar extends StatelessWidget {
+  final int tableCount;
+  final int occupancyPercent;
+  final ValueNotifier<bool>? connected;
+  final VoidCallback onToggleSse;
+  final bool manager;
+  final VoidCallback onAddTable;
+  final VoidCallback onRefresh;
+
+  const _Toolbar({
+    required this.tableCount,
+    required this.occupancyPercent,
+    required this.connected,
+    required this.onToggleSse,
+    required this.manager,
+    required this.onAddTable,
+    required this.onRefresh,
+  });
+
+  @override
+  Widget build(BuildContext context) {
     final pal = Pal.of(context);
-    return Row(children: [
-      Container(width: 8, height: 8, decoration: BoxDecoration(shape: BoxShape.circle, color: c)),
-      const SizedBox(width: 4),
-      Text(label,
-          style: TextStyle(fontFamily: kFontBody, fontSize: 10.5, color: pal.muted)),
-    ]);
+    return Wrap(
+      crossAxisAlignment: WrapCrossAlignment.center,
+      spacing: 8,
+      runSpacing: 8,
+      children: [
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Floor Plan',
+                style: TextStyle(
+                    fontFamily: kFontBody,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                    color: pal.heading)),
+            Text('$tableCount tables · $occupancyPercent% occupied',
+                style: TextStyle(
+                    fontFamily: kFontBody, fontSize: 11.5, color: pal.muted)),
+          ],
+        ),
+        const SizedBox(width: 4),
+        _LiveChip(connected: connected, onToggle: onToggleSse),
+        if (manager)
+          SizedBox(
+            height: 34,
+            child: FilledButton.icon(
+              onPressed: onAddTable,
+              style: FilledButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                textStyle: const TextStyle(
+                    fontFamily: kFontBody,
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w700),
+              ),
+              icon: const Icon(Icons.add, size: 15),
+              label: const Text('Add Table'),
+            ),
+          ),
+        IconButton(
+          tooltip: 'Refresh',
+          onPressed: onRefresh,
+          icon: const Icon(Icons.refresh, size: 20),
+          color: pal.muted,
+        ),
+      ],
+    );
   }
 }
 
-/// The web's `tm-live-btn`: a green-pulsing Live chip while the tables
-/// stream is up, a dim Offline chip while the 15s poll carries the floor.
+/// The web's `tm-live-btn`: a green-pulsing Live chip while the stream is
+/// up, a dim Offline chip while the poll carries the floor. Tapping toggles
+/// the connection (the web's toggleSSE).
 class _LiveChip extends StatelessWidget {
   final ValueNotifier<bool>? connected;
-  const _LiveChip({required this.connected});
+  final VoidCallback onToggle;
+
+  const _LiveChip({required this.connected, required this.onToggle});
 
   @override
   Widget build(BuildContext context) {
@@ -413,103 +1019,1559 @@ class _LiveChip extends StatelessWidget {
 
   Widget _chip(Pal pal, bool up) {
     final color = up ? pal.success : pal.muted;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: up ? 0.12 : 0.07),
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Row(children: [
-        Container(
-          width: 6,
-          height: 6,
-          decoration: BoxDecoration(shape: BoxShape.circle, color: color),
+    return InkWell(
+      onTap: onToggle,
+      borderRadius: BorderRadius.circular(999),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: up ? 0.12 : 0.07),
+          borderRadius: BorderRadius.circular(999),
         ),
-        const SizedBox(width: 4),
-        Text(up ? 'Live' : 'Offline',
-            style: TextStyle(
-                fontFamily: kFontBody,
-                fontSize: 10,
-                fontWeight: FontWeight.w700,
-                color: color)),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Container(
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(shape: BoxShape.circle, color: color),
+          ),
+          const SizedBox(width: 5),
+          Text(up ? 'Live' : 'Offline',
+              style: TextStyle(
+                  fontFamily: kFontBody,
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.w700,
+                  color: color)),
+        ]),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pending strip — guest QR orders waiting for a floor Accept. Deliberately
+// loud: a guest is sitting there wondering whether anybody saw it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _PendingStrip extends StatelessWidget {
+  final List<FufutOrder> pending;
+  final String? accepting;
+  final ValueChanged<FufutOrder> onAccept;
+
+  const _PendingStrip({
+    required this.pending,
+    required this.accepting,
+    required this.onAccept,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = Pal.of(context);
+    final n = pending.length;
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        border: Border.all(color: pal.warningBorder),
+        borderRadius: BorderRadius.circular(10),
+        color: pal.warningBg,
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.baseline,
+          textBaseline: TextBaseline.alphabetic,
+          children: [
+            Expanded(
+              child: Text(
+                '$n order${n == 1 ? '' : 's'} from guests waiting',
+                style: TextStyle(
+                    fontFamily: kFontBody,
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w800,
+                    color: pal.heading),
+              ),
+            ),
+            Text('The kitchen has not seen these yet',
+                style: TextStyle(
+                    fontFamily: kFontBody, fontSize: 10.5, color: pal.muted)),
+          ],
+        ),
+        const SizedBox(height: 8),
+        LayoutBuilder(builder: (context, box) {
+          final cols = box.maxWidth >= 560 ? 2 : 1;
+          return GridView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: cols,
+              mainAxisSpacing: 8,
+              crossAxisSpacing: 8,
+              childAspectRatio: cols == 1 ? 3.6 : 2.9,
+            ),
+            itemCount: pending.length,
+            itemBuilder: (context, i) {
+              final o = pending[i];
+              final isAccepting = accepting == o.id;
+              // The web reads o.source === 'qr'; a QR order without the
+              // field reads Staff there too, so the default matches.
+              final sourceQr = (o.source ?? '').toLowerCase() == 'qr';
+              return Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                decoration: BoxDecoration(
+                  color: pal.surface,
+                  border: Border.all(color: pal.border),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Row(children: [
+                      Flexible(
+                        child: Text(tableLabel(o.tableNum),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                                fontFamily: kFontBody,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w800,
+                                color: pal.heading)),
+                      ),
+                      const SizedBox(width: 6),
+                      _SourceBadge(qr: sourceQr),
+                      const Spacer(),
+                      Text(waitingFor(o.created),
+                          style: TextStyle(
+                              fontFamily: kFontBody,
+                              fontSize: 10,
+                              color: pal.muted)),
+                    ]),
+                    const SizedBox(height: 3),
+                    Text(
+                      o.items.isNotEmpty
+                          ? summariseItems(o.items)
+                          : o.itemsRaw,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          fontFamily: kFontBody,
+                          fontSize: 11,
+                          height: 1.3,
+                          color: pal.body),
+                    ),
+                    const SizedBox(height: 5),
+                    Row(children: [
+                      Text(formatETB(o.total),
+                          style: TextStyle(
+                              fontFamily: kFontBody,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                              color: pal.heading)),
+                      const Spacer(),
+                      SizedBox(
+                        height: 28,
+                        child: FilledButton(
+                          onPressed:
+                              isAccepting || accepting != null
+                                  ? null
+                                  : () => onAccept(o),
+                          style: FilledButton.styleFrom(
+                            padding:
+                                const EdgeInsets.symmetric(horizontal: 14),
+                            textStyle: const TextStyle(
+                                fontFamily: kFontBody,
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w700),
+                          ),
+                          child: Text(isAccepting ? 'Sending…' : 'Accept'),
+                        ),
+                      ),
+                    ]),
+                  ],
+                ),
+              );
+            },
+          );
+        }),
       ]),
     );
   }
 }
 
-class _TableCard extends StatelessWidget {
-  final CafeTable table;
-  final ValueChanged<CafeTable> onTap;
-
-  const _TableCard({required this.table, required this.onTap});
+/// QR / Staff source badge — a printed code is a photograph anyone can keep,
+/// so the badge says where the order came from.
+class _SourceBadge extends StatelessWidget {
+  final bool qr;
+  const _SourceBadge({required this.qr});
 
   @override
   Widget build(BuildContext context) {
     final pal = Pal.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+      decoration: BoxDecoration(
+        color: qr ? pal.tintBg : pal.sunken,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(qr ? 'QR' : 'Staff',
+          style: TextStyle(
+              fontFamily: kFontBody,
+              fontSize: 8.5,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0.5,
+              color: qr ? pal.primary : pal.muted)),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Zone picker — a dropdown, not chips: one row, every zone in the native
+// picker, and it cannot render as a circle because it is a rectangle by
+// construction (the web's tm-zonepick note).
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _ZonePicker extends StatelessWidget {
+  final List<String> sections;
+  final String value;
+  final ValueChanged<String> onChanged;
+
+  const _ZonePicker({
+    required this.sections,
+    required this.value,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = Pal.of(context);
+    final options = <String>['All', ...sections];
+    final current = options.contains(value) ? value : 'All';
+    return Row(children: [
+      Text('ZONE',
+          style: TextStyle(
+              fontFamily: kFontBody,
+              fontSize: 10,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 1,
+              color: pal.muted)),
+      const SizedBox(width: 10),
+      ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 260),
+        child: Container(
+          height: 40,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          decoration: BoxDecoration(
+            border: Border.all(color: pal.border),
+            borderRadius: BorderRadius.circular(8),
+            color: pal.surface,
+          ),
+          child: DropdownButtonHideUnderline(
+            child: DropdownButton<String>(
+              value: current,
+              isDense: true,
+              borderRadius: BorderRadius.circular(8),
+              items: [
+                for (final s in options)
+                  DropdownMenuItem(
+                    value: s,
+                    child: Text(s == 'All' ? 'All sections' : s,
+                        style: TextStyle(
+                            fontFamily: kFontBody,
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w600,
+                            color: pal.heading)),
+                  ),
+              ],
+              onChanged: (v) {
+                if (v != null) onChanged(v);
+              },
+            ),
+          ),
+        ),
+      ),
+    ]);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Status strip — the four numbers a floor plan needs, and each one filters
+// the floor. Tapping the same chip twice clears it, so getting back to the
+// whole floor never needs a separate "All" control.
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _StatusStrip extends StatelessWidget {
+  final int available;
+  final int availableSeats;
+  final int occupied;
+  final int occupiedGuests;
+  final int reserved;
+  final int cleaning;
+  final String active;
+  final ValueChanged<String> onToggle;
+
+  const _StatusStrip({
+    required this.available,
+    required this.availableSeats,
+    required this.occupied,
+    required this.occupiedGuests,
+    required this.reserved,
+    required this.cleaning,
+    required this.active,
+    required this.onToggle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final chips = [
+      _StripChip(
+        key: 'available',
+        label: 'Free',
+        count: available,
+        sub: '$availableSeats seats',
+        color: Pal.of(context).success,
+      ),
+      _StripChip(
+        key: 'occupied',
+        label: 'Seated',
+        count: occupied,
+        sub: '$occupiedGuests guests',
+        color: Pal.of(context).info,
+      ),
+      _StripChip(
+        key: 'reserved',
+        label: 'Reserved',
+        count: reserved,
+        sub: 'today',
+        color: Pal.of(context).warning,
+      ),
+      _StripChip(
+        key: 'cleaning',
+        label: 'Cleaning',
+        count: cleaning,
+        sub: 'to reset',
+        color: Pal.of(context).faint,
+      ),
+    ];
+    return LayoutBuilder(builder: (context, box) {
+      final twoUp = box.maxWidth < 560;
+      final showSub = box.maxWidth >= 380;
+      final rows = <Widget>[];
+      for (var i = 0; i < chips.length; i += twoUp ? 2 : 4) {
+        final slice = chips.sublist(
+            i, (i + (twoUp ? 2 : 4)).clamp(0, chips.length));
+        rows.add(Row(
+          children: [
+            for (final c in slice)
+              Expanded(
+                child: Padding(
+                  padding: EdgeInsets.only(
+                      right: c != slice.last ? 8 : 0, bottom: twoUp ? 8 : 0),
+                  child: _buildChip(context, c, showSub),
+                ),
+              ),
+          ],
+        ));
+      }
+      return Column(children: rows);
+    });
+  }
+
+  Widget _buildChip(BuildContext context, _StripChip chip, bool showSub) {
+    final pal = Pal.of(context);
+    final isActive = active == chip.key;
+    return Material(
+      color: isActive ? pal.tintBg : pal.surface,
+      borderRadius: BorderRadius.circular(8),
+      child: InkWell(
+        onTap: () => onToggle(chip.key),
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          constraints: const BoxConstraints(minHeight: 44),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: isActive ? pal.primary : pal.border,
+              width: 1.5,
+            ),
+          ),
+          child: Row(children: [
+            Container(
+              width: 7,
+              height: 7,
+              decoration:
+                  BoxDecoration(shape: BoxShape.circle, color: chip.color),
+            ),
+            const SizedBox(width: 8),
+            Text('${chip.count}',
+                style: TextStyle(
+                    fontFamily: kFontMono,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                    color: pal.heading)),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(chip.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      fontFamily: kFontBody,
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w600,
+                      color: pal.body)),
+            ),
+            if (showSub)
+              Text(chip.sub,
+                  style: TextStyle(
+                      fontFamily: kFontBody,
+                      fontSize: 10,
+                      color: pal.muted)),
+          ]),
+        ),
+      ),
+    );
+  }
+}
+
+class _StripChip {
+  final String key;
+  final String label;
+  final int count;
+  final String sub;
+  final Color color;
+  const _StripChip({
+    required this.key,
+    required this.label,
+    required this.count,
+    required this.sub,
+    required this.color,
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Section grid + the table card.
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _SectionGrid extends StatelessWidget {
+  final List<CafeTable> tables;
+  final Map<String, int> counts;
+  final Map<String, double> totals;
+  final Map<String, FufutOrder> openTabs;
+  final ValueChanged<CafeTable> onTap;
+
+  const _SectionGrid({
+    required this.tables,
+    required this.counts,
+    required this.totals,
+    required this.openTabs,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(builder: (context, box) {
+      // The web grid is repeat(auto-fill, minmax(200px, 1fr)) — 2-up below
+      // 480px, more columns as the pane widens. Rows size to the tallest
+      // card (CSS grid auto rows), which a Wrap reproduces: every card gets
+      // the row's column width and keeps its own intrinsic height.
+      final cols = (box.maxWidth / 200).floor().clamp(2, 6);
+      final cardWidth =
+          (box.maxWidth - (cols - 1) * 12) / cols;
+      return Wrap(
+        spacing: 12,
+        runSpacing: 12,
+        children: [
+          for (final t in tables)
+            SizedBox(
+              width: cardWidth,
+              child: _TableCard(
+                table: t,
+                orderCount: counts[t.id] ?? 0,
+                orderTotal: totals[t.id] ?? 0,
+                openTab: openTabs[t.id] != null,
+                onTap: onTap,
+              ),
+            ),
+        ],
+      );
+    });
+  }
+}
+
+class _TableCard extends StatelessWidget {
+  final CafeTable table;
+  final int orderCount;
+  final double orderTotal;
+  final bool openTab;
+  final ValueChanged<CafeTable> onTap;
+
+  const _TableCard({
+    required this.table,
+    required this.orderCount,
+    required this.orderTotal,
+    required this.openTab,
+    required this.onTap,
+  });
+
+  static const _pillLight = {
+    'available': (Color(0xFFF0FDF4), Color(0xFF166534)),
+    'occupied': (Color(0xFFEFF6FF), Color(0xFF1E40AF)),
+    'reserved': (Color(0xFFFEF3C7), Color(0xFF92400E)),
+  };
+  static const _pillDark = {
+    'available': (Color(0x2216A34A), Color(0xFF4ADE80)),
+    'occupied': (Color(0x2260A5FA), Color(0xFF60A5FA)),
+    'reserved': (Color(0x22FBBF24), Color(0xFFFBBF24)),
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = Pal.of(context);
+    final dark = Theme.of(context).brightness == Brightness.dark;
     final status = table.status.toLowerCase();
-    final Color color;
+
+    // Card accent: 3px top bar + icon tint — success / primary / info /
+    // neutral, exactly the web's ::before rules.
+    final Color accent;
     switch (status) {
-      case 'occupied': color = pal.warning;
-      case 'reserved': color = pal.info;
-      case 'cleaning': color = pal.goldDark;
-      default: color = pal.success;
+      case 'occupied':
+        accent = pal.primary;
+        break;
+      case 'reserved':
+        accent = pal.info;
+        break;
+      case 'cleaning':
+        accent = pal.faint;
+        break;
+      default:
+        accent = pal.success;
     }
+    final pill = (dark ? _pillDark : _pillLight)[status] ??
+        (dark
+            ? (const Color(0x2294A3B8), pal.muted)
+            : (pal.sunken, pal.muted));
+
+    final urgency = occupancyUrgency(table);
+    final timer = occupancyTimer(table.seatedAt);
+
     return Material(
       color: pal.surface,
-      borderRadius: BorderRadius.circular(10),
+      borderRadius: BorderRadius.circular(14),
       child: InkWell(
         onTap: () => onTap(table),
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(14),
         child: Container(
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: color.withValues(alpha: 0.55), width: 1.2),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: status == 'occupied'
+                  ? const Color(0x330F7B78)
+                  : status == 'reserved'
+                      ? const Color(0x332563EB)
+                      : pal.border,
+            ),
           ),
-          padding: const EdgeInsets.all(8),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Row(children: [
-                Container(width: 7, height: 7, decoration: BoxDecoration(shape: BoxShape.circle, color: color)),
-                const SizedBox(width: 5),
-                Expanded(
-                  child: Text('T${table.number}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+          child: Stack(children: [
+            // 3px status accent across the top.
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: Container(
+                height: 3,
+                decoration: BoxDecoration(
+                  color: accent,
+                  borderRadius: const BorderRadius.vertical(
+                      top: Radius.circular(14)),
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Top row: server initials badge (left), status pill (right).
+                  Row(children: [
+                    if ((table.server ?? '').isNotEmpty)
+                      _ServerBadge(name: table.server!)
+                    else
+                      const SizedBox(width: 24),
+                    const Spacer(),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: pill.$1,
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Text(status,
+                          style: TextStyle(
+                              fontFamily: kFontBody,
+                              fontSize: 9,
+                              fontWeight: FontWeight.w600,
+                              letterSpacing: 0.3,
+                              color: pill.$2)),
+                    ),
+                  ]),
+                  const SizedBox(height: 10),
+                  // Center: table icon + padded number.
+                  _TableIcon(status: status, accent: accent),
+                  const SizedBox(height: 6),
+                  Text(
+                      'T-${table.number.padLeft(2, '0')}',
                       style: TextStyle(
-                          fontFamily: kFontBody,
-                          fontSize: 13,
+                          fontFamily: kFontMono,
+                          fontSize: 17,
                           fontWeight: FontWeight.w700,
                           color: pal.heading)),
+                  const SizedBox(height: 10),
+                  // Bottom info, by status — the web's tfc-bottom.
+                  if (status == 'available') ...[
+                    _infoRow(context,
+                        '${table.seats ?? '—'} Persons · ${table.sizeLabel}'),
+                  ] else if (status == 'occupied') ...[
+                    if (timer.isNotEmpty)
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.schedule,
+                              size: 12,
+                              color: _urgencyColor(pal, urgency)),
+                          const SizedBox(width: 4),
+                          Text(timer,
+                              style: TextStyle(
+                                  fontFamily: kFontMono,
+                                  fontSize: 11.5,
+                                  fontWeight: FontWeight.w700,
+                                  color: _urgencyColor(pal, urgency))),
+                        ],
+                      ),
+                    if (urgency == 'overdue') ...[
+                      const SizedBox(height: 3),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 1.5),
+                        decoration: BoxDecoration(
+                          color: pal.danger,
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: const Text('Releases soon — past 4h',
+                            style: TextStyle(
+                                fontFamily: kFontBody,
+                                fontSize: 8.5,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: 0.3,
+                                color: Colors.white)),
+                      ),
+                    ],
+                    const SizedBox(height: 3),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Flexible(
+                          child: Text(
+                              orderCount > 0
+                                  ? '$orderCount Order${orderCount > 1 ? 's' : ''}'
+                                  : 'No order',
+                              style: TextStyle(
+                                  fontFamily: kFontBody,
+                                  fontSize: 10.5,
+                                  fontWeight: orderCount > 0
+                                      ? FontWeight.w500
+                                      : FontWeight.w700,
+                                  color: orderCount > 0
+                                      ? pal.muted
+                                      : pal.warning)),
+                        ),
+                        if (orderTotal > 0) ...[
+                          const SizedBox(width: 6),
+                          Text(formatETB(orderTotal),
+                              style: TextStyle(
+                                  fontFamily: kFontMono,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w700,
+                                  color: pal.heading)),
+                        ],
+                      ],
+                    ),
+                    if (openTab) ...[
+                      const SizedBox(height: 3),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 1.5),
+                        decoration: BoxDecoration(
+                          color: pal.warning,
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: const Text('Open Tab',
+                            style: TextStyle(
+                                fontFamily: kFontBody,
+                                fontSize: 8.5,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: 0.3,
+                                color: Colors.white)),
+                      ),
+                    ],
+                    if ((table.payment ?? '').isNotEmpty ||
+                        table.billRequested) ...[
+                      const SizedBox(height: 3),
+                      // Wrap, not Row: both chips together outrun a narrow
+                      // card, and the web's flex rows wrap the same way.
+                      Wrap(
+                        alignment: WrapAlignment.center,
+                        spacing: 5,
+                        runSpacing: 3,
+                        children: [
+                          if ((table.payment ?? '').isNotEmpty)
+                            _PayBadge(state: table.payment!),
+                          if (table.billRequested) _BillRequestedChip(),
+                        ],
+                      ),
+                    ],
+                  ] else if (status == 'reserved') ...[
+                    _infoRow(context, '${table.seats ?? '—'} Persons'),
+                    if (table.reservedHold != null) ...[
+                      const SizedBox(height: 3),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.event_outlined,
+                              size: 12, color: pal.muted),
+                          const SizedBox(width: 4),
+                          Flexible(
+                            child: Text(
+                                table.reservedHold!.name?.isNotEmpty == true
+                                    ? table.reservedHold!.name!
+                                    : 'Reserved',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                    fontFamily: kFontBody,
+                                    fontSize: 10,
+                                    color: pal.muted)),
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                              holdWindowLabel(table.reservedHold!.startAt,
+                                  table.reservedHold!.endAt),
+                              style: TextStyle(
+                                  fontFamily: kFontMono,
+                                  fontSize: 9.5,
+                                  color: pal.muted)),
+                        ],
+                      ),
+                    ],
+                  ] else if (status == 'cleaning') ...[
+                    _infoRow(context, 'Needs cleaning'),
+                  ],
+                ],
+              ),
+            ),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  Widget _infoRow(BuildContext context, String text) {
+    return Text(text,
+        style: TextStyle(
+            fontFamily: kFontBody, fontSize: 10.5, color: Pal.of(context).muted));
+  }
+
+  Color _urgencyColor(Pal pal, String urgency) {
+    switch (urgency) {
+      case 'fresh':
+        return pal.success;
+      case 'warm':
+        return pal.warning;
+      case 'late':
+      case 'overdue':
+        return pal.danger;
+      default:
+        return pal.muted;
+    }
+  }
+}
+
+/// The web's tfc-icon: a 48-unit table with four chairs a side, tinted by
+/// status. Drawn with CustomPaint so no asset is needed.
+class _TableIcon extends StatelessWidget {
+  final String status;
+  final Color accent;
+  const _TableIcon({required this.status, required this.accent});
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = Pal.of(context);
+    final bg = status == 'cleaning'
+        ? pal.sunken
+        : accent.withValues(alpha: 0.08);
+    return Container(
+      width: 48,
+      height: 48,
+      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(13)),
+      child: CustomPaint(painter: _TableGlyph(color: accent)),
+    );
+  }
+}
+
+class _TableGlyph extends CustomPainter {
+  final Color color;
+  _TableGlyph({required this.color});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final stroke = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2;
+    final dots = Paint()..color = color;
+    final w = size.width, h = size.height;
+    // Table top: rounded rect across the middle.
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+          Rect.fromLTWH(w * 0.20, h * 0.34, w * 0.60, h * 0.36),
+          Radius.circular(w * 0.09)),
+      stroke,
+    );
+    // Four chair dots per side, mirroring the SVG's 8 circles.
+    const xs = [0.21, 0.38, 0.62, 0.79];
+    for (final fx in xs) {
+      canvas.drawCircle(Offset(w * fx, h * 0.24), w * 0.055, dots);
+      canvas.drawCircle(Offset(w * fx, h * 0.80), w * 0.055, dots);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _TableGlyph oldDelegate) =>
+      oldDelegate.color != color;
+}
+
+/// Server initials badge — stable hue from the name hash, fixed
+/// saturation/lightness so white text stays legible in both themes.
+class _ServerBadge extends StatelessWidget {
+  final String name;
+  const _ServerBadge({required this.name});
+
+  @override
+  Widget build(BuildContext context) {
+    final hue = serverHue(name);
+    final initials = serverInitials(name);
+    return Container(
+      constraints: const BoxConstraints(minWidth: 22),
+      height: 22,
+      padding: const EdgeInsets.symmetric(horizontal: 5),
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: HSLColor.fromAHSL(1, hue.toDouble(), 0.55, 0.34).toColor(),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(initials,
+          style: const TextStyle(
+              fontFamily: kFontBody,
+              fontSize: 9.5,
+              fontWeight: FontWeight.w700,
+              color: Colors.white,
+              letterSpacing: 0.2)),
+    );
+  }
+}
+
+/// Paid / Partly Paid / Unpaid — calm when settled, ordinary when sitting,
+/// "some money is down" for partial. Same hues as the web's tfc-pay-badge.
+class _PayBadge extends StatelessWidget {
+  final String state;
+  const _PayBadge({required this.state});
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final label = paymentLabel(state);
+    final Color bg, fg;
+    switch (state.toLowerCase()) {
+      case 'paid':
+        bg = dark ? const Color(0x3810B981) : const Color(0x2910B981);
+        fg = dark ? const Color(0xFF34D399) : const Color(0xFF047857);
+        break;
+      case 'partial':
+        bg = dark ? const Color(0x383B82F6) : const Color(0x293B82F6);
+        fg = dark ? const Color(0xFF93C5FD) : const Color(0xFF1D4ED8);
+        break;
+      default: // unpaid
+        bg = dark ? const Color(0x38F59E0B) : const Color(0x29F59E0B);
+        fg = dark ? const Color(0xFFFBBF24) : const Color(0xFFB45309);
+    }
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 1.5),
+      decoration:
+          BoxDecoration(color: bg, borderRadius: BorderRadius.circular(4)),
+      child: Text(label,
+          style: TextStyle(
+              fontFamily: kFontBody,
+              fontSize: 8.5,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0.3,
+              color: fg)),
+    );
+  }
+}
+
+/// The pulsing red "Bill Requested" chip — the floor plan and the cashier's
+/// screen must agree that somebody asked for the check.
+class _BillRequestedChip extends StatefulWidget {
+  @override
+  State<_BillRequestedChip> createState() => _BillRequestedChipState();
+}
+
+class _BillRequestedChipState extends State<_BillRequestedChip>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _pulse = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1600),
+    lowerBound: 0.55,
+    upperBound: 1.0,
+  )..repeat(reverse: true);
+
+  @override
+  void dispose() {
+    _pulse.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FadeTransition(
+      opacity: _pulse,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 1.5),
+        decoration: BoxDecoration(
+          color: Theme.of(context).brightness == Brightness.dark
+              ? const Color(0xFFB91C1C)
+              : const Color(0xFFDC2626),
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: const Text('Bill Requested',
+            style: TextStyle(
+                fontFamily: kFontBody,
+                fontSize: 8.5,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.3,
+                color: Colors.white)),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Empty state — nothing matches the current zone/status filter.
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _EmptyState extends StatelessWidget {
+  final String section;
+  const _EmptyState({required this.section});
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = Pal.of(context);
+    final isAll = section == 'All';
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 56),
+      child: Column(children: [
+        Container(
+          width: 52,
+          height: 52,
+          decoration:
+              BoxDecoration(color: pal.sunken, shape: BoxShape.circle),
+          child: Icon(Icons.close, size: 26, color: pal.muted),
+        ),
+        const SizedBox(height: 12),
+        Text('No tables in ${isAll ? 'any section' : section}',
+            style: TextStyle(
+                fontFamily: kFontBody,
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: pal.heading)),
+        const SizedBox(height: 4),
+        Text(
+            isAll
+                ? 'Tables will appear here once they are added.'
+                : 'Try selecting a different section.',
+            style: TextStyle(
+                fontFamily: kFontBody, fontSize: 11.5, color: pal.muted)),
+      ]),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Table detail panel — the web's tm-detail-modal, bottom-sheet form.
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _DetailSheet extends StatefulWidget {
+  final CafeTable table;
+
+  /// The whole floor, so the hold banner reads the LIVE row the SSE keeps
+  /// fresh rather than the copy the sheet was opened with (the web's
+  /// detailHold computed).
+  final List<CafeTable> tables;
+  final bool isManager;
+  final bool canRequestBill;
+  final bool canCheckout;
+  final List<String> servers;
+  final Future<List<FufutOrder>> Function() onLoadOrders;
+  final Future<String?> Function(Map<String, dynamic> payload) onSave;
+  final Future<bool> Function() onDelete;
+  final Future<bool> Function(TableHold hold) onReleaseHold;
+  final Future<String?> Function() onRequestBill;
+  final Future<String?> Function() onCancelBillRequest;
+  final VoidCallback onNewOrder;
+  final VoidCallback onGoToCheckout;
+  final VoidCallback onShowQr;
+
+  const _DetailSheet({
+    required this.table,
+    required this.tables,
+    required this.isManager,
+    required this.canRequestBill,
+    required this.canCheckout,
+    required this.servers,
+    required this.onLoadOrders,
+    required this.onSave,
+    required this.onDelete,
+    required this.onReleaseHold,
+    required this.onRequestBill,
+    required this.onCancelBillRequest,
+    required this.onNewOrder,
+    required this.onGoToCheckout,
+    required this.onShowQr,
+  });
+
+  @override
+  State<_DetailSheet> createState() => _DetailSheetState();
+}
+
+class _DetailSheetState extends State<_DetailSheet> {
+  late String _status = widget.table.status;
+  late int _guests = widget.table.guestsCount;
+  late String _server = widget.table.server ?? '';
+  late String _seatedAt = widget.table.seatedAt ?? '';
+  late String _billRequestedAt = widget.table.billRequestedAt ?? '';
+  bool _newSeating = false;
+  bool _saving = false;
+  bool _releasing = false;
+  bool _billBusy = false;
+  List<FufutOrder>? _detailOrders;
+
+  late final TextEditingController _notesCtrl =
+      TextEditingController(text: widget.table.notes ?? '');
+
+  @override
+  void initState() {
+    super.initState();
+    _loadOrders();
+  }
+
+  @override
+  void dispose() {
+    _notesCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadOrders() async {
+    try {
+      final rows = await widget.onLoadOrders();
+      if (!mounted) return;
+      setState(() => _detailOrders = rows);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _detailOrders = const []);
+    }
+  }
+
+  CafeTable? get _liveRow {
+    for (final t in widget.tables) {
+      if (t.id == widget.table.id) return t;
+    }
+    return null;
+  }
+
+  TableHold? get _hold => _liveRow?.reservedHold;
+
+  void _quickStatus(String s) {
+    setState(() {
+      final prev = _status;
+      _status = s;
+      // Auto-set/clear seated_at — the web's quickStatus side effects.
+      if (s == 'occupied' && prev != 'occupied') {
+        _seatedAt = DateTime.now().toUtc().toIso8601String();
+        // Tells the server this is a party arriving, not an edit to the one
+        // already there, so it refuses if somebody claimed the table first.
+        _newSeating = true;
+      } else if (s != 'occupied') {
+        _seatedAt = '';
+        _newSeating = false;
+        if (s == 'available') {
+          // Guests clear with the party; the section owner (server) stays —
+          // reassignment is the dropdown's job, not a side effect.
+          _guests = 0;
+        }
+      }
+    });
+  }
+
+  Future<void> _save() async {
+    if (_saving) return;
+    final t = widget.table;
+    setState(() => _saving = true);
+    final err = await widget.onSave({
+      'id': t.id,
+      'number': t.number,
+      if (t.section != null) 'section': t.section,
+      'status': _status,
+      if (t.seats != null) 'capacity': t.seats,
+      if (t.name != null) 'name': t.name,
+      if (t.shape != null) 'shape': t.shape,
+      'server': _server,
+      'guests': _guests,
+      'seated_at': _seatedAt,
+      'notes': _notesCtrl.text.trim(),
+      'newSeating': _newSeating,
+      'bill_requested_at': _billRequestedAt,
+      if (t.payment != null) 'payment': t.payment,
+    });
+    if (!mounted) return;
+    if (err == null) {
+      Navigator.of(context).pop();
+    } else {
+      setState(() => _saving = false);
+      showErrorOn(ScaffoldMessenger.of(context), ApiError(err));
+    }
+  }
+
+  Future<void> _delete() async {
+    final t = widget.table;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Delete Table ${t.number}?'),
+        content: const Text('This cannot be undone.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              style: FilledButton.styleFrom(
+                  backgroundColor: Pal.of(ctx).danger),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Delete')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final done = await widget.onDelete();
+    if (done && mounted) Navigator.of(context).pop();
+  }
+
+  Future<void> _release() async {
+    final hold = _hold;
+    if (hold == null || _releasing) return;
+    final t = widget.table;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Release Table ${t.number}?'),
+        content: Text(
+            'Cancel ${hold.name?.isNotEmpty == true ? hold.name : 'this booking'}? '
+            'The table becomes seatable for walk-ins.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Keep')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Release')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    setState(() => _releasing = true);
+    final done = await widget.onReleaseHold(hold);
+    if (!mounted) return;
+    setState(() => _releasing = false);
+    if (done) Navigator.of(context).pop();
+  }
+
+  Future<void> _bill(bool request) async {
+    if (_billBusy) return;
+    setState(() => _billBusy = true);
+    final r = request ? await widget.onRequestBill() : await widget.onCancelBillRequest();
+    if (!mounted) return;
+    setState(() => _billBusy = false);
+    if (r == null) return; // failure already surfaced by the screen
+    setState(() => _billRequestedAt = r);
+    showInfoOn(
+        ScaffoldMessenger.of(context),
+        request
+            ? 'Bill requested for table ${widget.table.number}'
+            : 'Bill request cancelled');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = Pal.of(context);
+    final t = widget.table;
+    final hold = _hold;
+    final name = (t.name?.isNotEmpty == true) ? t.name! : 'Table ${t.number}';
+
+    return SafeArea(
+      child: Padding(
+        // Deterministic keyboard padding — the showFormSheet rule.
+        padding: EdgeInsets.fromLTRB(
+            0, 0, 0, math.max(MediaQuery.of(context).viewInsets.bottom,
+                MediaQuery.of(context).padding.bottom)),
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Header
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 18, 12, 0),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Table ${t.number} — $name',
+                              style: TextStyle(
+                                  fontFamily: kFontBody,
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w800,
+                                  color: pal.heading)),
+                          const SizedBox(height: 2),
+                          Text(
+                              '${t.section ?? 'Floor'} · ${t.seats ?? '?'} seats · ${t.shape ?? 'square'}',
+                              style: TextStyle(
+                                  fontFamily: kFontBody,
+                                  fontSize: 11.5,
+                                  color: pal.muted)),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Close',
+                      onPressed: () => Navigator.of(context).pop(),
+                      icon: const Icon(Icons.close, size: 20),
+                      color: pal.muted,
+                    ),
+                  ],
                 ),
-                if (table.seats != null)
-                  Text('${table.seats}p',
-                      style: TextStyle(
-                          fontFamily: kFontMono, fontSize: 10, color: pal.faint)),
-              ]),
-              const SizedBox(height: 2),
-              Row(children: [
-                Expanded(
-                  child: Text(
-                    status == 'occupied' ? 'Seated' : status,
-                    style: TextStyle(
-                        fontFamily: kFontBody, fontSize: 10, color: color),
+              ),
+
+              // The booking that holds this table — stated before the waiter
+              // tries to seat anyone.
+              if (hold != null) ...[
+                const SizedBox(height: 8),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  child: _HoldBanner(
+                    hold: hold,
+                    isManager: widget.isManager,
+                    releasing: _releasing,
+                    onRelease: _release,
                   ),
                 ),
-                if (table.billRequested) ...[
-                  Icon(Icons.notifications_active,
-                      size: 11, color: pal.danger),
-                  const SizedBox(width: 3),
-                  Text('BILL',
-                      style: TextStyle(
-                          fontFamily: kFontBody,
-                          fontSize: 8.5,
-                          fontWeight: FontWeight.w800,
-                          letterSpacing: 0.6,
-                          color: pal.danger)),
-                ],
-              ]),
+              ],
+
+              // Quick status buttons
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 14, 20, 12),
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final s in const [
+                      'available',
+                      'occupied',
+                      'reserved',
+                      'cleaning'
+                    ])
+                      _QuickStatusButton(
+                        status: s,
+                        active: _status == s,
+                        onTap: () => _quickStatus(s),
+                      ),
+                  ],
+                ),
+              ),
+
+              // Detail form
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: LayoutBuilder(builder: (context, box) {
+                  final twoCol = box.maxWidth >= 480;
+                  final fields = <Widget>[
+                    _LabeledField(
+                      label: 'Assigned Server',
+                      child: widget.isManager
+                          ? _ServerDropdown(
+                              value: _server,
+                              servers: widget.servers,
+                              onChanged: (v) => setState(() => _server = v),
+                            )
+                          : Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                _ReadOnlyField(
+                                    value: _server.isEmpty ? '—' : _server),
+                                const SizedBox(height: 4),
+                                Text('Only a manager can change the assignment',
+                                    style: TextStyle(
+                                        fontFamily: kFontBody,
+                                        fontSize: 10,
+                                        color: pal.muted)),
+                              ],
+                            ),
+                    ),
+                    _LabeledField(
+                      label: 'Guest Count',
+                      child: TextFormField(
+                        initialValue:
+                            _guests > 0 ? '$_guests' : '',
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(hintText: '0'),
+                        style: TextStyle(
+                            fontFamily: kFontBody,
+                            fontSize: 13,
+                            color: pal.heading),
+                        onChanged: (v) =>
+                            _guests = int.tryParse(v.trim()) ?? 0,
+                      ),
+                    ),
+                    _LabeledField(
+                      label: 'Table Notes',
+                      wide: true,
+                      child: TextFormField(
+                        controller: _notesCtrl,
+                        decoration: const InputDecoration(
+                            hintText: 'Special requests, preferences...'),
+                        style: TextStyle(
+                            fontFamily: kFontBody,
+                            fontSize: 13,
+                            color: pal.heading),
+                      ),
+                    ),
+                  ];
+                  // Grid: server + guests 2-up on wide, notes full width.
+                  if (twoCol) {
+                    return Column(children: [
+                      Row(children: [
+                        Expanded(child: fields[0]),
+                        const SizedBox(width: 12),
+                        Expanded(child: fields[1]),
+                      ]),
+                      const SizedBox(height: 12),
+                      fields[2],
+                    ]);
+                  }
+                  return Column(
+                    children: [
+                      for (final f in fields) ...[
+                        f,
+                        const SizedBox(height: 12),
+                      ],
+                    ],
+                  );
+                }),
+              ),
+
+              // Active orders for this table (occupied only)
+              if (_status == 'occupied') ...[
+                const SizedBox(height: 4),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  child: _DetailOrders(
+                    orders: _detailOrders,
+                    payment: t.payment,
+                    billRequestedAt: _billRequestedAt,
+                    billRequestedBy: t.billRequestedBy,
+                  ),
+                ),
+              ],
+
+              // Occupancy info
+              if (_status == 'occupied' && _seatedAt.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  child: Row(children: [
+                    Icon(Icons.schedule,
+                        size: 14,
+                        color: occupancyUrgency(widget.table) == 'overdue'
+                            ? pal.danger
+                            : pal.info),
+                    const SizedBox(width: 6),
+                    Text('Seated ${occupancyTimer(_seatedAt)} ago',
+                        style: TextStyle(
+                            fontFamily: kFontBody,
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w500,
+                            color: pal.info)),
+                    if (occupancyUrgency(
+                            widget.table.copyWith(seatedAt: _seatedAt)) ==
+                        'overdue')
+                      Expanded(
+                        child: Text(
+                            '— past the 4h maximum, releases to cleaning automatically',
+                            style: TextStyle(
+                                fontFamily: kFontBody,
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w600,
+                                color: pal.danger)),
+                      ),
+                  ]),
+                ),
+              ],
+
+              // Actions
+              Container(
+                margin: const EdgeInsets.only(top: 14),
+                padding: const EdgeInsets.fromLTRB(20, 14, 20, 14),
+                decoration: BoxDecoration(
+                  border: Border(top: BorderSide(color: pal.border)),
+                ),
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    SizedBox(
+                      height: 34,
+                      child: FilledButton.icon(
+                        onPressed: () {
+                          Navigator.of(context).pop();
+                          widget.onNewOrder();
+                        },
+                        icon: const Icon(Icons.add, size: 14),
+                        label: Text(_status == 'occupied'
+                            ? 'Add Round'
+                            : 'New Order'),
+                        style: FilledButton.styleFrom(
+                          textStyle: const TextStyle(
+                              fontFamily: kFontBody,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700),
+                        ),
+                      ),
+                    ),
+                    if (_status == 'occupied' && widget.canRequestBill)
+                      SizedBox(
+                        height: 34,
+                        child: OutlinedButton.icon(
+                          onPressed: _billBusy ? null : () => _bill(_billRequestedAt.isEmpty),
+                          style: OutlinedButton.styleFrom(
+                            side: BorderSide(
+                                color: _billRequestedAt.isNotEmpty
+                                    ? pal.warning
+                                    : pal.border),
+                            textStyle: const TextStyle(
+                                fontFamily: kFontBody,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600),
+                          ),
+                          icon: Icon(
+                              _billRequestedAt.isNotEmpty
+                                  ? Icons.notifications_off_outlined
+                                  : Icons.receipt_long_outlined,
+                              size: 14),
+                          label: Text(_billRequestedAt.isNotEmpty
+                              ? 'Cancel Bill Request'
+                              : 'Ask for the Bill'),
+                        ),
+                      ),
+                    if (_status == 'occupied' && widget.canCheckout)
+                      SizedBox(
+                        height: 34,
+                        child: OutlinedButton.icon(
+                          onPressed: () {
+                            Navigator.of(context).pop();
+                            widget.onGoToCheckout();
+                          },
+                          style: OutlinedButton.styleFrom(
+                            side: BorderSide(color: pal.border),
+                            textStyle: const TextStyle(
+                                fontFamily: kFontBody,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600),
+                          ),
+                          icon: const Icon(Icons.credit_card, size: 14),
+                          label: const Text('Go to Checkout'),
+                        ),
+                      ),
+                    if (widget.isManager)
+                      SizedBox(
+                        height: 34,
+                        child: OutlinedButton.icon(
+                          onPressed: widget.onShowQr,
+                          style: OutlinedButton.styleFrom(
+                            side: BorderSide(color: pal.border),
+                            textStyle: const TextStyle(
+                                fontFamily: kFontBody,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600),
+                          ),
+                          icon: const Icon(Icons.qr_code_2, size: 14),
+                          label: const Text('QR Code'),
+                        ),
+                      ),
+                    const SizedBox(width: 4),
+                    SizedBox(
+                      height: 34,
+                      child: TextButton(
+                        onPressed: () => Navigator.of(context).pop(),
+                        child: Text('Close',
+                            style: TextStyle(
+                                fontFamily: kFontBody,
+                                fontSize: 12.5,
+                                color: pal.body)),
+                      ),
+                    ),
+                    SizedBox(
+                      height: 34,
+                      child: FilledButton(
+                        onPressed: _saving ? null : _save,
+                        style: FilledButton.styleFrom(
+                          textStyle: const TextStyle(
+                              fontFamily: kFontBody,
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w700),
+                        ),
+                        child: Text(_saving ? 'Saving…' : 'Save Changes'),
+                      ),
+                    ),
+                    if (widget.isManager)
+                      SizedBox(
+                        height: 34,
+                        child: OutlinedButton.icon(
+                          onPressed: _delete,
+                          style: OutlinedButton.styleFrom(
+                            side: BorderSide(color: pal.danger),
+                            foregroundColor: pal.danger,
+                            textStyle: const TextStyle(
+                                fontFamily: kFontBody,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600),
+                          ),
+                          icon: const Icon(Icons.delete_outline, size: 14),
+                          label: const Text('Delete'),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
             ],
           ),
         ),
@@ -518,107 +2580,890 @@ class _TableCard extends StatelessWidget {
   }
 }
 
-class _TableSheet extends StatelessWidget {
-  final CafeTable table;
-  final FufutOrder? check;
-  final bool canRequestBill;
-  final VoidCallback onAddRound;
-  final VoidCallback? onRequestBill;
-  final VoidCallback? onCancelBillRequest;
-  final VoidCallback? onViewCheck;
+/// The booking banner: what holds the table, until when, and the rule that
+/// decides whether it can be seated — spelled out rather than implied by a
+/// disabled control.
+class _HoldBanner extends StatelessWidget {
+  final TableHold hold;
+  final bool isManager;
+  final bool releasing;
+  final VoidCallback onRelease;
 
-  const _TableSheet({
-    required this.table,
-    required this.check,
-    required this.onAddRound,
-    this.canRequestBill = false,
-    this.onRequestBill,
-    this.onCancelBillRequest,
-    this.onViewCheck,
+  const _HoldBanner({
+    required this.hold,
+    required this.isManager,
+    required this.releasing,
+    required this.onRelease,
   });
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = Pal.of(context);
+    final window = holdWindowLabel(hold.startAt, hold.endAt);
+    final String rule;
+    if (!hold.blocksNow) {
+      rule =
+          'The table is still usable until $leadMinutes minutes before the booking, so a short sitting can be seated now.';
+    } else if (isManager) {
+      rule =
+          'You can release it for a walk-in. The booking is cancelled and recorded against your name.';
+    } else {
+      rule =
+          'It cannot be seated until a manager releases it. It frees itself $graceMinutes minutes after the booked time if nobody arrives.';
+    }
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: pal.warningBg,
+        border: Border.all(color: pal.warning, width: 1.5),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+              'Reserved — ${hold.name?.isNotEmpty == true ? hold.name : 'no name given'}',
+              style: TextStyle(
+                  fontFamily: kFontBody,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w800,
+                  color: pal.heading)),
+          const SizedBox(height: 2),
+          Text(
+              '$window${hold.guests > 0 ? ' · ${hold.guests} guest${hold.guests > 1 ? 's' : ''}' : ''}',
+              style: TextStyle(
+                  fontFamily: kFontBody, fontSize: 11.5, color: pal.body)),
+          const SizedBox(height: 4),
+          Text(rule,
+              style: TextStyle(
+                  fontFamily: kFontBody,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w500,
+                  color: pal.warning)),
+          if (isManager) ...[
+            const SizedBox(height: 8),
+            SizedBox(
+              height: 32,
+              child: OutlinedButton(
+                onPressed: releasing ? null : onRelease,
+                style: OutlinedButton.styleFrom(
+                  side: BorderSide(color: pal.warning),
+                  foregroundColor: pal.warning,
+                  textStyle: const TextStyle(
+                      fontFamily: kFontBody,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700),
+                ),
+                child: Text(releasing ? 'Releasing…' : 'Release Table'),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// The four quick-status pills, each with its own active palette
+/// (the web's qs-available/qs-occupied/qs-reserved/qs-cleaning rules).
+class _QuickStatusButton extends StatelessWidget {
+  final String status;
+  final bool active;
+  final VoidCallback onTap;
+
+  const _QuickStatusButton({
+    required this.status,
+    required this.active,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = Pal.of(context);
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    Color bg = pal.surface;
+    Color fg = pal.muted;
+    Color border = pal.border;
+    if (active) {
+      switch (status) {
+        case 'available':
+          bg = dark ? const Color(0x2216A34A) : const Color(0xFFF0FDF4);
+          fg = dark ? const Color(0xFF4ADE80) : const Color(0xFF166534);
+          border = dark ? const Color(0xFF4ADE80) : const Color(0xFF4ADE80);
+          break;
+        case 'occupied':
+          bg = pal.tintBg;
+          fg = pal.primary;
+          border = pal.tintBorder;
+          break;
+        case 'reserved':
+          bg = dark ? const Color(0x22FBBF24) : const Color(0xFFFFFBEB);
+          fg = dark ? const Color(0xFFFBBF24) : const Color(0xFF92400E);
+          border = const Color(0xFFFBBF24);
+          break;
+        case 'cleaning':
+          bg = pal.sunken;
+          fg = pal.body;
+          border = pal.borderStrong;
+          break;
+      }
+    }
+    final label = status.isEmpty
+        ? status
+        : '${status[0].toUpperCase()}${status.substring(1)}';
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(999),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
+        decoration: BoxDecoration(
+          color: bg,
+          border: Border.all(color: border, width: 1.5),
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Text(label,
+            style: TextStyle(
+                fontFamily: kFontBody,
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: fg)),
+      ),
+    );
+  }
+}
+
+class _LabeledField extends StatelessWidget {
+  final String label;
+  final Widget child;
+  final bool wide;
+  const _LabeledField(
+      {required this.label, required this.child, this.wide = false});
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = Pal.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label,
+            style: TextStyle(
+                fontFamily: kFontBody,
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: pal.muted)),
+        const SizedBox(height: 5),
+        child,
+      ],
+    );
+  }
+}
+
+class _ReadOnlyField extends StatelessWidget {
+  final String value;
+  const _ReadOnlyField({required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = Pal.of(context);
+    return Container(
+      width: double.infinity,
+      height: 38,
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      alignment: Alignment.centerLeft,
+      decoration: BoxDecoration(
+        color: pal.sunken,
+        border: Border.all(color: pal.border),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Text(value,
+          style: TextStyle(
+              fontFamily: kFontBody, fontSize: 13, color: pal.muted)),
+    );
+  }
+}
+
+/// Manager-only server picker: — Unassigned —, the active head-waiters, and
+/// any pre-existing name the roster does not know about stays visible
+/// instead of silently jumping to Unassigned on open.
+class _ServerDropdown extends StatelessWidget {
+  final String value;
+  final List<String> servers;
+  final ValueChanged<String> onChanged;
+
+  const _ServerDropdown({
+    required this.value,
+    required this.servers,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = Pal.of(context);
+    final known = servers.map((s) => s.toLowerCase()).toSet();
+    final custom = (value.trim().isNotEmpty && !known.contains(value.toLowerCase()))
+        ? value
+        : '';
+    return Container(
+      height: 38,
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: BoxDecoration(
+        border: Border.all(color: pal.border),
+        borderRadius: BorderRadius.circular(8),
+        color: pal.surface,
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<String>(
+          value: value.isEmpty || value == custom || servers.contains(value)
+              ? (value.isEmpty ? '' : value)
+              : '',
+          isDense: true,
+          isExpanded: true,
+          borderRadius: BorderRadius.circular(8),
+          items: [
+            DropdownMenuItem(
+              value: '',
+              child: Text('— Unassigned —',
+                  style: TextStyle(
+                      fontFamily: kFontBody,
+                      fontSize: 12.5,
+                      color: pal.muted)),
+            ),
+            for (final s in servers)
+              DropdownMenuItem(
+                value: s,
+                child: Text(s,
+                    style: TextStyle(
+                        fontFamily: kFontBody,
+                        fontSize: 12.5,
+                        color: pal.heading)),
+              ),
+            if (custom.isNotEmpty)
+              DropdownMenuItem(
+                value: custom,
+                child: Text('$custom (kept)',
+                    style: TextStyle(
+                        fontFamily: kFontBody,
+                        fontSize: 12.5,
+                        color: pal.heading)),
+              ),
+          ],
+          onChanged: (v) => onChanged(v ?? ''),
+        ),
+      ),
+    );
+  }
+}
+
+/// The table's open checks — served-but-unpaid counts, that is the normal
+/// state of a table between the kitchen finishing and the guest leaving.
+class _DetailOrders extends StatelessWidget {
+  final List<FufutOrder>? orders;
+  final String? payment;
+  final String billRequestedAt;
+  final String? billRequestedBy;
+
+  const _DetailOrders({
+    required this.orders,
+    required this.payment,
+    required this.billRequestedAt,
+    required this.billRequestedBy,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = Pal.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Text('Active Orders',
+                style: TextStyle(
+                    fontFamily: kFontBody,
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w700,
+                    color: pal.heading)),
+            if ((payment ?? '').isNotEmpty) ...[
+              const SizedBox(width: 8),
+              _PayBadge(state: payment!),
+            ],
+            if (billRequestedAt.isNotEmpty) ...[
+              const SizedBox(width: 8),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 7, vertical: 1.5),
+                decoration: BoxDecoration(
+                  color: const Color(0x24EF4444),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                    'Bill requested${billRequestedBy?.isNotEmpty == true ? ' by $billRequestedBy' : ''}',
+                    style: const TextStyle(
+                        fontFamily: kFontBody,
+                        fontSize: 8.5,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.3,
+                        color: Color(0xFFB91C1C))),
+              ),
+            ],
+          ],
+        ),
+        const SizedBox(height: 8),
+        if (orders == null)
+          const Padding(
+            padding: EdgeInsets.all(20),
+            child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+          )
+        else if (orders!.isEmpty)
+          Padding(
+            padding: const EdgeInsets.all(20),
+            child: Center(
+              child: Text('No active orders for this table',
+                  style: TextStyle(
+                      fontFamily: kFontBody,
+                      fontSize: 11.5,
+                      color: pal.muted)),
+            ),
+          )
+        else
+          for (final o in orders!) ...[
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: pal.sunken,
+                border: Border.all(color: pal.border),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(children: [
+                    Text(shortId(o.id),
+                        style: TextStyle(
+                            fontFamily: kFontMono,
+                            fontSize: 10.5,
+                            fontWeight: FontWeight.w600,
+                            color: pal.muted)),
+                    const SizedBox(width: 8),
+                    StatusBadge(status: o.status),
+                    const Spacer(),
+                    Text(formatETB(o.total),
+                        style: TextStyle(
+                            fontFamily: kFontBody,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: pal.heading)),
+                  ]),
+                  const SizedBox(height: 6),
+                  if (o.items.isNotEmpty)
+                    Wrap(
+                      spacing: 10,
+                      runSpacing: 4,
+                      children: [
+                        for (final line in o.items)
+                          Text(
+                              '${line.qty}x ${line.name}${line.modifiers.isNotEmpty ? ' (${line.modifiers.map((m) => '${m['name'] ?? ''}').where((n) => n.isNotEmpty).join(', ')})' : ''}',
+                              style: TextStyle(
+                                  fontFamily: kFontBody,
+                                  fontSize: 11,
+                                  color: pal.body)),
+                      ],
+                    )
+                  else
+                    Text(o.itemsRaw,
+                        style: TextStyle(
+                            fontFamily: kFontBody,
+                            fontSize: 11,
+                            color: pal.body)),
+                  const SizedBox(height: 6),
+                  Row(children: [
+                    Text(_fmtTime(o.created),
+                        style: TextStyle(
+                            fontFamily: kFontBody,
+                            fontSize: 10.5,
+                            color: pal.muted)),
+                    if (o.customer != null &&
+                        o.customer!.isNotEmpty &&
+                        o.customer != 'Walk-in') ...[
+                      const SizedBox(width: 10),
+                      Flexible(
+                        child: Text(o.customer!,
+                            style: TextStyle(
+                                fontFamily: kFontBody,
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w500,
+                                color: pal.primary)),
+                      ),
+                    ],
+                  ]),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
+      ],
+    );
+  }
+
+  static String _fmtTime(String? iso) {
+    if (iso == null || iso.isEmpty) return '';
+    final d = DateTime.tryParse(iso.trim().replaceFirst(' ', 'T'));
+    if (d == null) return '';
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${two(d.hour)}:${two(d.minute)}';
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// QR modal — the same qrserver.com image the web draws, the guest URL, and
+// Print QR Card (the web's print popup, native via a one-page PDF).
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _QrModal extends StatelessWidget {
+  final String tableNumber;
+  final String url;
+
+  const _QrModal({required this.tableNumber, required this.url});
+
+  String get _imageUrl =>
+      'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${Uri.encodeComponent(url)}';
+
+  Future<void> _print(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      // The QR PNG, fetched so the PDF card embeds the real image.
+      final resp = await http.get(Uri.parse(_imageUrl));
+      if (resp.statusCode != 200) {
+        throw ApiError('Could not fetch the QR image');
+      }
+      final img = pw.MemoryImage(resp.bodyBytes);
+      await Printing.layoutPdf(
+        onLayout: (format) async {
+          final doc = pw.Document();
+          doc.addPage(pw.Page(
+            pageFormat: format,
+            build: (ctx) => pw.Center(
+              child: pw.Container(
+                padding: const pw.EdgeInsets.all(24),
+                decoration: pw.BoxDecoration(
+                  border: pw.Border.all(width: 2),
+                  borderRadius: const pw.BorderRadius.all(
+                      pw.Radius.circular(12)),
+                ),
+                child: pw.Column(
+                  mainAxisSize: pw.MainAxisSize.min,
+                  children: [
+                    pw.Text('FU FUT COFFEE',
+                        style: const pw.TextStyle(
+                            fontSize: 20, fontWeight: pw.FontWeight.bold)),
+                    pw.SizedBox(height: 4),
+                    pw.Text('Table $tableNumber',
+                        style: const pw.TextStyle(
+                            fontSize: 16, fontWeight: pw.FontWeight.bold)),
+                    pw.Padding(
+                      padding: const pw.EdgeInsets.symmetric(vertical: 12),
+                      child: pw.Image(img, width: 180, height: 180),
+                    ),
+                    pw.Text('Scan to view menu & order from your table'),
+                  ],
+                ),
+              ),
+            ),
+          ));
+          return doc.save();
+        },
+      );
+    } catch (_) {
+      showInfoOn(messenger,
+          'Could not print the QR card — check your connection');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = Pal.of(context);
+    return AlertDialog(
+      title: Text('Table $tableNumber QR Code',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+              fontFamily: kFontBody,
+              fontSize: 15,
+              fontWeight: FontWeight.w800,
+              color: pal.heading)),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text('Guests scan this code to view the menu and order',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                  fontFamily: kFontBody, fontSize: 11.5, color: pal.muted)),
+          const SizedBox(height: 14),
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Image.network(
+              _imageUrl,
+              width: 170,
+              height: 170,
+              fit: BoxFit.contain,
+              errorBuilder: (_, __, ___) => SizedBox(
+                width: 170,
+                height: 170,
+                child: Icon(Icons.qr_code_2, size: 64, color: pal.faint),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(url,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                  fontFamily: kFontBody,
+                  fontSize: 10,
+                  color: pal.muted)),
+        ],
+      ),
+      actionsAlignment: MainAxisAlignment.center,
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: Text('Close',
+              style: TextStyle(
+                  fontFamily: kFontBody, color: pal.body)),
+        ),
+        FilledButton.icon(
+          onPressed: () => _print(context),
+          icon: const Icon(Icons.print_outlined, size: 15),
+          label: const Text('Print QR Card'),
+        ),
+      ],
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Add Table modal (manager) — number, name, capacity, zone, shape picker.
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _AddTableSheet extends StatefulWidget {
+  final List<String> sections;
+  final int defaultNumber;
+  final Future<String?> Function({
+    required String number,
+    required int capacity,
+    String? section,
+    String? name,
+    String shape,
+  }) onAdd;
+
+  const _AddTableSheet({
+    required this.sections,
+    required this.defaultNumber,
+    required this.onAdd,
+  });
+
+  @override
+  State<_AddTableSheet> createState() => _AddTableSheetState();
+}
+
+class _AddTableSheetState extends State<_AddTableSheet> {
+  late final TextEditingController _numberCtrl =
+      TextEditingController(text: '${widget.defaultNumber + 1}');
+  late final TextEditingController _nameCtrl = TextEditingController();
+  late final TextEditingController _capacityCtrl =
+      TextEditingController(text: '4');
+  late String _section =
+      widget.sections.isNotEmpty ? widget.sections.first : 'Main Hall';
+  String _shape = 'square';
+  bool _saving = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _numberCtrl.dispose();
+    _nameCtrl.dispose();
+    _capacityCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (_saving) return;
+    if (_numberCtrl.text.trim().isEmpty) {
+      setState(() => _error = 'Table number is required');
+      return;
+    }
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
+    final err = await widget.onAdd(
+      number: _numberCtrl.text.trim(),
+      capacity: int.tryParse(_capacityCtrl.text.trim()) ?? 4,
+      section: _section,
+      name: _nameCtrl.text.trim(),
+      shape: _shape,
+    );
+    if (!mounted) return;
+    if (err == null) {
+      Navigator.of(context).pop();
+    } else {
+      setState(() {
+        _saving = false;
+        _error = err;
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     final pal = Pal.of(context);
     return SafeArea(
       child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text('Table ${table.number}',
-                style: TextStyle(
-                    fontFamily: kFontBody,
-                    fontSize: 15,
-                    fontWeight: FontWeight.w800,
-                    color: pal.heading)),
-            if (check != null) ...[
-              const SizedBox(height: 4),
-              Text(
-                '${shortId(check!.id)} · ${check!.itemsRaw} · ${money(check!.total)} ${check!.isPaid ? '· PAID' : '· UNPAID'}',
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                    fontFamily: kFontBody, fontSize: 11.5, color: pal.muted),
-              ),
-            ],
-            const SizedBox(height: 12),
-            SizedBox(
-              height: 36,
-              child: FilledButton.icon(
-                onPressed: onAddRound,
-                icon: const Icon(Icons.add, size: 16),
-                label: const Text('Add a round'),
-              ),
-            ),
-            if (onViewCheck != null) ...[
-              const SizedBox(height: 8),
-              SizedBox(
-                height: 36,
-                child: OutlinedButton.icon(
-                  onPressed: onViewCheck,
-                  icon: const Icon(Icons.credit_card, size: 16),
-                  label: const Text('Open check'),
+        padding: EdgeInsets.fromLTRB(
+            0, 0, 0, math.max(MediaQuery.of(context).viewInsets.bottom,
+                MediaQuery.of(context).padding.bottom)),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(20, 18, 20, 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('Add New Table',
+                  style: TextStyle(
+                      fontFamily: kFontBody,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w800,
+                      color: pal.heading)),
+              const SizedBox(height: 2),
+              Text('Configure a new table for the floor plan',
+                  style: TextStyle(
+                      fontFamily: kFontBody, fontSize: 11.5, color: pal.muted)),
+              const SizedBox(height: 16),
+              Row(children: [
+                Expanded(
+                  child: _LabeledField(
+                    label: 'Table Number',
+                    child: TextFormField(
+                      controller: _numberCtrl,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(hintText: 'e.g. 16'),
+                      style: TextStyle(
+                          fontFamily: kFontBody,
+                          fontSize: 13,
+                          color: pal.heading),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _LabeledField(
+                    label: 'Table Name',
+                    child: TextFormField(
+                      controller: _nameCtrl,
+                      decoration:
+                          const InputDecoration(hintText: 'e.g. Patio 4'),
+                      style: TextStyle(
+                          fontFamily: kFontBody,
+                          fontSize: 13,
+                          color: pal.heading),
+                    ),
+                  ),
+                ),
+              ]),
+              const SizedBox(height: 12),
+              Row(children: [
+                Expanded(
+                  child: _LabeledField(
+                    label: 'Capacity (seats)',
+                    child: TextFormField(
+                      controller: _capacityCtrl,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(hintText: '4'),
+                      style: TextStyle(
+                          fontFamily: kFontBody,
+                          fontSize: 13,
+                          color: pal.heading),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _LabeledField(
+                    label: 'Section',
+                    child: Container(
+                      height: 40,
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      decoration: BoxDecoration(
+                        border: Border.all(color: pal.border),
+                        borderRadius: BorderRadius.circular(8),
+                        color: pal.surface,
+                      ),
+                      child: DropdownButtonHideUnderline(
+                        child: DropdownButton<String>(
+                          value: _section,
+                          isDense: true,
+                          isExpanded: true,
+                          borderRadius: BorderRadius.circular(8),
+                          items: [
+                            for (final s in widget.sections)
+                              DropdownMenuItem(
+                                value: s,
+                                child: Text(s,
+                                    style: TextStyle(
+                                        fontFamily: kFontBody,
+                                        fontSize: 12.5,
+                                        color: pal.heading)),
+                              ),
+                          ],
+                          onChanged: (v) {
+                            if (v != null) setState(() => _section = v);
+                          },
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ]),
+              const SizedBox(height: 12),
+              _LabeledField(
+                label: 'Shape',
+                child: Wrap(
+                  spacing: 8,
+                  children: [
+                    for (final sh in const ['round', 'square', 'long'])
+                      _ShapeOption(
+                        shape: sh,
+                        active: _shape == sh,
+                        onTap: () => setState(() => _shape = sh),
+                      ),
+                  ],
                 ),
               ),
-            ],
-            // Bill request — the web's "Ask for the Bill" flow. Occupied
-            // tables only, head-waiter / manager only.
-            if (canRequestBill && !table.billRequested) ...[
-              const SizedBox(height: 8),
-              SizedBox(
-                height: 36,
-                child: OutlinedButton.icon(
-                  onPressed: onRequestBill,
-                  style: OutlinedButton.styleFrom(
-                      side: BorderSide(color: pal.warning)),
-                  icon: const Icon(Icons.notifications_active_outlined,
-                      size: 16),
-                  label: Text('Ask for the Bill',
-                      style: TextStyle(color: pal.warning)),
-                ),
+              if (_error != null) ...[
+                const SizedBox(height: 10),
+                Text(_error!,
+                    style: TextStyle(
+                        fontFamily: kFontBody,
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w600,
+                        color: pal.danger)),
+              ],
+              const SizedBox(height: 16),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: Text('Cancel',
+                        style: TextStyle(
+                            fontFamily: kFontBody, color: pal.body)),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton(
+                    onPressed: _saving ? null : _submit,
+                    style: FilledButton.styleFrom(
+                      textStyle: const TextStyle(
+                          fontFamily: kFontBody,
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w700),
+                    ),
+                    child: Text(_saving ? 'Adding…' : 'Add Table'),
+                  ),
+                ],
               ),
             ],
-            if (canRequestBill && table.billRequested) ...[
-              const SizedBox(height: 8),
-              SizedBox(
-                height: 36,
-                child: OutlinedButton.icon(
-                  onPressed: onCancelBillRequest,
-                  style: OutlinedButton.styleFrom(
-                      side: BorderSide(color: pal.danger)),
-                  icon: const Icon(Icons.notifications_off_outlined,
-                      size: 16),
-                  label: Text('Cancel Bill Request',
-                      style: TextStyle(color: pal.danger)),
-                ),
-              ),
-            ],
-            const SizedBox(height: 4),
-          ],
+          ),
         ),
       ),
     );
   }
 }
+
+/// The shape picker — round / square / long, drawn (no assets).
+class _ShapeOption extends StatelessWidget {
+  final String shape;
+  final bool active;
+  final VoidCallback onTap;
+
+  const _ShapeOption({
+    required this.shape,
+    required this.active,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = Pal.of(context);
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: active ? pal.tintBg : pal.surface,
+          border: Border.all(color: active ? pal.primary : pal.border),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          CustomPaint(
+            size: const Size(16, 16),
+            painter: _ShapeGlyph(shape: shape, color: active ? pal.primary : pal.muted),
+          ),
+          const SizedBox(width: 6),
+          Text(shape,
+              style: TextStyle(
+                  fontFamily: kFontBody,
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w600,
+                  color: active ? pal.primary : pal.body)),
+        ]),
+      ),
+    );
+  }
+}
+
+class _ShapeGlyph extends CustomPainter {
+  final String shape;
+  final Color color;
+  _ShapeGlyph({required this.shape, required this.color});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5;
+    switch (shape) {
+      case 'round':
+        canvas.drawCircle(Offset(size.width / 2, size.height / 2),
+            size.width * 0.38, paint);
+        break;
+      case 'long':
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(
+              Rect.fromLTWH(1, size.height * 0.3, size.width - 2,
+                  size.height * 0.4),
+              Radius.circular(size.height * 0.2)),
+          paint,
+        );
+        break;
+      default:
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(
+              Rect.fromLTWH(size.width * 0.18, size.height * 0.18,
+                  size.width * 0.64, size.height * 0.64),
+              Radius.circular(size.width * 0.12)),
+          paint,
+        );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _ShapeGlyph oldDelegate) =>
+      oldDelegate.shape != shape || oldDelegate.color != color;
+}
+
+

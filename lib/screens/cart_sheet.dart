@@ -498,13 +498,16 @@ class _CartPanelState extends State<CartPanel> {
           break;
         }
       }
-      if (match == null) {
-        throw ApiError('Table ${cart.tableNum} does not exist');
-      }
-      if (match.status != 'available') {
-        throw ApiError('Table ${cart.tableNum} is not available');
-      }
-      await app.api.claimTable(match);
+      // A table the floor plan does not know about is not ours to hold, and
+      // blocking the order over it would be worse than letting it through.
+      if (match == null) return true;
+      // Already seated: this order belongs to the party already at the table.
+      // The normal flow hits this constantly — the waiter seats the party
+      // from the table sheet first, then fires their order from here — and
+      // refusing it here would strand every second round (the web's
+      // claimTable rule, verbatim).
+      if (match.status.toLowerCase() == 'occupied') return true;
+      await app.api.claimTable(match, newSeating: !cart.addingRound);
       if (mounted) {
         // Keep the fresh row so a second round does not re-claim.
         final chosen = match;
@@ -537,23 +540,35 @@ class _CartPanelState extends State<CartPanel> {
     try {
       final ok = await _claimTableIfDineIn(messenger);
       if (!ok) return;
-      final id = await app.api.sendToKitchen(
-        itemsSummary: cart.itemsSummary,
-        lines: cart.serializedLines,
-        subtotal: cart.subtotal,
-        total: cart.grandTotal(),
-        orderType: cart.orderType,
-        tableNum: cart.tableNum,
-        customer: cart.customerName,
-        customerPhone: cart.customerPhone,
-        deliveryAddress: cart.deliveryAddress,
-        deliveryFee: cart.orderType == 'delivery' ? cart.deliveryFee : 0,
-        notes: cart.notes,
-      );
-      cart.clear();
-      HapticFeedback.mediumImpact();
-      navigator.pop();
-      showInfoOn(messenger, 'Order ${shortId(id)} sent to kitchen!');
+      if (cart.addingRound) {
+        // Adding a round to an existing open tab — PATCH the ticket so the
+        // kitchen sees the second batch on the original check instead of a
+        // duplicate one (the web's isAddRound branch).
+        final id = cart.activeOpenOrderId!;
+        await app.api.addRound(id, cart.serializedLines, cart.itemsSummary);
+        cart.clear();
+        HapticFeedback.mediumImpact();
+        navigator.pop();
+        showInfoOn(messenger, 'Round added to order ${shortId(id)}');
+      } else {
+        final id = await app.api.sendToKitchen(
+          itemsSummary: cart.itemsSummary,
+          lines: cart.serializedLines,
+          subtotal: cart.subtotal,
+          total: cart.grandTotal(),
+          orderType: cart.orderType,
+          tableNum: cart.tableNum,
+          customer: cart.customerName,
+          customerPhone: cart.customerPhone,
+          deliveryAddress: cart.deliveryAddress,
+          deliveryFee: cart.orderType == 'delivery' ? cart.deliveryFee : 0,
+          notes: cart.notes,
+        );
+        cart.clear();
+        HapticFeedback.mediumImpact();
+        navigator.pop();
+        showInfoOn(messenger, 'Order ${shortId(id)} sent to kitchen!');
+      }
     } on ApiError catch (e) {
       if (e.isAuthError) {
         await app.sessionExpired();

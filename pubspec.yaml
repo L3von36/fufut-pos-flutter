@@ -1,7 +1,7 @@
 name: fufut_pos
 description: "Fufut Coffee POS — Android & desktop point of sale for the Fufut floor."
 publish_to: "none"
-version: 1.1.5+16
+version: 1.1.6+17
 
 environment:
   sdk: ">=3.5.0 <4.0.0"
@@ -18,6 +18,11 @@ dependencies:
   shared_preferences: ^2.3.3
   intl: ^0.20.1
   audioplayers: ^6.1.0
+  # The tables screen's "Print QR Card" — the native equivalent of the web's
+  # print popup: a one-page PDF card (brand + table + QR) handed to the
+  # system print dialog / save-as-PDF.
+  printing: ^5.14.3
+  pdf: ^3.11.3
   # Regular dependency (not dev): main.dart calls preserve()/remove() to hold
   # the native launch screen until the Flutter splash has painted its first
   # frame, so there is no white flash between engine start and the brand boot.

@@ -27,6 +27,41 @@ class CartState extends ChangeNotifier {
   double deliveryFee = 0;
   String notes = '';
 
+  // Add-a-round context — the web orderStore's isAddRound / activeOpenOrderId.
+  // Set by the floor plan when the table being ordered against already has an
+  // open check: the next Send to Kitchen PATCHes the open ticket instead of
+  // POSTing a duplicate one, and dessert lands on the same bill.
+  bool isAddRound = false;
+  String? activeOpenOrderId;
+
+  /// Wire the cart to an existing open check ("Add Round" from the floor
+  /// plan). Clearing first so no leftover line from a previous order leaks
+  /// into this tab.
+  void startAddRound({required String orderId, required String tableNum}) {
+    _items.clear();
+    isAddRound = true;
+    activeOpenOrderId = orderId;
+    orderType = 'dine-in';
+    this.tableNum = tableNum;
+    _persist();
+    notifyListeners();
+  }
+
+  /// Start a fresh order for a table (no open check to attach to).
+  void startNewOrderForTable(String tableNum) {
+    _items.clear();
+    isAddRound = false;
+    activeOpenOrderId = null;
+    orderType = 'dine-in';
+    this.tableNum = tableNum;
+    _persist();
+    notifyListeners();
+  }
+
+  /// Whether Send to Kitchen should PATCH the open ticket instead of POSTing
+  /// a new one.
+  bool get addingRound => isAddRound && activeOpenOrderId != null;
+
   // Payment
   String paymentMethod = 'cash'; // cash | card | mobile | telebirr | cbe | bank
   double tendered = 0;
@@ -162,6 +197,10 @@ class CartState extends ChangeNotifier {
     notes = '';
     paymentMethod = 'cash';
     tendered = 0;
+    // The round has been fired; the next order starts fresh (the web's
+    // clearOrder resets both flags with the cart).
+    isAddRound = false;
+    activeOpenOrderId = null;
     _persist();
     notifyListeners();
   }
@@ -290,6 +329,8 @@ class CartState extends ChangeNotifier {
                 }).toList(),
             'orderType': orderType,
             'tableNum': tableNum,
+            'isAddRound': isAddRound,
+            'activeOpenOrderId': activeOpenOrderId,
             'customerName': customerName,
             'customerPhone': customerPhone,
             'deliveryAddress': deliveryAddress,
@@ -335,6 +376,9 @@ class CartState extends ChangeNotifier {
       }
       orderType = (saved['orderType'] ?? 'dine-in') as String;
       tableNum = (saved['tableNum'] ?? '') as String;
+      isAddRound = saved['isAddRound'] == true;
+      final savedOpenId = saved['activeOpenOrderId']?.toString() ?? '';
+      activeOpenOrderId = savedOpenId.isEmpty ? null : savedOpenId;
       customerName = (saved['customerName'] ?? '') as String;
       customerPhone = (saved['customerPhone'] ?? '') as String;
       deliveryAddress = (saved['deliveryAddress'] ?? '') as String;

@@ -113,21 +113,37 @@ class FufutApi {
   /// Seat a party: claim the table atomically, exactly like the web POS —
   /// the conditional UPDATE means two waiters cannot both seat the table,
   /// and an already-occupied table is simply left alone.
-  Future<void> claimTable(CafeTable t) async {
+  ///
+  /// `newSeating: false` marks the PUT as a round added to a party already
+  /// sitting (the web sends `newSeating: !isAddRound`) so the server does
+  /// not treat the second batch as a fresh arrival.
+  Future<void> claimTable(CafeTable t, {bool newSeating = true}) async {
     await client.put('tables/${t.id}', {
       ...Map<String, dynamic>.from(_tableJson(t)),
       'status': 'occupied',
       'seated_at': DateTime.now().toUtc().toIso8601String(),
-      'newSeating': true,
+      'newSeating': newSeating,
     });
   }
 
+  /// The PUT body for a table edit — the web's saveDetail posts the whole
+  /// row back, so every field the floor plan can change rides along (server
+  /// assignment, guest count, notes, name, shape). Seats maps back to the
+  /// server's `capacity` column.
   Map<String, dynamic> _tableJson(CafeTable t) => {
         'id': t.id,
         'number': t.number,
         if (t.section != null) 'section': t.section,
         'status': t.status,
-        if (t.seats != null) 'seats': t.seats,
+        if (t.seats != null) 'capacity': t.seats,
+        if (t.name != null) 'name': t.name,
+        if (t.shape != null) 'shape': t.shape,
+        if (t.server != null) 'server': t.server,
+        if (t.guests != null) 'guests': int.tryParse(t.guests!) ?? 0,
+        if (t.seatedAt != null) 'seated_at': t.seatedAt,
+        if (t.notes != null) 'notes': t.notes,
+        if (t.billRequestedAt != null) 'bill_requested_at': t.billRequestedAt,
+        if (t.payment != null) 'payment': t.payment,
       };
 
   // ── Orders ────────────────────────────────────────────────────────────────
@@ -255,10 +271,12 @@ class FufutApi {
     await client.put('orders/${order.id}', {'id': order.id, 'status': status});
   }
 
-  /// Add a round to an open tab.
-  Future<void> addRound(FufutOrder order, List<OrderItemLine> lines,
+  /// Add a round to an open tab — `PATCH /api/orders/:id/items`. The lines
+  /// ride the same `orderItems` envelope the web sends, so the kitchen sees
+  /// the second batch on the original ticket instead of a duplicate one.
+  Future<void> addRound(String orderId, List<OrderItemLine> lines,
       String itemsSummary) async {
-    await client.patch('orders/${order.id}/items', {
+    await client.patch('orders/$orderId/items', {
       'orderItems': lines.map((l) => l.toJson()).toList(),
       'items': itemsSummary,
     });
@@ -695,7 +713,9 @@ class FufutApi {
 
   // Tables management (`TablesView.vue` manager tools)
 
-  /// `POST /api/tables` — add a table to the floor (manager).
+  /// `POST /api/tables` — add a table to the floor (manager). The body
+  /// carries the same defaults the web's addTable posts: a fresh table
+  /// starts available, unassigned and unseated.
   Future<void> addTable({
     required String number,
     required int capacity,
@@ -709,6 +729,11 @@ class FufutApi {
       if (section != null && section.isNotEmpty) 'section': section,
       if (name != null && name.isNotEmpty) 'name': name,
       'shape': shape,
+      'status': 'available',
+      'server': '',
+      'guests': 0,
+      'seated_at': '',
+      'notes': '',
     });
     if (res is Map && res['ok'] == false) {
       throw ApiError((res['error'] as String?) ?? 'Could not add the table');
@@ -727,6 +752,39 @@ class FufutApi {
     if (res is Map && res['ok'] == false) {
       throw ApiError((res['error'] as String?) ?? 'Could not update the table');
     }
+  }
+
+  /// `GET /api/tables/sections` — the manager-arranged zone list.
+  /// Answers `{ok, sections: [...]}`; older shapes answered a bare array.
+  /// Both parse; an unusable answer is an empty list (the caller keeps its
+  /// last known zones, exactly like the web's loadSections).
+  Future<List<String>> tableSections() async {
+    final res = await client.get('tables/sections');
+    final list = res is Map ? res['sections'] : res;
+    if (list is! List) return const [];
+    return list
+        .map((s) => '$s'.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+  }
+
+  /// `POST /api/tables/:id/qr` — (re)generate the table's guest QR code
+  /// (manager). Answers `{ok, url, table}` where `url` is the guest ordering
+  /// link the QR image encodes; the image itself is drawn client-side from
+  /// the same qrserver.com service the web modal uses.
+  Future<({String url, String tableNumber})> tableQr(String id) async {
+    final res = await client.post('tables/$id/qr', {});
+    if (res is Map && res['ok'] == false) {
+      throw ApiError((res['error'] as String?) ?? 'Could not generate QR code');
+    }
+    if (res is! Map || (res['url'] ?? '').toString().isEmpty) {
+      throw ApiError('QR generation returned no URL');
+    }
+    final table = res['table'];
+    final num = table is Map
+        ? (table['number'] ?? '').toString()
+        : '';
+    return (url: res['url'].toString(), tableNumber: num);
   }
 
   // Orders extras (`OrdersView.vue` quick-sale, QR accept, `ReportsView.vue`)

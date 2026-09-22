@@ -101,6 +101,33 @@ void main() {
           expect(t.seats, 4, reason: 'capacity fallback must parse');
         },
       ),
+      (
+        route: 'GET /tables/sections',
+        body: {
+          'ok': true,
+          'sections': ['Patio', 'Main Hall', 'Window', 'VIP Room', 'Bar'],
+        },
+        invoke: () => api.tableSections(),
+        check: (r) {
+          final list = r as List<String>;
+          expect(list, hasLength(5));
+          expect(list.first, 'Patio');
+        },
+      ),
+      (
+        route: 'POST /tables/T2/qr',
+        body: {
+          'ok': true,
+          'url': 'https://fufutcoffee.com/order?table=T2',
+          'table': {'id': 'T2', 'number': 2},
+        },
+        invoke: () => api.tableQr('T2'),
+        check: (r) {
+          final qr = r as ({String url, String tableNumber});
+          expect(qr.url, contains('fufutcoffee.com'));
+          expect(qr.tableNumber, '2');
+        },
+      ),
       // ── orders
       (
         route: 'GET /orders',
@@ -442,8 +469,7 @@ void main() {
     expect(ticket, isNotEmpty);
 
     await api.updateStatus(const FufutOrder(id: 'O1', status: 'new'), 'ready');
-    await api.addRound(
-        const FufutOrder(id: 'O1', status: 'open'), const [], '1x Latte');
+    await api.addRound('O1', const [], '1x Latte');
     await api.openDrawer(500);
     await api.postWaste(name: 'Milk', qty: 1, reason: 'spoiled');
     await api.postMenu({'name': 'Mocha', 'price': 55});

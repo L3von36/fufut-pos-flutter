@@ -57,7 +57,13 @@ class ApiClient {
   /// Allow tests / screens to observe raw traffic if they want.
   void Function(String method, String path, int status)? onRequest;
 
-  ApiClient({required this.baseUrl, this.sessionToken});
+  ApiClient({required this.baseUrl, this.sessionToken, http.Client? httpClient})
+      : _injectedClient = httpClient;
+
+  /// Test seam: a pre-built http.Client. The widget-test binding fakes every
+  /// HttpClient created inside its zone, so loopback-backed widget tests
+  /// construct a real client BEFORE the binding initializes and inject it
+  /// here. Production code never sets it.
 
   static const _timeout = Duration(seconds: 12);
   static const _maxRetries = 2;
@@ -86,14 +92,14 @@ class ApiClient {
   // ── Verbs ─────────────────────────────────────────────────────────────────
 
   Future<dynamic> get(String endpoint) async {
-    final r = await _send(() => http.get(_uri(endpoint), headers: _headers),
+    final r = await _send(() => _http.get(_uri(endpoint), headers: _headers),
         'GET', endpoint);
     return r;
   }
 
   Future<dynamic> post(String endpoint, Map<String, dynamic> body) async {
     final r = await _send(
-        () => http.post(_uri(endpoint),
+        () => _http.post(_uri(endpoint),
             headers: _headers, body: jsonEncode(body)),
         'POST',
         endpoint);
@@ -102,7 +108,7 @@ class ApiClient {
 
   Future<dynamic> put(String endpoint, Map<String, dynamic> body) async {
     final r = await _send(
-        () => http.put(_uri(endpoint),
+        () => _http.put(_uri(endpoint),
             headers: _headers, body: jsonEncode(body)),
         'PUT',
         endpoint);
@@ -111,7 +117,7 @@ class ApiClient {
 
   Future<dynamic> patch(String endpoint, Map<String, dynamic> body) async {
     final r = await _send(
-        () => http.patch(_uri(endpoint),
+        () => _http.patch(_uri(endpoint),
             headers: _headers, body: jsonEncode(body)),
         'PATCH',
         endpoint);
@@ -124,14 +130,18 @@ class ApiClient {
   /// but the rule keeps the client honest).
   Future<dynamic> delete(String endpoint, Map<String, dynamic> body) async {
     final r = await _send(
-        () => http.delete(_uri(endpoint),
+        () => _http.delete(_uri(endpoint),
             headers: _headers, body: jsonEncode(body)),
         'DELETE',
         endpoint);
     return r;
   }
 
-  // ── Core send loop with retries ───────────────────────────────────────────
+  // ── Core send loop with retries ─────────────────────────────────────────
+
+  final http.Client? _injectedClient;
+  http.Client? _lazyClient;
+  http.Client get _http => _injectedClient ?? (_lazyClient ??= http.Client());
 
   Future<dynamic> _send(
       Future<http.Response> Function() doRequest, String method,
