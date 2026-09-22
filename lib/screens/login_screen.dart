@@ -135,19 +135,19 @@ class _LoginScreenState extends State<LoginScreen> {
   // ── Brand panel ─────────────────────────────────────────────────────────────
 
   Widget _brandPanel({bool compact = false}) {
+    // Same white-badge mark the launcher icon and splash use — the dark
+    // disc version read heavy next to the new splash's floating badge.
     final logo = Container(
-      width: compact ? 52 : 68,
-      height: compact ? 52 : 68,
-      decoration: BoxDecoration(
+      width: compact ? 54 : 70,
+      height: compact ? 54 : 70,
+      decoration: const BoxDecoration(
         shape: BoxShape.circle,
-        border: Border.all(color: Colors.white.withValues(alpha: 0.2), width: 2.5),
-        boxShadow: const [
-          BoxShadow(color: Color(0x2E000000), blurRadius: 18, offset: Offset(0, 6)),
+        boxShadow: [
+          BoxShadow(
+              color: Color(0x40000000), blurRadius: 22, offset: Offset(0, 9)),
         ],
       ),
-      child: ClipOval(
-        child: Image.asset('assets/images/logo.webp', fit: BoxFit.cover),
-      ),
+      child: Image.asset('assets/branding/splash_badge.png'),
     );
 
     return Container(

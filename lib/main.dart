@@ -13,8 +13,11 @@ import 'theme.dart';
 
 /// Minimum time the branded splash stays on screen — short enough to feel
 /// like a beat, long enough that a fast session restore never strobes the
-/// logo in and out.
-const _minSplash = Duration(milliseconds: 1100);
+/// logo in and out. `--dart-define=FUFUT_SPLASH_HOLD=true` pins it for
+/// visual QA screenshots (never set in release builds).
+const _minSplash = bool.fromEnvironment('FUFUT_SPLASH_HOLD')
+    ? Duration(seconds: 30)
+    : Duration(milliseconds: 1100);
 
 void main() {
   // NOTE: deliberately NOT calling FlutterNativeSplash.preserve() here. It
