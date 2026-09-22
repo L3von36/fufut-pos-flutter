@@ -160,7 +160,13 @@ class _CartPanelState extends State<CartPanel> {
     final mayCheckout = canCheckout(app.roleKey);
 
     return Padding(
-      padding: EdgeInsets.fromLTRB(14, widget.docked ? 12 : 0, 14, 12),
+      // Docked = inside the register body (host SafeArea handles insets).
+      // Sheet mode = bottom-anchored modal → must clear the gesture bar.
+      padding: EdgeInsets.fromLTRB(
+          14,
+          widget.docked ? 12 : 0,
+          14,
+          12 + (widget.docked ? 0 : MediaQuery.paddingOf(context).bottom)),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,

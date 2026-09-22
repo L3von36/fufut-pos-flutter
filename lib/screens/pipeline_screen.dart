@@ -210,7 +210,9 @@ class _PipelineScreenState extends State<PipelineScreen> {
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
       builder: (ctx) => Padding(
-        padding: const EdgeInsets.all(16),
+        // Bottom clears the edge-to-edge gesture nav bar on Android.
+        padding: EdgeInsets.fromLTRB(
+            16, 16, 16, 16 + MediaQuery.paddingOf(ctx).bottom),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,

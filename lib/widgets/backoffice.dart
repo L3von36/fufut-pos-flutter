@@ -4,6 +4,8 @@
 /// all speak, at the app's compact enterprise density.
 library;
 
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -28,8 +30,16 @@ Future<void> showFormSheet(
       borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
     ),
     builder: (sheetCtx) => Padding(
+      // Bottom clears whichever inset is bigger: the keyboard while typing,
+      // or the edge-to-edge gesture nav bar once it closes — otherwise the
+      // Save/Cancel row hides behind the system bar on Android.
       padding: EdgeInsets.fromLTRB(
-          16, 10, 16, 16 + MediaQuery.of(sheetCtx).viewInsets.bottom),
+          16,
+          10,
+          16,
+          16 +
+              math.max(MediaQuery.of(sheetCtx).viewInsets.bottom,
+                  MediaQuery.of(sheetCtx).padding.bottom)),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,

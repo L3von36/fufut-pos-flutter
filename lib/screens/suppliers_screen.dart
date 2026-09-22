@@ -148,7 +148,9 @@ class _SuppliersScreenState extends State<SuppliersScreen> {
           expand: false,
           initialChildSize: 0.7,
           builder: (ctx, scroll) => Padding(
-            padding: const EdgeInsets.all(16),
+            // Bottom clears the edge-to-edge gesture nav bar on Android.
+            padding: EdgeInsets.fromLTRB(
+                16, 16, 16, 16 + MediaQuery.paddingOf(ctx).bottom),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [

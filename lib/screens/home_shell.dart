@@ -224,7 +224,7 @@ class _HomeShellState extends State<HomeShell> {
                 Expanded(
                   child: SafeArea(
                     top: true,
-                    bottom: false,
+                    bottom: true,
                     child: Column(
                       children: [
                         _TopBar(title: titleFor(_tab)),
@@ -412,7 +412,7 @@ class _Sidebar extends StatelessWidget {
       ),
       child: SafeArea(
         top: true,
-        bottom: false,
+        bottom: true,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -646,7 +646,9 @@ class AppDrawer extends StatelessWidget {
           ),
         ),
         child: SafeArea(
-          bottom: false,
+          // Bottom true: the theme toggle + Sign Out rows sit at the drawer's
+          // foot — without it they hide behind the edge-to-edge gesture bar.
+          bottom: true,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
