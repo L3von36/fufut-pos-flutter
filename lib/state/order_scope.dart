@@ -177,3 +177,30 @@ String emptyOrdersHint(String? roleKey) {
       return 'No orders match the current filters.';
   }
 }
+
+// ── Day scoping ──────────────────────────────────────────────────────────────
+
+/// Today as a `YYYY-MM-DD` key in the device's local calendar. Server rows
+/// carry naive local-time stamps ("2026-08-06 01:55:46"), never UTC, so the
+/// day is the ten-character prefix of `created` — string-prefix matching is
+/// the established, timezone-safe pattern (role_dashboard, alerts, waste…).
+String localTodayKey([DateTime? now]) {
+  final n = now ?? DateTime.now();
+  String two(int v) => v.toString().padLeft(2, '0');
+  return '${n.year}-${two(n.month)}-${two(n.day)}';
+}
+
+/// True when the order was created today — the live service day. Operational
+/// screens (Orders, Pipeline, Open Checks) show today's tickets only; older
+/// ones belong to Order History.
+bool orderIsToday(FufutOrder o, {DateTime? now}) =>
+    (o.created ?? '').startsWith(localTodayKey(now));
+
+/// True when the order counts as real money — the Flutter mirror of the web's
+/// `isRealOrder` / the API's REAL_ORDERS rule (`voided_at IS NULL AND status
+/// <> 'cancelled'`). A void sets both markers, so either one excludes.
+bool orderIsReal(FufutOrder o) {
+  if ((o.voidedAt ?? '').isNotEmpty) return false;
+  final s = o.status.toLowerCase();
+  return s != 'cancelled' && s != 'voided';
+}

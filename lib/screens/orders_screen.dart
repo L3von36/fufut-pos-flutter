@@ -9,11 +9,14 @@ import '../state/roles.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 import 'checkout_sheet.dart' show PaymentResult, PaymentSheet;
+import 'order_history_screen.dart';
 
 /// Order history + open checks — the waiter dashboard.
 ///
-/// One screen serves two nav destinations: *Orders* (everything) and
-/// *Open Checks* (`?open=1` — what the floor settles from).
+/// One screen serves two nav destinations: *Orders* (today's tickets —
+/// everything older lives on [OrderHistoryScreen]) and *Open Checks*
+/// (`?open=1` — what the floor settles from, previous-day tabs grouped at
+/// the bottom so the day's work leads).
 ///
 /// Android-native layout: a KPI strip (open / ready / unpaid / on-tabs),
 /// a sticky search field with a horizontally-scrolling status filter row,
@@ -33,6 +36,7 @@ class _OrdersScreenState extends State<OrdersScreen> {
   String _query = '';
   String _statusFilter = 'all';
   String? _error;
+  bool _showOlder = false;
   final _search = TextEditingController();
 
   static const _statuses = [
@@ -80,9 +84,21 @@ class _OrdersScreenState extends State<OrdersScreen> {
       // kitchen's tickets back into their list. The head-waiter's ctx comes
       // from /api/tables — the server already narrows it to the tables
       // assigned to them, so that set IS "my section".
+      //
+      // Day scoping: the Orders view reads the live service day — the server
+      // gets from/to = today (Addis wall-clock day keys, the same semantics
+      // the reports use) and a client-side guard keeps a stale cache from
+      // resurrecting yesterday. Open Checks stays un-windowed on the server
+      // (an unpaid tab is money owed whatever day it was run up) and the
+      // screen splits it: today's checks lead, older tabs group below.
       final needsTables = app.roleKey == 'head-waiter';
+      final todayKey = localTodayKey();
       final results = await Future.wait([
-        app.api.orders(openOnly: _openOnly),
+        app.api.orders(
+          openOnly: _openOnly,
+          from: _openOnly ? null : todayKey,
+          to: _openOnly ? null : todayKey,
+        ),
         if (needsTables) app.api.tables(),
       ]);
       final rows = results[0] as List<FufutOrder>;
@@ -94,6 +110,7 @@ class _OrdersScreenState extends State<OrdersScreen> {
       final scoped = rows
           .where((o) => orderVisibleToRole(o, app.roleKey,
               myId: app.user?.id, myTables: myTables))
+          .where((o) => _openOnly || orderIsToday(o))
           .toList();
       setState(() {
         _orders = scoped;
@@ -120,7 +137,10 @@ class _OrdersScreenState extends State<OrdersScreen> {
 
   List<FufutOrder> get _filtered {
     final q = _query.trim().toLowerCase();
-    return _orders.where((o) {
+    // The main list is today's service. In Open Checks mode previous-day
+    // tabs live in [_olderOrders] below; in Orders mode the day window
+    // already cut them, so this is the whole set.
+    return _orders.where(orderIsToday).where((o) {
       if (_statusFilter != 'all' && o.status.toLowerCase() != _statusFilter) {
         return false;
       }
@@ -131,6 +151,12 @@ class _OrdersScreenState extends State<OrdersScreen> {
           o.itemsRaw.toLowerCase().contains(q);
     }).toList();
   }
+
+  /// Unpaid tabs from previous days — Open Checks mode only. Never hidden
+  /// from the KPIs (the money owed does not care which day it was run up),
+  /// but grouped under the day's work.
+  List<FufutOrder> get _olderOrders =>
+      _orders.where((o) => !orderIsToday(o)).toList();
 
   // ── KPI math — computed over the currently loaded scope ────────────────────
 
@@ -153,6 +179,9 @@ class _OrdersScreenState extends State<OrdersScreen> {
     final pal = Pal.of(context);
     final roleKey = context.watch<AppState>().roleKey;
     final rows = _filtered;
+    // Previous-day open checks surface only in Open Checks mode; in Orders
+    // mode the day window already cut everything older.
+    final older = _openOnly ? _olderOrders : const <FufutOrder>[];
     return Scaffold(
       backgroundColor: pal.bg,
       body: Column(
@@ -181,6 +210,8 @@ class _OrdersScreenState extends State<OrdersScreen> {
                           color: pal.primary)),
                 ),
                 const Spacer(),
+                // Everything older than today — the day screens stay lean.
+                _IconAction(icon: Icons.history_rounded, onTap: _openHistory),
                 _IconAction(icon: Icons.refresh_rounded, onTap: _load),
               ],
             ),
@@ -261,7 +292,7 @@ class _OrdersScreenState extends State<OrdersScreen> {
                 ? const Center(child: CircularProgressIndicator())
                 : _error != null
                     ? _ErrorPane(message: _error!, onRetry: _load)
-                    : rows.isEmpty
+                    : (rows.isEmpty && older.isEmpty)
                         ? EmptyState(
                             icon: Icons.receipt_long,
                             title: 'No orders yet',
@@ -269,22 +300,65 @@ class _OrdersScreenState extends State<OrdersScreen> {
                           )
                         : RefreshIndicator(
                             onRefresh: _load,
-                            child: ListView.separated(
+                            child: ListView(
                               physics: const AlwaysScrollableScrollPhysics(),
                               padding:
                                   const EdgeInsets.fromLTRB(12, 6, 12, 20),
-                              itemCount: rows.length,
-                              separatorBuilder: (_, __) =>
-                                  const SizedBox(height: 8),
-                              itemBuilder: (context, i) => _OrderTile(
-                                order: rows[i],
-                                accent: _accentFor(context, rows[i].status),
-                                showCheckActions:
-                                    _openOnly && _isActionable(rows[i]),
-                                onSplit: () => _splitFlow(rows[i]),
-                                onMove: () => _moveFlow(rows[i]),
-                                onMerge: () => _mergeFlow(rows[i]),
-                              ),
+                              children: [
+                                if (rows.isEmpty && older.isNotEmpty)
+                                  Padding(
+                                    padding: const EdgeInsets.only(bottom: 6),
+                                    child: Text(
+                                      'No checks opened today — '
+                                      '${older.length} older unpaid below.',
+                                      style: TextStyle(
+                                          fontSize: 12, color: pal.muted),
+                                    ),
+                                  ),
+                                for (final o in rows)
+                                  Padding(
+                                    padding: const EdgeInsets.only(bottom: 8),
+                                    child: _OrderTile(
+                                      order: o,
+                                      accent: _accentFor(context, o.status),
+                                      showCheckActions:
+                                          _openOnly && _isActionable(o),
+                                      onSplit: () => _splitFlow(o),
+                                      onMove: () => _moveFlow(o),
+                                      onMerge: () => _mergeFlow(o),
+                                    ),
+                                  ),
+                                // ── Previous-day open checks (Open Checks
+                                // mode): grouped under the day's work, one
+                                // tap away — never unreachable. An unpaid
+                                // tab is money owed whatever day it was run
+                                // up.
+                                if (older.isNotEmpty)
+                                  Padding(
+                                    padding: const EdgeInsets.only(top: 4),
+                                    child: _OlderGroupHeader(
+                                      count: older.length,
+                                      expanded: _showOlder,
+                                      onTap: () => setState(
+                                          () => _showOlder = !_showOlder),
+                                    ),
+                                  ),
+                                if (older.isNotEmpty && _showOlder)
+                                  for (final o in older)
+                                    Padding(
+                                      padding:
+                                          const EdgeInsets.only(bottom: 8),
+                                      child: _OrderTile(
+                                        order: o,
+                                        accent: _accentFor(context, o.status),
+                                        showCheckActions: _isActionable(o),
+                                        onSplit: () => _splitFlow(o),
+                                        onMove: () => _moveFlow(o),
+                                        onMerge: () => _mergeFlow(o),
+                                        olderThanToday: true,
+                                      ),
+                                    ),
+                              ],
                             ),
                           ),
           ),
@@ -296,6 +370,11 @@ class _OrdersScreenState extends State<OrdersScreen> {
   static String _cap(String s) => s.isEmpty
       ? s
       : '${s[0].toUpperCase()}${s.substring(1).toLowerCase()}';
+
+  void _openHistory() {
+    Navigator.of(context)
+        .push(MaterialPageRoute(builder: (_) => const OrderHistoryScreen()));
+  }
 
   /// Split / Move / Merge ride open, unpaid checks only — a settled or
   /// cancelled ticket is money already counted.
@@ -704,6 +783,58 @@ class _KpiStrip extends StatelessWidget {
 // Ticket card — status accent bar, id + badges, items, money, icon meta row.
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Collapsible divider for previous-day open checks — the Flutter twin of the
+/// web OpenChecksView's "Older open checks (N)" toggle.
+class _OlderGroupHeader extends StatelessWidget {
+  final int count;
+  final bool expanded;
+  final VoidCallback onTap;
+  const _OlderGroupHeader({
+    required this.count,
+    required this.expanded,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = Pal.of(context);
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(10),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+        decoration: BoxDecoration(
+          color: pal.warning.withValues(alpha: 0.07),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: pal.warning.withValues(alpha: 0.45)),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.history_rounded,
+                size: 15, color: pal.warning.withValues(alpha: 0.9)),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Older open checks ($count) — from previous days',
+                style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w700,
+                    color: pal.heading),
+              ),
+            ),
+            AnimatedRotation(
+              turns: expanded ? 0.5 : 0,
+              duration: const Duration(milliseconds: 150),
+              child: Icon(Icons.expand_more_rounded,
+                  size: 18, color: pal.muted),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _OrderTile extends StatelessWidget {
   final FufutOrder order;
   final Color accent;
@@ -712,6 +843,10 @@ class _OrderTile extends StatelessWidget {
   final VoidCallback? onMove;
   final VoidCallback? onMerge;
 
+  /// True inside the previous-day open-checks group: renders an amber left
+  /// bar (the web's `.oc-check.is-older`) so an aged tab reads as aged.
+  final bool olderThanToday;
+
   const _OrderTile({
     required this.order,
     required this.accent,
@@ -719,6 +854,7 @@ class _OrderTile extends StatelessWidget {
     this.onSplit,
     this.onMove,
     this.onMerge,
+    this.olderThanToday = false,
   });
 
   @override
@@ -745,7 +881,7 @@ class _OrderTile extends StatelessWidget {
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Container(width: 4, color: accent),
+              Container(width: 4, color: olderThanToday ? pal.warning : accent),
               Expanded(
                 child: Padding(
                   padding: const EdgeInsets.all(11),

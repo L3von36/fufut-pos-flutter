@@ -148,8 +148,29 @@ class FufutApi {
 
   // ── Orders ────────────────────────────────────────────────────────────────
 
-  Future<List<FufutOrder>> orders({bool openOnly = false}) async {
-    final res = await client.get(openOnly ? 'orders?open=1' : 'orders');
+  /// GET /api/orders[?open=1][&from=YYYY-MM-DD&to=YYYY-MM-DD][&limit=&offset=]
+  ///
+  /// Plain `orders()` keeps the historical "latest 200" shape; `from`/`to`
+  /// narrow the read to venue-local day keys (the same day semantics the
+  /// reports and the bot use), and `limit`/`offset` power the Order History
+  /// pager. Operational screens pass today's window; history pages page
+  /// through older days.
+  Future<List<FufutOrder>> orders({
+    bool openOnly = false,
+    String? from,
+    String? to,
+    int? limit,
+    int? offset,
+  }) async {
+    var ep = openOnly ? 'orders?open=1' : 'orders';
+    final q = <String>[
+      if (from != null) 'from=$from',
+      if (to != null) 'to=$to',
+      if (limit != null) 'limit=$limit',
+      if (offset != null) 'offset=$offset',
+    ];
+    if (q.isNotEmpty) ep += (ep.contains('?') ? '&' : '?') + q.join('&');
+    final res = await client.get(ep);
     if (res is! List) return const [];
     return res
         .whereType<Map>()

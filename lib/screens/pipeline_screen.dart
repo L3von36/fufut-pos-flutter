@@ -14,6 +14,7 @@ import '../api/api_client.dart';
 import '../api/sse/sse_channel.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
+import '../state/order_scope.dart';
 import '../state/roles.dart';
 import '../theme.dart';
 import '../widgets/backoffice.dart';
@@ -162,12 +163,20 @@ class _PipelineScreenState extends State<PipelineScreen> {
   ];
 
   List<FufutOrder> _lane(String status) {
+    // Today only: the pipeline is the kitchen's live board, not an archive.
+    // Previous-day leftovers (usually stale tickets nobody closed out) go to
+    // Order History; the count is surfaced so nothing silently vanishes.
+    // Filtering at render covers every _orders writer — load, SSE snapshot
+    // and the quiet refetch alike.
     final rows = _orders
+        .where(orderIsToday)
         .where((o) => o.status.toLowerCase() == status)
         .toList();
     rows.sort((a, b) => (a.created ?? '').compareTo(b.created ?? ''));
     return rows;
   }
+
+  int get _olderHiddenCount => _orders.where((o) => !orderIsToday(o)).length;
 
   Future<void> _advance(FufutOrder o, String status) async {
     final messenger = ScaffoldMessenger.of(context);
@@ -327,6 +336,25 @@ class _PipelineScreenState extends State<PipelineScreen> {
                     fontFamily: kFontMono, fontSize: 10.5, color: pal.faint)),
           ]),
         ),
+        if (_olderHiddenCount > 0)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 0, 14, 4),
+            child: Row(children: [
+              Icon(Icons.history_rounded, size: 12, color: pal.warning),
+              const SizedBox(width: 5),
+              Expanded(
+                child: Text(
+                  '$_olderHiddenCount earlier ticket'
+                  '${_olderHiddenCount != 1 ? 's' : ''} from previous days'
+                  ' hidden — see Order History',
+                  style: TextStyle(
+                      fontFamily: kFontBody,
+                      fontSize: 10.5,
+                      color: pal.muted),
+                ),
+              ),
+            ]),
+          ),
         Expanded(
           child: RefreshIndicator(
             onRefresh: () => _load(quiet: true),
