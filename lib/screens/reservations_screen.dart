@@ -46,10 +46,10 @@ class _ReservationsScreenState extends State<ReservationsScreen> {
     final app = context.read<AppState>();
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
-      final resF = app.api.reservations();
-      final tablesF = app.api.tables();
-      final rows = await resF;
-      final tables = await tablesF;
+      final results = await Future.wait<dynamic>(
+          [app.api.reservations(), app.api.tables()]);
+      final rows = results[0] as List<Reservation>;
+      final tables = results[1] as List<CafeTable>;
       if (!mounted) return;
       setState(() { _rows = rows; _tables = tables; _loading = false; });
     } on ApiError catch (e) {

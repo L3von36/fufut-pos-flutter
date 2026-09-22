@@ -1,0 +1,43 @@
+{
+  "ok": true,
+  "supplier": {
+    "id": "SUPa679437",
+    "name": "novel",
+    "category": "Meat",
+    "contact": "Novel Wolde Michael",
+    "phone": "0989680816",
+    "email": "novelwolde36@gmail.com",
+    "address": "ayat mall",
+    "supplies": "Meat",
+    "notes": "Meat supplier",
+    "status": "active",
+    "created": "2026-08-11T03:05:00.436Z",
+    "updated_at": "2026-08-11T03:05:00.436Z"
+  },
+  "purchases": [
+    {
+      "id": "PU-20260811-beef",
+      "supplier_id": "SUPa679437",
+      "supplier_name": "novel",
+      "date": "2026-08-11",
+      "total": 28000,
+      "paid": 28000,
+      "payment_method": "cash",
+      "status": "received",
+      "receipt_key": null,
+      "notes": "First recorded purchase. 40 kg beef at 700 ETB/kg, paid cash in full.",
+      "posted_at": "2026-08-11 03:47:27",
+      "voided_at": null,
+      "voided_by": null,
+      "void_reason": null,
+      "created_by": null,
+      "created_by_name": "system (txn 001)",
+      "created": "2026-08-11 03:47:27"
+    }
+  ],
+  "totals": {
+    "purchased": 28000,
+    "paid": 28000,
+    "balance": 0
+  }
+}

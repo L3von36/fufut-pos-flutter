@@ -43,10 +43,10 @@ class _PnlScreenState extends State<PnlScreen> {
     final app = context.read<AppState>();
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
-      final ordersF = app.api.orders();
-      final expensesF = app.api.expenses();
-      final rows = await ordersF;
-      final exps = await expensesF;
+      final results = await Future.wait<dynamic>(
+          [app.api.orders(), app.api.expenses()]);
+      final rows = results[0] as List<FufutOrder>;
+      final exps = results[1] as List<Expense>;
       if (!mounted) return;
       setState(() { _orders = rows; _expenses = exps; _loading = false; });
     } on ApiError catch (e) {

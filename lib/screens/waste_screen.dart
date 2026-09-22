@@ -48,10 +48,13 @@ class _WasteScreenState extends State<WasteScreen> {
     final app = context.read<AppState>();
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
-      final entriesF = app.api.wasteLog();
-      final stockF = app.api.inventory(); // may 403 for cleaner → free-text path
-      final entries = await entriesF;
-      final stock = await stockF;
+      // Future.wait: every request keeps a listener even when a sibling
+      // fails first — sequential awaits used to strand the losers as
+      // unhandled async errors.
+      final results = await Future.wait<dynamic>(
+          [app.api.wasteLog(), app.api.inventory()]);
+      final entries = results[0] as List<WasteEntry>;
+      final stock = results[1] as List<InventoryItem>; // may 403 for cleaner → free-text path
       if (!mounted) return;
       setState(() { _entries = entries; _stock = stock; _loading = false; });
     } on ApiError catch (e) {

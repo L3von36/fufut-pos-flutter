@@ -90,12 +90,14 @@ class _AlertsDashboardScreenState extends State<AlertsDashboardScreen> {
     final app = context.read<AppState>();
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
-      final openF = app.api.alertsByStatus('open', limit: 200);
-      final ackF = app.api.alertsByStatus('acknowledged', limit: 25);
-      final resF = app.api.alertsByStatus('resolved', limit: 100);
-      final open = await openF;
-      final acked = await ackF;
-      final resolved = await resF;
+      final results = await Future.wait<dynamic>([
+        app.api.alertsByStatus('open', limit: 200),
+        app.api.alertsByStatus('acknowledged', limit: 25),
+        app.api.alertsByStatus('resolved', limit: 100),
+      ]);
+      final open = results[0] as List<OpsAlert>;
+      final acked = results[1] as List<OpsAlert>;
+      final resolved = results[2] as List<OpsAlert>;
       if (!mounted) return;
       setState(() {
         _open = open..sort(OpsAlert.rank);

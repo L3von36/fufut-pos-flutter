@@ -1,0 +1,26 @@
+[
+  {
+    "category": "ETHIOPIAN DISH",
+    "served": 1,
+    "averageMinutes": 2224.1,
+    "fastestMinutes": 2224.1,
+    "slowestMinutes": 2224.1,
+    "sampled": 9
+  },
+  {
+    "category": "HOT DRINKS",
+    "served": 5,
+    "averageMinutes": 987.7,
+    "fastestMinutes": 4.8,
+    "slowestMinutes": 2141.3,
+    "sampled": 9
+  },
+  {
+    "category": "SALAD BOWL",
+    "served": 1,
+    "averageMinutes": 196.7,
+    "fastestMinutes": 196.7,
+    "slowestMinutes": 196.7,
+    "sampled": 9
+  }
+]

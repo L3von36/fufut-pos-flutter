@@ -188,6 +188,20 @@ class ApiClient {
       if (m != null) sessionToken = m.group(1);
     }
 
+    // In-band refusals: the Worker answers many denials with HTTP 200 +
+    // {ok:false, error:"..."} instead of a 4xx. Surface them uniformly as
+    // ApiError(403) so every screen shows the server's message ("Your role
+    // does not have access to this data", "Table 7 is occupied") rather
+    // than silently rendering empty data — about thirty parsers used to
+    // miss this shape and return [] on a denial. auth/* keeps its own
+    // semantics (login failure must stay 401-shaped for the guards).
+    if (body is Map &&
+        body['ok'] == false &&
+        body['error'] is String &&
+        !endpoint.startsWith('auth/')) {
+      throw ApiError(body['error'] as String, 403);
+    }
+
     return body;
   }
 

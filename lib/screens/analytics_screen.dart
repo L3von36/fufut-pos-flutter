@@ -86,10 +86,10 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     final app = context.read<AppState>();
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
-      final ordersF = app.api.orders();
-      final menuF = app.api.menu();
-      final orders = await ordersF;
-      final menu = await menuF;
+      final results = await Future.wait<dynamic>(
+          [app.api.orders(), app.api.menu()]);
+      final orders = results[0] as List<FufutOrder>;
+      final menu = results[1] as List<MenuItem>;
       if (!mounted) return;
       setState(() { _orders = orders; _menu = menu; _loading = false; });
     } on ApiError catch (e) {

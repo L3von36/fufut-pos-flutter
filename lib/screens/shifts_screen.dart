@@ -51,10 +51,10 @@ class _ShiftsScreenState extends State<ShiftsScreen> {
     final app = context.read<AppState>();
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
-      final shiftsF = app.api.shifts();
-      final staffF = app.api.staff();
-      final rows = await shiftsF;
-      final staff = await staffF;
+      final results = await Future.wait<dynamic>(
+          [app.api.shifts(), app.api.staff()]);
+      final rows = results[0] as List<ShiftRow>;
+      final staff = results[1] as List<StaffMember>;
       if (!mounted) return;
       setState(() { _rows = rows; _staff = staff; _loading = false; });
     } on ApiError catch (e) {

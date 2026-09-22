@@ -45,12 +45,11 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
     final app = context.read<AppState>();
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
-      final rowsF = app.api.purchases();
-      final supF = app.api.suppliers();
-      final stockF = app.api.inventory();
-      final rows = await rowsF;
-      final sups = await supF;
-      final stock = await stockF;
+      final results = await Future.wait<dynamic>(
+          [app.api.purchases(), app.api.suppliers(), app.api.inventory()]);
+      final rows = results[0] as List<Purchase>;
+      final sups = results[1] as List<Supplier>;
+      final stock = results[2] as List<InventoryItem>;
       if (!mounted) return;
       setState(() {
         _rows = rows; _suppliers = sups; _stock = stock; _loading = false;

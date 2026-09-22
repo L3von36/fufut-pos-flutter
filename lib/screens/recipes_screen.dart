@@ -55,14 +55,12 @@ class _RecipesScreenState extends State<RecipesScreen> {
     final app = context.read<AppState>();
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
-      final rowsF = app.api.recipes();
-      final menuF = app.api.menu();
-      final stockF = app.api.inventory();
-      final unitsF = app.api.units();
-      final rows = await rowsF;
-      final menu = await menuF;
-      final stock = await stockF;
-      final units = await unitsF;
+      final results = await Future.wait<dynamic>(
+          [app.api.recipes(), app.api.menu(), app.api.inventory(), app.api.units()]);
+      final rows = results[0] as List<RecipeRow>;
+      final menu = results[1] as List<MenuItem>;
+      final stock = results[2] as List<InventoryItem>;
+      final units = results[3] as List<UnitRow>;
       if (!mounted) return;
       setState(() {
         _rows = rows; _menu = menu; _stock = stock; _units = units;
