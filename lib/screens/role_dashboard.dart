@@ -493,8 +493,10 @@ class _ChefDashboardState extends State<ChefDashboard> {
         QuickAction(icon: Icons.receipt_long, label: 'Orders', onTap: () => go(NavKey.orders)),
         if (chef)
           QuickAction(icon: Icons.delete_outline, label: 'Waste Log', onTap: () => go(NavKey.waste)),
-        QuickAction(
-            icon: Icons.schedule_outlined, label: 'Time Clock', onTap: () => go(NavKey.timeclock)),
+        // The floor the kitchen cooks for — table states and bill requests
+        // live there. (Time Clock left with the HR screens in the
+        // least-privilege pass; a dead button bounces off the nav guard.)
+        QuickAction(icon: Icons.grid_view_outlined, label: 'Floor Plan', onTap: () => go(NavKey.tables)),
       ],
     );
   }
@@ -668,8 +670,12 @@ class _CashierDashboardState extends State<CashierDashboard> {
         QuickAction(icon: Icons.point_of_sale, label: 'Quick Sale', onTap: () => go(NavKey.menuView)),
         QuickAction(icon: Icons.payments, label: 'Till Mgmt', onTap: () => go(NavKey.cashdrawer)),
         QuickAction(icon: Icons.credit_card, label: 'Open Checks', onTap: () => go(NavKey.openChecks)),
+        // The book (My Activity left with the HR screens; a dead tile just
+        // bounces off the nav guard).
         QuickAction(
-            icon: Icons.insights_outlined, label: 'My Activity', onTap: () => go(NavKey.myActivity)),
+            icon: Icons.calendar_today_outlined,
+            label: 'Reservations',
+            onTap: () => go(NavKey.reservations)),
       ],
     );
   }
@@ -970,10 +976,6 @@ class _DriverDashboardState extends State<DriverDashboard> {
                   icon: Icons.local_shipping,
                   label: 'Delivery Run',
                   onTap: () => widget.onNavigate?.call(NavKey.delivery)),
-              QuickAction(
-                  icon: Icons.schedule_outlined,
-                  label: 'Time Clock',
-                  onTap: () => widget.onNavigate?.call(NavKey.timeclock)),
             ],
           ),
           const SizedBox(height: 12),
@@ -1154,10 +1156,6 @@ class _CleanerDashboardState extends State<CleanerDashboard> {
                   icon: Icons.delete_outline,
                   label: 'Waste Log',
                   onTap: () => widget.onNavigate?.call(NavKey.waste)),
-              QuickAction(
-                  icon: Icons.schedule_outlined,
-                  label: 'Time Clock',
-                  onTap: () => widget.onNavigate?.call(NavKey.timeclock)),
             ],
           ),
           const SizedBox(height: 12),

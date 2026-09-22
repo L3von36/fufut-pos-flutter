@@ -409,6 +409,77 @@ void main() {
     expect(find.text('Cancel Bill Request'), findsOneWidget);
   });
 
+  // ── The kitchen's floor view (owner's call, 2026-09) ─────────────────────
+
+  testWidgets('chef floor view: bill requester named, Free Table rides, no ordering',
+      (tester) async {
+    app.user = const StaffUser(
+        id: 'S2', firstName: 'Selam', lastName: 'Wondimu', role: 'Head Chef');
+    app.roleKey = 'head-chef';
+    await pumpFloor(tester);
+
+    // T-03: occupied, bill requested by Yonas three minutes ago.
+    await tester.ensureVisible(find.text('T-03'));
+    await settle(tester);
+    await tester.tap(find.text('T-03'));
+    await settle(tester);
+
+    // The kitchen sees WHO is asking for the bill — banner + the Active
+    // Orders badge both carry the name.
+    expect(find.textContaining('Bill requested by Yonas'), findsWidgets);
+    // ...gets the table-turn...
+    expect(find.text('Free Table'), findsOneWidget);
+    // ...and none of the floor's writes: no ticket, no party edits, no
+    // quick-status chips.
+    expect(find.text('Add Round'), findsNothing);
+    expect(find.text('New Order'), findsNothing);
+    expect(find.text('Save Changes'), findsNothing);
+    expect(find.text('Occupied'), findsNothing);
+    expect(find.text('Ask for the Bill'), findsNothing);
+
+    routes['POST /tables/T3/free'] = (200, {'ok': true, 'freed': true});
+    await tester.tap(find.text('Free Table'));
+    await settle(tester);
+
+    expect(
+      recorded.any((r) => r.method == 'POST' && r.path == '/tables/T3/free'),
+      isTrue,
+      reason: 'the kitchen turns the table without holding the tables write',
+    );
+    expect(find.text('Table freed'), findsOneWidget);
+  });
+
+  testWidgets('chef freeing a table with an unpaid check is refused in words',
+      (tester) async {
+    app.user = const StaffUser(
+        id: 'S2', firstName: 'Selam', lastName: 'Wondimu', role: 'Head Chef');
+    app.roleKey = 'head-chef';
+    await pumpFloor(tester);
+
+    // T-02: occupied, no bill requested — the free button still rides.
+    await tester.ensureVisible(find.text('T-02'));
+    await settle(tester);
+    await tester.tap(find.text('T-02'));
+    await settle(tester);
+    expect(find.text('Free Table'), findsOneWidget);
+
+    routes['POST /tables/T2/free'] = (409, {
+      'ok': false,
+      'error':
+          'Table 2 still has 1 unsettled check. Settle at the till before freeing.',
+    });
+    await tester.tap(find.text('Free Table'));
+    await settle(tester);
+
+    // The server's explanation surfaces verbatim — the kitchen learns the
+    // bill comes first instead of staring at a stuck table.
+    expect(find.textContaining('unsettled check'), findsOneWidget);
+    expect(
+      recorded.any((r) => r.method == 'POST' && r.path == '/tables/T2/free'),
+      isTrue,
+    );
+  });
+
   testWidgets('cart add-round context: startAddRound wires the open ticket',
       (tester) async {
     // The "Add Round" write depends on the cart carrying the open check —

@@ -56,6 +56,44 @@ void main() {
     expect(assistant.contains(NavKey.purchases), isFalse);
   });
 
+  test('the floor plan belongs to the waiter and the kitchen — not the till', () {
+    // Owner's call, 2026-09: the cashier walks no floor (their table work is
+    // the Dashboard's Bill Requests card and settling from Open Checks), the
+    // kitchen sees the room it cooks for, and the floor keeps its home tab.
+    expect(kRolePermissions['cashier']!.contains(NavKey.tables), isFalse,
+        reason: 'cashier must not carry the Tables tab');
+    expect(kRolePermissions['head-chef']!.contains(NavKey.tables), isTrue,
+        reason: 'head-chef needs the floor: bill requests + table turns');
+    expect(kRolePermissions['assistant-chef']!.contains(NavKey.tables), isTrue);
+    expect(kRolePermissions['head-waiter']!.contains(NavKey.tables), isTrue);
+    // The kitchen's floor view is read-shaped: still no money/roster screens.
+    expect(kRolePermissions['head-chef']!.contains(NavKey.cashdrawer), isFalse);
+  });
+
+  test('action grants: floor orders vs table turns vs party edits', () {
+    // Opening a table's ticket is the waiter's job (manager rides along).
+    expect(canTakeTableOrders('head-waiter'), isTrue);
+    expect(canTakeTableOrders('manager'), isTrue);
+    for (final role in ['cashier', 'head-chef', 'assistant-chef', 'barista', 'cleaner', 'delivery-staff', 'accountant']) {
+      expect(canTakeTableOrders(role), isFalse,
+          reason: '$role must not open a table ticket');
+    }
+    // Turning a table after the party leaves: floor + kitchen, never the till
+    // or the supporting roles.
+    for (final role in ['manager', 'head-waiter', 'head-chef', 'assistant-chef']) {
+      expect(canFreeTable(role), isTrue, reason: '$role may free a table');
+    }
+    for (final role in ['cashier', 'barista', 'cleaner', 'delivery-staff']) {
+      expect(canFreeTable(role), isFalse, reason: '$role must not free tables');
+    }
+    // Party edits (status chips, guests, notes): floor leads only.
+    expect(canEditTable('manager'), isTrue);
+    expect(canEditTable('head-waiter'), isTrue);
+    expect(canEditTable('head-chef'), isFalse,
+        reason: 'the kitchen floor view is read-shaped');
+    expect(canEditTable('cashier'), isFalse);
+  });
+
   test('role landing screens match the web ROLE_DEFAULT_VIEW', () {
     expect(defaultViewFor('manager'), NavKey.dashboard);
     expect(defaultViewFor('head-chef'), NavKey.kitchen);

@@ -641,6 +641,17 @@ class FufutApi {
     await client.post('tables/$tableId/cancel-bill-request', {});
   }
 
+  /// `POST /api/tables/:id/free` — clear the party off a table whose guests
+  /// have gone. The kitchen's table-turn: the server refuses while an open
+  /// check on the table is still unpaid, and answers ok with alreadyFree
+  /// when the table is not occupied to begin with.
+  Future<void> freeTable(String tableId) async {
+    final res = await client.post('tables/$tableId/free', {});
+    if (res is Map && res['ok'] == false) {
+      throw ApiError((res['error'] as String?) ?? 'Could not free the table');
+    }
+  }
+
   // ── Kitchen per-line flow ─────────────────────────────────────────────────
 
   /// `GET /api/orders/items/active` — one row per live order line.

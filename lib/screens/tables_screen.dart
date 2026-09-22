@@ -647,6 +647,29 @@ class _TablesScreenState extends State<TablesScreen>
     }
   }
 
+  /// The kitchen's table-turn: clear the party off a table whose guests have
+  /// gone. The server owns the guard — it refuses while an open check on the
+  /// table is still unpaid, and the message is exactly what the chef needs
+  /// (“settle first”), so it surfaces verbatim. Returns null on success, the
+  /// failure message otherwise (same contract as _saveTable).
+  Future<String?> _freeTable(String id) async {
+    final app = context.read<AppState>();
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await app.api.freeTable(id);
+      showInfoOn(messenger, 'Table freed');
+      await _loadTables(quiet: true);
+      return null;
+    } on ApiError catch (e) {
+      if (e.isAuthError) await app.sessionExpired();
+      await _loadTables(quiet: true);
+      return e.message;
+    } catch (e) {
+      await _loadTables(quiet: true);
+      return e.toString();
+    }
+  }
+
   Future<bool> _deleteTable(CafeTable t) async {
     final app = context.read<AppState>();
     final messenger = ScaffoldMessenger.of(context);
@@ -703,6 +726,12 @@ class _TablesScreenState extends State<TablesScreen>
           canRequestBill:
               ['head-waiter', 'manager'].contains(app.roleKey),
           canCheckout: canCheckout(app.roleKey),
+          // Floor writes are the head-waiter's and the manager's; the kitchen
+          // sees the room read-only and gets the one action that turns a
+          // table. See roles.dart for the grant sets.
+          canOrder: canTakeTableOrders(app.roleKey),
+          canEditTable: canEditTable(app.roleKey),
+          canFree: canFreeTable(app.roleKey),
           servers: _assignableServers(),
           // The web's openDetail fetch: this table's open checks only.
           onLoadOrders: () async {
@@ -712,6 +741,7 @@ class _TablesScreenState extends State<TablesScreen>
                 .toList();
           },
           onSave: (payload) => _saveTable(payload, t.id),
+          onFree: () => _freeTable(t.id),
           onDelete: () => _deleteTable(t),
           onReleaseHold: (hold) => _releaseHold(t, hold),
           onRequestBill: () => _requestBill(t),
@@ -2018,9 +2048,22 @@ class _DetailSheet extends StatefulWidget {
   final bool isManager;
   final bool canRequestBill;
   final bool canCheckout;
+
+  /// Floor writes (New Order / Add Round). The head-waiter and the manager;
+  /// the kitchen, till, driver and cleaner never open a ticket from the floor.
+  final bool canOrder;
+
+  /// Party edits (status chips, guests, notes, Save Changes). The kitchen's
+  /// floor view is read-shaped — the server would refuse its writes anyway.
+  final bool canEditTable;
+
+  /// The table-turn action (Free Table). The kitchen can clear a party whose
+  /// guests have gone; the server refuses while a check is still unpaid.
+  final bool canFree;
   final List<String> servers;
   final Future<List<FufutOrder>> Function() onLoadOrders;
   final Future<String?> Function(Map<String, dynamic> payload) onSave;
+  final Future<String?> Function() onFree;
   final Future<bool> Function() onDelete;
   final Future<bool> Function(TableHold hold) onReleaseHold;
   final Future<String?> Function() onRequestBill;
@@ -2035,9 +2078,13 @@ class _DetailSheet extends StatefulWidget {
     required this.isManager,
     required this.canRequestBill,
     required this.canCheckout,
+    required this.canOrder,
+    required this.canEditTable,
+    required this.canFree,
     required this.servers,
     required this.onLoadOrders,
     required this.onSave,
+    required this.onFree,
     required this.onDelete,
     required this.onReleaseHold,
     required this.onRequestBill,
@@ -2060,6 +2107,7 @@ class _DetailSheetState extends State<_DetailSheet> {
   bool _newSeating = false;
   bool _saving = false;
   bool _releasing = false;
+  bool _freeing = false;
   bool _billBusy = false;
   List<FufutOrder>? _detailOrders;
 
@@ -2145,6 +2193,22 @@ class _DetailSheetState extends State<_DetailSheet> {
       Navigator.of(context).pop();
     } else {
       setState(() => _saving = false);
+      showErrorOn(ScaffoldMessenger.of(context), ApiError(err));
+    }
+  }
+
+  /// The kitchen's table-turn (and the floor's shortcut): clear the party.
+  /// Same contract as _save — null pops the sheet, a message is the server's
+  /// explanation ("still has an unsettled check") surfaced verbatim.
+  Future<void> _free() async {
+    if (_freeing) return;
+    setState(() => _freeing = true);
+    final err = await widget.onFree();
+    if (!mounted) return;
+    if (err == null) {
+      Navigator.of(context).pop();
+    } else {
+      setState(() => _freeing = false);
       showErrorOn(ScaffoldMessenger.of(context), ApiError(err));
     }
   }
@@ -2271,6 +2335,40 @@ class _DetailSheetState extends State<_DetailSheet> {
                 ),
               ),
 
+              // The bill somebody asked for — the name the till will answer
+              // to, and the kitchen's cue that the party is at its end. This
+              // is the "who is requesting the bill" surface the chef's floor
+              // view exists for.
+              if (_billRequestedAt.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  child: Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: const Color(0x24EF4444),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Row(children: [
+                      const Icon(Icons.receipt_long_outlined,
+                          size: 16, color: Color(0xFFB91C1C)),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                            'Bill requested'
+                            '${widget.table.billRequestedBy?.isNotEmpty == true ? ' by ${widget.table.billRequestedBy}' : ''}'
+                            ' · asked ${occupancyTimer(_billRequestedAt)} ago',
+                            style: const TextStyle(
+                                fontFamily: kFontBody,
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w600,
+                                color: Color(0xFFB91C1C))),
+                      ),
+                    ]),
+                  ),
+                ),
+              ],
+
               // The booking that holds this table — stated before the waiter
               // tries to seat anyone.
               if (hold != null) ...[
@@ -2286,31 +2384,36 @@ class _DetailSheetState extends State<_DetailSheet> {
                 ),
               ],
 
-              // Quick status buttons
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 14, 20, 12),
-                child: Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    for (final s in const [
-                      'available',
-                      'occupied',
-                      'reserved',
-                      'cleaning'
-                    ])
-                      _QuickStatusButton(
-                        status: s,
-                        active: _status == s,
-                        onTap: () => _quickStatus(s),
-                      ),
-                  ],
+              // Quick status buttons — party edits are floor-lead work; the
+              // kitchen's read-only view skips them entirely.
+              if (widget.canEditTable)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 14, 20, 12),
+                  child: Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final s in const [
+                        'available',
+                        'occupied',
+                        'reserved',
+                        'cleaning'
+                      ])
+                        _QuickStatusButton(
+                          status: s,
+                          active: _status == s,
+                          onTap: () => _quickStatus(s),
+                        ),
+                    ],
+                  ),
                 ),
-              ),
 
-              // Detail form
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20),
+              // Detail form — party edits are floor-lead work; the kitchen's
+              // read-only view skips them entirely (the server would refuse
+              // the PUT anyway).
+              if (widget.canEditTable)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
                 child: LayoutBuilder(builder: (context, box) {
                   final twoCol = box.maxWidth >= 480;
                   final fields = <Widget>[
@@ -2448,25 +2551,49 @@ class _DetailSheetState extends State<_DetailSheet> {
                   runSpacing: 8,
                   crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
-                    SizedBox(
-                      height: 34,
-                      child: FilledButton.icon(
-                        onPressed: () {
-                          Navigator.of(context).pop();
-                          widget.onNewOrder();
-                        },
-                        icon: const Icon(Icons.add, size: 14),
-                        label: Text(_status == 'occupied'
-                            ? 'Add Round'
-                            : 'New Order'),
-                        style: FilledButton.styleFrom(
-                          textStyle: const TextStyle(
-                              fontFamily: kFontBody,
-                              fontSize: 12,
-                              fontWeight: FontWeight.w700),
+                    if (widget.canOrder)
+                      SizedBox(
+                        height: 34,
+                        child: FilledButton.icon(
+                          onPressed: () {
+                            Navigator.of(context).pop();
+                            widget.onNewOrder();
+                          },
+                          icon: const Icon(Icons.add, size: 14),
+                          label: Text(_status == 'occupied'
+                              ? 'Add Round'
+                              : 'New Order'),
+                          style: FilledButton.styleFrom(
+                            textStyle: const TextStyle(
+                                fontFamily: kFontBody,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700),
+                          ),
                         ),
                       ),
-                    ),
+                    if (widget.canFree && _status == 'occupied')
+                      SizedBox(
+                        height: 34,
+                        child: OutlinedButton.icon(
+                          onPressed: _freeing ? null : _free,
+                          style: OutlinedButton.styleFrom(
+                            side: BorderSide(color: pal.border),
+                            textStyle: const TextStyle(
+                                fontFamily: kFontBody,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600),
+                          ),
+                          icon: _freeing
+                              ? const SizedBox(
+                                  width: 12,
+                                  height: 12,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2))
+                              : const Icon(Icons.event_seat_outlined,
+                                  size: 14),
+                          label: const Text('Free Table'),
+                        ),
+                      ),
                     if (_status == 'occupied' && widget.canRequestBill)
                       SizedBox(
                         height: 34,
@@ -2539,19 +2666,20 @@ class _DetailSheetState extends State<_DetailSheet> {
                                 color: pal.body)),
                       ),
                     ),
-                    SizedBox(
-                      height: 34,
-                      child: FilledButton(
-                        onPressed: _saving ? null : _save,
-                        style: FilledButton.styleFrom(
-                          textStyle: const TextStyle(
-                              fontFamily: kFontBody,
-                              fontSize: 12.5,
-                              fontWeight: FontWeight.w700),
+                    if (widget.canEditTable)
+                      SizedBox(
+                        height: 34,
+                        child: FilledButton(
+                          onPressed: _saving ? null : _save,
+                          style: FilledButton.styleFrom(
+                            textStyle: const TextStyle(
+                                fontFamily: kFontBody,
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w700),
+                          ),
+                          child: Text(_saving ? 'Saving…' : 'Save Changes'),
                         ),
-                        child: Text(_saving ? 'Saving…' : 'Save Changes'),
                       ),
-                    ),
                     if (widget.isManager)
                       SizedBox(
                         height: 34,

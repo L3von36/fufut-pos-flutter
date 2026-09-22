@@ -181,24 +181,31 @@ const Map<String, List<NavKey>> kRolePermissions = {
   // reports were removed at the owner's direction — procurement, the stock
   // intelligence screens and business reporting are backoffice reading, and
   // the server matrix (fufut-api ROLE_ACCESS) refuses them to this role too.
+  // The floor plan joined (owner's call, 2026-09): the kitchen sees the room
+  // it cooks for — which tables are busy, who is waiting for the bill — and
+  // turns a table when the party has gone. Read-shaped: the sheet hides the
+  // order/seating writes for this role; the only action is Free Table.
   'head-chef': [
     NavKey.kitchen,
     NavKey.orders,
     NavKey.dashboard,
     NavKey.alertsDash,
     NavKey.pipeline,
+    NavKey.tables,
     NavKey.inventory,
     NavKey.recipes,
     NavKey.waste,
     NavKey.menuMgmt, // availability toggle only — the screen gates the CRUD
   ],
   // Cooks from the recipes: stock visibility and the BOM. Writes no stock,
-  // no waste — the head chef owns both.
+  // no waste — the head chef owns both. Floor visibility rides along with the
+  // head chef's grant (read + Free Table; no ordering, no seating).
   'assistant-chef': [
     NavKey.kitchen,
     NavKey.orders,
     NavKey.dashboard,
     NavKey.alertsDash,
+    NavKey.tables,
     NavKey.inventory,
     NavKey.recipes,
   ],
@@ -224,16 +231,18 @@ const Map<String, List<NavKey>> kRolePermissions = {
     NavKey.reservations,
   ],
   // The till: drawer home, menu view for walk-in sales, checks to settle, the
-  // floor and the book. Revenue, Analytics and Reports are manager and
-  // accountant reading — the cashier's own numbers live on the Dashboard and
-  // the Cash Drawer (whose tiles read /api/reports/dashboard, which the server
-  // still allows this role).
+  // book. The floor plan left (owner's call, 2026-09) — running the tables is
+  // the head-waiter's job, and the till's table work is answering the Bill
+  // Requests card on the Dashboard and settling from Open Checks, not walking
+  // the floor. Revenue, Analytics and Reports are manager and accountant
+  // reading — the cashier's own numbers live on the Dashboard and the Cash
+  // Drawer (whose tiles read /api/reports/dashboard, which the server still
+  // allows this role).
   'cashier': [
     NavKey.cashdrawer,
     NavKey.menuView,
     NavKey.orders,
     NavKey.openChecks,
-    NavKey.tables,
     NavKey.dashboard,
     NavKey.alertsDash,
     NavKey.reservations,
@@ -313,6 +322,43 @@ const List<NavKey> kFallbackPermissions = [
 
 const Set<String> kCheckoutRoles = {'manager', 'cashier'};
 const Set<String> kPrepRoles = {'head-chef', 'assistant-chef'};
+
+/// Who opens a table's ticket. Starting a New Order / adding a round to a
+/// seated party is floor work — the head-waiter's, with the manager riding
+/// along. The till sells at the counter (Menu View), not off the floor plan;
+/// the kitchen cooks what arrives; the driver and the cleaner never open a
+/// ticket. Mirrors the server's request-bill rule (tables.js): the floor
+/// leads and the manager.
+const Set<String> kFloorOrderRoles = {'manager', 'head-waiter'};
+
+/// May this role start a New Order / Add Round from the floor plan?
+bool canTakeTableOrders(String? roleKey) =>
+    kFloorOrderRoles.contains(roleKey ?? '');
+
+/// Who may clear a party off a table. Freeing a table after the guests have
+/// gone used to belong to the floor alone; the owner added the kitchen
+/// (2026-09) because the pass sees the room empty first and a table left
+/// 'occupied' ghosts the whole floor plan. Guarded server-side: the call
+/// refuses while an open check on the table is still unpaid — the kitchen
+/// can turn a table, it cannot erase a bill.
+const Set<String> kFreeTableRoles = {
+  'manager',
+  'head-waiter',
+  'head-chef',
+  'assistant-chef',
+};
+
+/// May this role free a table (the sheet's Free Table action)?
+bool canFreeTable(String? roleKey) => kFreeTableRoles.contains(roleKey ?? '');
+
+/// May this role edit a table's party — quick-status chips, guests, notes,
+/// Save Changes? The server grants `tables` writes to the head-waiter and
+/// the manager (plus the cashier, whose tab no longer reaches the screen);
+/// the kitchen's floor view is read-shaped, so the sheet hides the form.
+const Set<String> kTableEditRoles = {'manager', 'head-waiter'};
+
+/// May this role edit the party on a table (status chips, guests, notes)?
+bool canEditTable(String? roleKey) => kTableEditRoles.contains(roleKey ?? '');
 
 /// May this role settle bills / open the payment sheet? (the web `checkout`
 /// grant — manager and cashier only).
