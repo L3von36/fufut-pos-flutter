@@ -23,7 +23,7 @@ void main() {
     });
     tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1.0;
-    tester.view.padding = FakeViewPadding(
+    tester.view.padding = const FakeViewPadding(
         top: 40.0, bottom: 48.0, left: 0.0, right: 0.0); // gesture-bar phone
     addTearDown(tester.view.reset);
 
@@ -35,7 +35,6 @@ void main() {
 
   testWidgets('phone drawer: Sign Out clears the bottom inset', (tester) async {
     await boot(tester, const Size(412, 915), 'Cashier');
-
     // Open the shell drawer and let the open animation settle.
     final scaffold = tester.state<ScaffoldState>(find.byType(Scaffold).first);
     scaffold.openDrawer();
