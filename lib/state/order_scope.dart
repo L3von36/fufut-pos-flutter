@@ -55,8 +55,14 @@ List<_FlatLine> _parseFlatItems(String flat) {
   return out;
 }
 
-bool _lineIsDrink(String name, {String? category}) {
-  if (category != null && nameIsDrink(category, '')) return true;
+/// The station classifier for ONE line: menu-category first (rows stamped
+/// since the category migration — "Ginger with Honey" or "Flat White" only
+/// read as drinks through their HOT DRINKS category), item name as the
+/// fallback for rows written before categories existed.
+bool lineIsDrinkOf(String? category, String name) {
+  if (category != null && category.isNotEmpty && nameIsDrink(category, '')) {
+    return true;
+  }
   return nameIsDrink('', name);
 }
 
@@ -86,17 +92,21 @@ List<OrderItemLine> boardLines(FufutOrder order) {
 /// flat summary otherwise. Null means genuinely unclassifiable — the caller
 /// fails OPEN: a ticket nobody can classify is shown rather than silently
 /// hiding somebody's work behind a parse failure.
-List<OrderItemLine>? scopedLines(FufutOrder order, String station) {
+List<OrderItemLine>? scopedLines(
+  FufutOrder order,
+  String station, {
+  Map<String, String>? catByName,
+}) {
   final wantDrink = station == 'bar';
+  bool isDrink(String name) =>
+      lineIsDrinkOf(catByName?[name.toLowerCase()], name);
   if (order.items.isNotEmpty) {
-    return order.items
-        .where((l) => _lineIsDrink(l.name) == wantDrink)
-        .toList();
+    return order.items.where((l) => isDrink(l.name) == wantDrink).toList();
   }
   // Legacy flat summary: reconstruct just enough line shape to classify.
   final flats = _parseFlatItems(order.itemsRaw);
   if (flats.isEmpty) return null;
-  final names = flats.where((f) => _lineIsDrink(f.name) == wantDrink);
+  final names = flats.where((f) => isDrink(f.name) == wantDrink);
   if (names.isEmpty) return const [];
   return [
     for (final f in names)
@@ -121,15 +131,16 @@ bool orderVisibleToRole(
   String? roleKey, {
   String? myId,
   Set<String> myTables = const {},
+  Map<String, String>? catByName,
 }) {
   final role = (roleKey ?? '').toLowerCase();
   switch (role) {
     case 'barista':
-      final lines = scopedLines(order, 'bar');
+      final lines = scopedLines(order, 'bar', catByName: catByName);
       return lines == null || lines.isNotEmpty;
     case 'head-chef':
     case 'assistant-chef':
-      final lines = scopedLines(order, 'kitchen');
+      final lines = scopedLines(order, 'kitchen', catByName: catByName);
       return lines == null || lines.isNotEmpty;
     case 'head-waiter':
       final mine = myId != null &&
@@ -151,13 +162,17 @@ bool orderVisibleToRole(
 /// unchanged. Station roles get only their own lines — the same strict split
 /// the boards use, so a dimmed Chechebesa line never sits in the barista's
 /// list implying it is theirs to make.
-List<OrderItemLine>? orderLinesForRole(FufutOrder order, String? roleKey) {
+List<OrderItemLine>? orderLinesForRole(
+  FufutOrder order,
+  String? roleKey, {
+  Map<String, String>? catByName,
+}) {
   switch ((roleKey ?? '').toLowerCase()) {
     case 'barista':
-      return scopedLines(order, 'bar');
+      return scopedLines(order, 'bar', catByName: catByName);
     case 'head-chef':
     case 'assistant-chef':
-      return scopedLines(order, 'kitchen');
+      return scopedLines(order, 'kitchen', catByName: catByName);
     default:
       return null;
   }

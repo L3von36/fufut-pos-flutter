@@ -39,6 +39,29 @@ class AppState extends ChangeNotifier {
   /// not confirmed it (offline boot, flaky Wi-Fi at open).
   bool offlineIdentity = false;
 
+  /// Menu-name → category, the station router's lookup table ("Ginger with
+  /// Honey" is a drink only through its HOT DRINKS category). Fetched once
+  /// per session on first need; screens that already load the menu (the
+  /// boards) adopt their fresh copy here so every screen classifies alike.
+  Map<String, String> _catByName = {};
+  bool _catsTried = false;
+  Map<String, String> get catByName => _catByName;
+
+  Future<void> ensureCategories() async {
+    if (_catsTried) return;
+    _catsTried = true; // one try per session; failures fall back to name regex
+    try {
+      adoptCategories(await api.menu());
+    } catch (_) {
+      // Offline or parse hiccup — the name-regex fallback still routes.
+    }
+  }
+
+  void adoptCategories(List<MenuItem> menu) {
+    _catByName = {for (final m in menu) m.name.toLowerCase(): m.category};
+    _catsTried = true;
+  }
+
   bool _booted = false;
   bool get booted => _booted;
 

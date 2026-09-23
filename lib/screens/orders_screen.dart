@@ -92,6 +92,15 @@ class _OrdersScreenState extends State<OrdersScreen> {
       // (an unpaid tab is money owed whatever day it was run up) and the
       // screen splits it: today's checks lead, older tabs group below.
       final needsTables = app.roleKey == 'head-waiter';
+      // Station roles classify lines by category when the name regex is not
+      // enough ("Ginger with Honey") — one menu fetch per session, shared
+      // with the boards via AppState.
+      final stationRole = const {
+        'barista',
+        'head-chef',
+        'assistant-chef'
+      }.contains(app.roleKey);
+      if (stationRole) await app.ensureCategories();
       final todayKey = localTodayKey();
       final results = await Future.wait([
         app.api.orders(
@@ -109,7 +118,9 @@ class _OrdersScreenState extends State<OrdersScreen> {
       final myTables = {for (final t in tables) t.number.toString()};
       final scoped = rows
           .where((o) => orderVisibleToRole(o, app.roleKey,
-              myId: app.user?.id, myTables: myTables))
+              myId: app.user?.id,
+              myTables: myTables,
+              catByName: app.catByName))
           .where((o) => _openOnly || orderIsToday(o))
           .toList();
       setState(() {
@@ -1134,7 +1145,8 @@ class OrderDetailSheet extends StatelessWidget {
         canCheckout(app.roleKey) && !order.isPaid && status == 'served';
     // Station roles read only their own lines — barista the drinks, chefs
     // the food; null shows the ticket unchanged.
-    final scoped = orderLinesForRole(order, app.roleKey);
+    final scoped = orderLinesForRole(order, app.roleKey,
+        catByName: context.read<AppState>().catByName);
     final visibleLines = scoped ?? order.items;
     return SafeArea(
       child: Padding(

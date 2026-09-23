@@ -1,37 +1,42 @@
 /// Kitchen / Barista display — the web POS `KitchenView.vue`, native,
-/// redesigned on the owner's 2026-09 brief ("ui ux pro max").
+/// rebuilt as a true three-lane KDS on the owner's 2026-09 brief ("the ui
+/// is ugly — make it better"):
 ///
-/// Ticket cards with **per-line tracking**: the board polls
-/// `GET /api/orders/items/active` alongside the orders, so each line carries
-/// its own status (new → preparing → ready) and advances on tap. A line tap
-/// fires `PUT /api/orders/:id/items/:itemId {status}` — the same endpoint
-/// the web uses, so the barista bumping drinks never drags food lines along.
-/// Lines END at ready: the handoff is a ticket-level act (below).
+/// **Station routing** — the board is the router. A ticket's lines are
+/// classified by menu category first ("Ginger with Honey" and "Flat White"
+/// are drinks only through their HOT DRINKS category), item name as the
+/// fallback for pre-category rows. The kitchen pass shows FOOD lines only;
+/// the bar board shows DRINK lines only; a ticket with none of this
+/// station's work never renders here at all. An unclassifiable ticket fails
+/// open (renders whole) rather than silently hiding somebody's work.
 ///
-/// **Bulk actions** per ticket: "Start All" (every new line → preparing,
-/// undo toast), "All Ready" (preparing → ready), and — the pass's last word
-/// — "Picked up by waiter" (ticket → fulfilled; owner's flow: the kitchen
-/// hands off, the floor serves, the board clears). Tickets with no tracked
-/// lines fall back to the whole-ticket `PUT /api/orders/:id {status}`.
+/// **Three lanes** — NEW / PREPARING / READY, the classic pass layout.
+/// Wide surfaces (wall tablets ≥840px) show all three columns at once;
+/// phones get a lane selector with live counts. A ticket moves lanes the
+/// moment its derived status moves (the server recomputes the order status
+/// from its tracked lines on every line bump).
+///
+/// **Per-line tracking** — the board also polls
+/// `GET /api/orders/items/active`, so each line carries its own status
+/// (new → preparing → ready) and advances on tap. A line tap fires
+/// `PUT /api/orders/:id/items/:itemId {status}` — the same endpoint the web
+/// uses, so the barista bumping drinks never drags food lines along. Lines
+/// END at ready: the handoff is a ticket-level act ("Picked up by waiter",
+/// ticket → fulfilled; owner's flow: the kitchen hands off, the floor
+/// serves, the board clears). Tickets with no tracked lines fall back to
+/// the whole-ticket `PUT /api/orders/:id {status}`. Bulk actions per card:
+/// "Start Cooking" (undoable) and "All Ready".
 ///
 /// **Today only** — the board is the service day's work surface. Open
-/// tickets stamped before today drop off (they used to sit there forever:
-/// an open-but-stale split order lingered on the pass for days); a count of
-/// the hidden earlier tickets shows so nothing silently vanishes.
+/// tickets stamped before today drop off; a count of the hidden earlier
+/// tickets shows so nothing silently vanishes.
 ///
 /// **Live via SSE** — the board subscribes to the fufut-api `kitchen` event
-/// channel (the web POS's exact wire: `new_order` / `order_update` snapshots
-/// carrying the full live order list, first snapshot = baseline). Pushes
-/// replace the board within seconds of a waiter sending a ticket and carry
-/// the audio: a genuinely new ticket fires the new-order ding + toast, an
-/// order crossing into ready fires the chime + toast. The 15s poll survives
-/// as a safety net that only runs while the stream is disconnected. The
-/// header shows which one is currently driving the board (Live / Polling).
-///
-/// **Audio alerts** additionally fire on the 1s clock: any ticket older
-/// than 15 minutes gets one critical triple-beep per ticket, exactly like
-/// the web's clockTimer (a quiet board emits no SSE events, so only the
-/// clock can catch time passing). Mute toggle persists per device.
+/// channel (`new_order` / `order_update` snapshots carrying the full live
+/// order list). Pushes replace the board within seconds of a waiter sending
+/// a ticket and carry the audio (ding / chime); the 15s poll survives as a
+/// safety net that only runs while the stream is disconnected, and the
+/// header shows which one is driving the board (Live / Polling).
 library;
 
 import 'dart:async';
@@ -103,8 +108,14 @@ class _KitchenBoardState extends State<KitchenBoard>
   // `_criticalAlerted` flag on each order row.
   final Set<String> _criticalAlerted = {};
 
-  // name → category, built from the menu, so pre-category order lines still
-  // route to the right station (the web does the same via lib/drinks.js).
+  // Narrow screens show ONE lane at a time behind the selector (wide
+  // surfaces show all three columns); NEW is where a shift starts.
+  String _lane = 'new';
+
+  // name → category, built from the menu — the station router's lookup.
+  // BOTH boards need it: a kitchen pass without it would cook the bar's
+  // "Ginger with Honey". Refreshed on every load; the session cache in
+  // AppState adopts it so the Orders screen classifies identically.
   Map<String, String> _catByName = {};
 
   @override
@@ -298,10 +309,13 @@ class _KitchenBoardState extends State<KitchenBoard>
       final results = await Future.wait([
         app.api.orders(openOnly: true),
         app.api.orderItemsActive(),
-        if (widget.baristaMode) app.api.menu() else Future.value(null),
+        // The menu is the station router's lookup table — fetched in BOTH
+        // modes and non-fatal: offline or a parse hiccup falls back to the
+        // name regex, never to a blank board.
+        app.api.menu().catchError((_) => const <MenuItem>[]),
       ]);
       if (!mounted) return;
-      final menu = results[2] as List<MenuItem>?;
+      final menu = results[2] as List<MenuItem>;
       final items = results[1] as List<ActiveOrderItem>;
       final all = results[0] as List<FufutOrder>;
 
@@ -330,9 +344,8 @@ class _KitchenBoardState extends State<KitchenBoard>
         _orders = todays;
         _earlier = earlier;
         _lineStatus = lineMap;
-        if (menu != null) {
-          _catByName = {for (final m in menu) m.name.toLowerCase(): m.category};
-        }
+        app.adoptCategories(menu);
+        _catByName = app.catByName;
         _loading = false;
       });
       // NOTE: no audio diff here — the web's loadOrders never sounds.
@@ -369,15 +382,37 @@ class _KitchenBoardState extends State<KitchenBoard>
     });
   }
 
-  /// The station's lines of one ticket, with the ticket's own routing rule:
-  /// category first (rows stamped since the category migration), name as the
-  /// fallback for rows written before categories existed.
+  /// The station's lines of one ticket — FOOD only on the kitchen pass,
+  /// DRINKS only on the bar board. Category first (menu lookup), name as
+  /// the fallback for pre-category rows; the same rule the Orders screen
+  /// scopes by. A ticket nobody can classify fails OPEN: it renders whole
+  /// rather than silently hiding somebody's work behind a parse failure.
   List<OrderItemLine> _stationLines(FufutOrder o) {
-    if (!widget.baristaMode) return boardLines(o);
-    return boardLines(o)
-        .where((l) =>
-            nameIsDrink(_catByName[l.name.toLowerCase()] ?? '', l.name))
-        .toList();
+    final scoped = scopedLines(
+        o, widget.baristaMode ? 'bar' : 'kitchen',
+        catByName: _catByName);
+    return scoped ?? boardLines(o);
+  }
+
+  /// The pass's lane for a ticket — pending/confirmed QR tickets count as
+  /// NEW; the server's derived status drives the rest.
+  String _laneOf(FufutOrder o) {
+    final s = o.status.toLowerCase();
+    return (s == 'preparing' || s == 'ready') ? s : 'new';
+  }
+
+  /// Tickets bucketed per lane, each lane oldest-first (longest wait on
+  /// top — exactly the pass's reading order).
+  Map<String, List<_Ticket>> get _lanes {
+    final lanes = <String, List<_Ticket>>{
+      'new': [],
+      'preparing': [],
+      'ready': [],
+    };
+    for (final t in _tickets) {
+      lanes[_laneOf(t.order)]!.add(t);
+    }
+    return lanes;
   }
 
   List<_Ticket> get _tickets {
@@ -437,12 +472,13 @@ class _KitchenBoardState extends State<KitchenBoard>
   }
 
   /// Resolve the server-side item id of a cart line: the tracked rows carry
-  /// `line_no`, so we match in order within the ticket.
+  /// `line_no`, so we match in order. The index must be the line's position
+  /// among the ticket's FULL line list — the station lines are a filtered
+  /// subset (drinks stripped on the kitchen pass), so a food line's
+  /// station-index no longer equals its row index.
   String? _itemIdFor(FufutOrder order, OrderItemLine line) {
-    // Lines render in the order they appear in `order.items`; the active
-    // rows are keyed per order — match by position among station lines.
-    final stationLines = _stationLines(order);
-    final idx = stationLines.indexOf(line);
+    final allLines = boardLines(order);
+    final idx = allLines.indexOf(line);
     if (idx < 0) return null;
     final rows = _lineStatus[order.id];
     if (rows == null || rows.isEmpty) return null;
@@ -515,6 +551,7 @@ class _KitchenBoardState extends State<KitchenBoard>
         _muted ? 'Board sounds muted' : 'Board sounds on');
   }
 
+
   // ── Build ─────────────────────────────────────────────────────────────────
 
   @override
@@ -525,115 +562,20 @@ class _KitchenBoardState extends State<KitchenBoard>
     if (_error != null && _orders.isEmpty) {
       return LoadError(error: _error!, onRetry: () => _load());
     }
-    final tickets = _tickets;
     final pal = Pal.of(context);
-    final newN = tickets.where((t) => t.order.status.toLowerCase() == 'new').length;
-    final prepN =
-        tickets.where((t) => t.order.status.toLowerCase() == 'preparing').length;
-    final readyN =
-        tickets.where((t) => t.order.status.toLowerCase() == 'ready').length;
+    final lanes = _lanes;
+    final wide = MediaQuery.sizeOf(context).width >= 840;
+    final barista = widget.baristaMode;
 
     return RefreshIndicator(
       onRefresh: () => _load(quiet: true),
       child: Column(children: [
-        // ── Board summary: the three lanes, glanceable from across the pass.
-        // The lanes wrap inside an Expanded so a narrow phone never
-        // overflows — the Live/Sound controls stay fixed at the right. ──
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
-                  children: [
-                    _laneChip(
-                        context, Icons.fiber_new_rounded, 'NEW', newN, pal.info),
-                    _laneChip(context, Icons.soup_kitchen_rounded, 'PREPARING',
-                        prepN, pal.warning),
-                    _laneChip(
-                        context,
-                        Icons.notifications_active_rounded,
-                        'READY',
-                        readyN,
-                        pal.primary),
-                  ],
-                ),
-              ),
-            // What is driving the board right now: the pushed stream or
-            // the 15s poll. A wall tablet on flaky Wi-Fi deserves to know
-            // why updates feel slow.
-            if (_sse != null)
-              ValueListenableBuilder<bool>(
-                valueListenable: _sse!.connected,
-                builder: (context, live, _) {
-                  final c = live ? pal.success : pal.faint;
-                  return Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 8, vertical: 5),
-                    decoration: BoxDecoration(
-                      color: live
-                          ? pal.success.withValues(alpha: 0.10)
-                          : pal.sunken,
-                      borderRadius: BorderRadius.circular(99),
-                      border: Border.all(
-                          color: live
-                              ? pal.success.withValues(alpha: 0.35)
-                              : pal.border),
-                    ),
-                    child: Row(mainAxisSize: MainAxisSize.min, children: [
-                      Container(
-                        width: 6,
-                        height: 6,
-                        decoration: BoxDecoration(
-                            shape: BoxShape.circle, color: c),
-                      ),
-                      const SizedBox(width: 4),
-                      Text(live ? 'Live' : 'Polling',
-                          style: TextStyle(
-                              fontFamily: kFontBody,
-                              fontSize: 9.5,
-                              fontWeight: FontWeight.w700,
-                              letterSpacing: 0.5,
-                              color: live ? pal.success : pal.faint)),
-                    ]),
-                  );
-                },
-              ),
-            const SizedBox(width: 6),
-            InkWell(
-              onTap: _toggleMute,
-              borderRadius: BorderRadius.circular(99),
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
-                decoration: BoxDecoration(
-                  color: pal.surface,
-                  borderRadius: BorderRadius.circular(99),
-                  border: Border.all(color: pal.border),
-                ),
-                child: Row(children: [
-                  Icon(_muted ? Icons.volume_off : Icons.volume_up,
-                      size: 13, color: _muted ? pal.danger : pal.primary),
-                  const SizedBox(width: 4),
-                  Text(_muted ? 'Muted' : 'Sound',
-                      style: TextStyle(
-                          fontFamily: kFontBody,
-                          fontSize: 10.5,
-                          fontWeight: FontWeight.w600,
-                          color: pal.body)),
-                ]),
-              ),
-            ),
-          ]),
-        ),
+        _header(pal),
         // ── Earlier-ticket note — today-only hides stale open tickets, but
         // they are counted so nothing silently vanishes from the pass. ──
         if (_earlier > 0)
           Padding(
-            padding: const EdgeInsets.fromLTRB(12, 7, 12, 0),
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
             child: InfoBanner(
               '$_earlier open ticket${_earlier == 1 ? '' : 's'} from previous '
               'day${_earlier == 1 ? '' : 's'} hidden — settle or clear them '
@@ -642,85 +584,393 @@ class _KitchenBoardState extends State<KitchenBoard>
               icon: Icons.history_rounded,
             ),
           ),
-        // ── Tickets grid ────────────────────────────────────────────────
+        // ── Lane selector — phones show one lane at a time (the three
+        // columns would be unreadable at 400px); tablets and wall screens
+        // get the whole pass at once. ──
+        if (!wide)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+            child: Row(
+              children: [
+                for (var i = 0; i < _kLanes.length; i++) ...[
+                  Expanded(
+                    child: _laneTab(pal, _kLanes[i], _kLanes[i].count(lanes)),
+                  ),
+                  if (i < _kLanes.length - 1) const SizedBox(width: 8),
+                ],
+              ],
+            ),
+          ),
+        // ── The pass ──
         Expanded(
-          child: tickets.isEmpty
+          child: _tickets.isEmpty
               ? ListView(
                   children: [
-                    const SizedBox(height: 120),
+                    const SizedBox(height: 110),
                     EmptyState(
-                      icon: Icons.restaurant_menu,
-                      title: widget.baristaMode
+                      icon: barista
+                          ? Icons.local_cafe_rounded
+                          : Icons.restaurant_menu,
+                      title: barista
                           ? 'No drink tickets on the board'
                           : 'All quiet on the pass',
-                      hint: widget.baristaMode
+                      hint: barista
                           ? 'Drink lines land here the moment a waiter sends them'
                           : 'New kitchen tickets land here the moment a waiter sends them',
                     ),
                   ],
                 )
-              : LayoutBuilder(builder: (context, box) {
-                  // Wall tablets get two columns of tickets; phones one.
-                  final cols = box.maxWidth >= 760 ? 2 : 1;
-                  return GridView.builder(
-                    padding: const EdgeInsets.all(12),
-                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: cols,
-                      mainAxisSpacing: 10,
-                      crossAxisSpacing: 10,
-                      childAspectRatio: cols == 2 ? 1.25 : 1.45,
-                    ),
-                    itemCount: tickets.length,
-                    itemBuilder: (context, i) => _TicketCard(
-                      ticket: tickets[i],
-                      baristaMode: widget.baristaMode,
+              : wide
+                  ? Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        for (var i = 0; i < _kLanes.length; i++) ...[
+                          Expanded(
+                            child: _LaneColumn(
+                              meta: _kLanes[i],
+                              tickets: lanes[_kLanes[i].key]!,
+                              baristaMode: barista,
+                              statusOfLine: _statusOfLine,
+                              onAdvanceLine: _advanceLine,
+                              onBulk: _bulkAdvance,
+                              onPickup: _pickupTicket,
+                            ),
+                          ),
+                          if (i < _kLanes.length - 1)
+                            Container(width: 0.5, color: pal.border),
+                        ],
+                      ],
+                    )
+                  : _LaneColumn(
+                      meta:
+                          _kLanes.where((m) => m.key == _lane).first,
+                      tickets: lanes[_lane]!,
+                      baristaMode: barista,
                       statusOfLine: _statusOfLine,
                       onAdvanceLine: _advanceLine,
                       onBulk: _bulkAdvance,
                       onPickup: _pickupTicket,
                     ),
-                  );
-                }),
         ),
       ]),
     );
   }
 
-  /// One lane of the pass — count first (readable across the kitchen), label
-  /// under it, tinted only while the lane actually holds work.
-  Widget _laneChip(
-      BuildContext context, IconData icon, String label, int n, Color c) {
-    final pal = Pal.of(context);
-    final active = n > 0;
+  // ── Header ────────────────────────────────────────────────────────────────
+
+  /// One strip: the station seal, its name and routing rule, then the live
+  /// badge and the sound toggle. Reads from across the kitchen at a glance.
+  Widget _header(Pal pal) {
+    final barista = widget.baristaMode;
+    final accent = barista ? pal.gold : pal.primary;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: active ? c.withValues(alpha: 0.13) : pal.sunken,
-        borderRadius: BorderRadius.circular(9),
-        border: Border.all(
-            color: active ? c.withValues(alpha: 0.45) : pal.border),
+        color: pal.surface,
+        border: Border(bottom: BorderSide(color: pal.border)),
       ),
-      child: Row(mainAxisSize: MainAxisSize.min, children: [
-        Icon(icon, size: 12, color: active ? c : pal.faint),
-        const SizedBox(width: 4),
-        Text('$n',
-            style: TextStyle(
-                fontFamily: kFontMono,
-                fontSize: 13.5,
-                fontWeight: FontWeight.w800,
-                color: active ? c : pal.faint)),
-        const SizedBox(width: 3),
-        Text(label,
-            style: TextStyle(
-                fontFamily: kFontBody,
-                fontSize: 8.5,
-                fontWeight: FontWeight.w800,
-                letterSpacing: 0.4,
-                color: active ? c : pal.faint)),
-      ]),
+      padding: const EdgeInsets.fromLTRB(14, 10, 12, 10),
+      child: Row(
+        children: [
+          Container(
+            width: 38,
+            height: 38,
+            decoration: BoxDecoration(
+              color: accent.withValues(alpha: 0.13),
+              borderRadius: BorderRadius.circular(11),
+              border: Border.all(color: accent.withValues(alpha: 0.4)),
+            ),
+            child: Icon(
+                barista
+                    ? Icons.local_cafe_rounded
+                    : Icons.restaurant_rounded,
+                size: 19,
+                color: accent),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                    barista
+                        ? 'Bar · Drinks'
+                        : 'Kitchen · The Pass',
+                    style: TextStyle(
+                        fontFamily: kFontBody,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w800,
+                        color: pal.heading)),
+                const SizedBox(height: 1),
+                Text(
+                    barista
+                        ? 'Drink tickets — food stays on the Kitchen screen'
+                        : 'Food tickets — drinks route to the Bar screen',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                        fontFamily: kFontBody,
+                        fontSize: 10.5,
+                        color: pal.muted)),
+              ],
+            ),
+          ),
+          // What is driving the board right now: the pushed stream or
+          // the 15s poll. A wall tablet on flaky Wi-Fi deserves to know
+          // why updates feel slow.
+          if (_sse != null)
+            ValueListenableBuilder<bool>(
+              valueListenable: _sse!.connected,
+              builder: (context, live, _) {
+                final c = live ? pal.success : pal.faint;
+                return Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: live
+                        ? pal.success.withValues(alpha: 0.10)
+                        : pal.sunken,
+                    borderRadius: BorderRadius.circular(99),
+                    border: Border.all(
+                        color: live
+                            ? pal.success.withValues(alpha: 0.35)
+                            : pal.border),
+                  ),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    Container(
+                      width: 6,
+                      height: 6,
+                      decoration: BoxDecoration(
+                          shape: BoxShape.circle, color: c),
+                    ),
+                    const SizedBox(width: 4),
+                    Text(live ? 'Live' : 'Polling',
+                        style: TextStyle(
+                            fontFamily: kFontBody,
+                            fontSize: 9.5,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 0.5,
+                            color: live ? pal.success : pal.faint)),
+                  ]),
+                );
+              },
+            ),
+          const SizedBox(width: 6),
+          InkWell(
+            onTap: _toggleMute,
+            borderRadius: BorderRadius.circular(99),
+            child: Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+              decoration: BoxDecoration(
+                color: pal.surface,
+                borderRadius: BorderRadius.circular(99),
+                border: Border.all(color: pal.border),
+              ),
+              child: Row(children: [
+                Icon(_muted ? Icons.volume_off : Icons.volume_up,
+                    size: 13, color: _muted ? pal.danger : pal.primary),
+                const SizedBox(width: 4),
+                Text(_muted ? 'Muted' : 'Sound',
+                    style: TextStyle(
+                        fontFamily: kFontBody,
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.w600,
+                        color: pal.body)),
+              ]),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// One selectable lane tab (narrow screens): colored count over label,
+  /// tinted only while the lane actually holds work or is selected.
+  Widget _laneTab(Pal pal, _LaneMeta meta, int n) {
+    final c = _laneColor(meta.key, pal);
+    final selected = _lane == meta.key;
+    final hot = selected || n > 0;
+    return InkWell(
+      onTap: () => setState(() => _lane = meta.key),
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        height: 48,
+        decoration: BoxDecoration(
+          color: selected ? c.withValues(alpha: 0.14) : pal.sunken,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+              color: selected
+                  ? c.withValues(alpha: 0.55)
+                  : n > 0
+                      ? c.withValues(alpha: 0.3)
+                      : pal.border,
+              width: selected ? 1.3 : 1),
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Row(mainAxisSize: MainAxisSize.min, children: [
+              Icon(meta.icon, size: 13, color: hot ? c : pal.faint),
+              const SizedBox(width: 4),
+              Text('$n',
+                  style: TextStyle(
+                      fontFamily: kFontMono,
+                      fontSize: 14.5,
+                      fontWeight: FontWeight.w800,
+                      color: hot ? c : pal.faint)),
+            ]),
+            const SizedBox(height: 1),
+            Text(meta.shortLabel,
+                style: TextStyle(
+                    fontFamily: kFontBody,
+                    fontSize: 8.5,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.7,
+                    color: hot ? c : pal.faint)),
+          ],
+        ),
+      ),
     );
   }
 }
+
+// ── Lane metadata ───────────────────────────────────────────────────────────
+
+class _LaneMeta {
+  final String key;
+  final String label;
+  final String shortLabel;
+  final IconData icon;
+  const _LaneMeta(this.key, this.label, this.shortLabel, this.icon);
+
+  int count(Map<String, List<_Ticket>> lanes) => lanes[key]!.length;
+}
+
+const List<_LaneMeta> _kLanes = [
+  _LaneMeta('new', 'NEW', 'NEW', Icons.fiber_new_rounded),
+  _LaneMeta('preparing', 'PREPARING', 'PREP',
+      Icons.local_fire_department_rounded),
+  _LaneMeta('ready', 'READY', 'READY',
+      Icons.notifications_active_rounded),
+];
+
+Color _laneColor(String key, Pal pal) {
+  switch (key) {
+    case 'preparing':
+      return pal.warning;
+    case 'ready':
+      return pal.success;
+    default:
+      return pal.info;
+  }
+}
+
+// ── One lane column ─────────────────────────────────────────────────────────
+
+class _LaneColumn extends StatelessWidget {
+  final _LaneMeta meta;
+  final List<_Ticket> tickets;
+  final bool baristaMode;
+  final String Function(_Ticket, OrderItemLine) statusOfLine;
+  final Future<void> Function(_Ticket, OrderItemLine, String) onAdvanceLine;
+  final Future<void> Function(_Ticket, String, {bool undoable}) onBulk;
+  final Future<void> Function(_Ticket) onPickup;
+
+  const _LaneColumn({
+    required this.meta,
+    required this.tickets,
+    required this.baristaMode,
+    required this.statusOfLine,
+    required this.onAdvanceLine,
+    required this.onBulk,
+    required this.onPickup,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = Pal.of(context);
+    final c = _laneColor(meta.key, pal);
+    final hot = tickets.isNotEmpty;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+          child: Container(
+            height: 34,
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            decoration: BoxDecoration(
+              color: hot ? c.withValues(alpha: 0.12) : pal.sunken,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                  color: hot ? c.withValues(alpha: 0.4) : pal.border),
+            ),
+            child: Row(children: [
+              Icon(meta.icon, size: 13, color: hot ? c : pal.faint),
+              const SizedBox(width: 6),
+              Text(meta.label,
+                  style: TextStyle(
+                      fontFamily: kFontBody,
+                      fontSize: 10.5,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 1.1,
+                      color: hot ? c : pal.faint)),
+              const Spacer(),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 7, vertical: 1.5),
+                decoration: BoxDecoration(
+                  color: hot ? c.withValues(alpha: 0.16) : pal.surface,
+                  borderRadius: BorderRadius.circular(99),
+                ),
+                child: Text('${tickets.length}',
+                    style: TextStyle(
+                        fontFamily: kFontMono,
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w800,
+                        color: hot ? c : pal.faint)),
+              ),
+            ]),
+          ),
+        ),
+        Expanded(
+          child: tickets.isEmpty
+              ? EmptyState(
+                  icon: meta.icon,
+                  title: meta.key == 'new'
+                      ? (baristaMode
+                          ? 'No drink tickets waiting'
+                          : 'No new tickets')
+                      : meta.key == 'preparing'
+                          ? 'Nothing on the fire'
+                          : 'Nothing ready yet',
+                  hint: meta.key == 'new'
+                      ? 'New orders land here the moment the floor sends them'
+                      : meta.key == 'preparing'
+                          ? 'Tickets you start cooking move into this lane'
+                          : 'Finished tickets wait here for the floor to pick them up',
+                )
+              : ListView.separated(
+                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 16),
+                  itemCount: tickets.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 10),
+                  itemBuilder: (context, i) => _TicketCard(
+                    ticket: tickets[i],
+                    lane: meta.key,
+                    baristaMode: baristaMode,
+                    statusOfLine: statusOfLine,
+                    onAdvanceLine: onAdvanceLine,
+                    onBulk: onBulk,
+                    onPickup: onPickup,
+                  ),
+                ),
+        ),
+      ],
+    );
+  }
+}
+
+// ── Ticket card ─────────────────────────────────────────────────────────────
 
 class _Ticket {
   final FufutOrder order;
@@ -738,10 +988,25 @@ class _Ticket {
     if (age.isNegative) age = Duration.zero;
     return age;
   }
+
+  /// Time under the lamp: how long a READY ticket has been waiting for the
+  /// floor. Reads the server's ready_at stamp (first time it crossed),
+  /// falling back to created for legacy rows.
+  static Duration readyElapsedOf(FufutOrder o) {
+    final raw = (o.readyAt ?? '').isNotEmpty ? o.readyAt! : o.created;
+    if (raw == null) return Duration.zero;
+    final c = DateTime.tryParse(raw);
+    if (c == null) return Duration.zero;
+    final now = DateTime.now();
+    var age = now.difference(c);
+    if (age.isNegative) age = Duration.zero;
+    return age;
+  }
 }
 
 class _TicketCard extends StatelessWidget {
   final _Ticket ticket;
+  final String lane;
   final bool baristaMode;
   final String Function(_Ticket, OrderItemLine) statusOfLine;
   final Future<void> Function(_Ticket, OrderItemLine, String) onAdvanceLine;
@@ -750,6 +1015,7 @@ class _TicketCard extends StatelessWidget {
 
   const _TicketCard({
     required this.ticket,
+    required this.lane,
     required this.baristaMode,
     required this.statusOfLine,
     required this.onAdvanceLine,
@@ -762,10 +1028,15 @@ class _TicketCard extends StatelessWidget {
     final pal = Pal.of(context);
     final o = ticket.order;
     final status = o.status.toLowerCase();
-    final elapsed = _Ticket.elapsedOf(o);
-    // Web age classes: warning at 8 min, critical at 15.
-    final critical = elapsed.inMinutes >= 15;
-    final warning = elapsed.inMinutes >= 8 && !critical;
+    final inReady = lane == 'ready';
+    // Cooking lanes clock from creation; the READY lane clocks from the
+    // moment the ticket crossed (ready_at) — that is time under the lamp,
+    // and it is the floor's delay now.
+    final elapsed =
+        inReady ? _Ticket.readyElapsedOf(o) : _Ticket.elapsedOf(o);
+    final critical = elapsed.inMinutes >= (inReady ? 10 : 15);
+    final warning =
+        !critical && elapsed.inMinutes >= (inReady ? 5 : 8);
     final urgency =
         critical ? pal.danger : (warning ? pal.warning : pal.primary);
 
@@ -783,32 +1054,38 @@ class _TicketCard extends StatelessWidget {
       clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
         color: pal.surface,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(14),
         border: Border.all(
             color: critical || warning
                 ? urgency.withValues(alpha: 0.55)
                 : pal.border,
-            width: critical || warning ? 1.2 : 1),
+            width: critical || warning ? 1.3 : 1),
         boxShadow: [
           if (critical)
             BoxShadow(
-                color: pal.danger.withValues(alpha: 0.10), blurRadius: 10),
+                color: pal.danger.withValues(alpha: 0.14),
+                blurRadius: 14,
+                offset: const Offset(0, 3)),
         ],
       ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // The urgency rail — one glance across the pass says which
-          // tickets are dying. Color, not text: it reads at 3 metres.
-          Container(width: 4, color: urgency),
+      // IntrinsicHeight: the card lives in a lane list (unbounded height),
+      // and the urgency rail must stretch to whatever the content's height
+      // turns out to be — stretch alone would force h=infinity on children.
+      child: IntrinsicHeight(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // The urgency rail — one glance across the pass says which
+            // tickets are dying. Color, not text: it reads at 3 metres.
+            Container(width: 5, color: urgency),
           Expanded(
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(11, 10, 11, 10),
+              padding: const EdgeInsets.fromLTRB(12, 11, 12, 11),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   // Header: destination FIRST (what the pass scans for),
-                  // id muted, elapsed as a filled pill top-right.
+                  // elapsed as a filled pill top-right.
                   Row(
                     children: [
                       Expanded(
@@ -820,48 +1097,58 @@ class _TicketCard extends StatelessWidget {
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                               fontFamily: kFontBody,
-                              fontSize: 14.5,
+                              fontSize: 15.5,
                               fontWeight: FontWeight.w800,
                               color: pal.heading),
                         ),
                       ),
+                      const SizedBox(width: 8),
                       Container(
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 7, vertical: 2.5),
+                            horizontal: 8, vertical: 3.5),
                         decoration: BoxDecoration(
                           color: urgency.withValues(alpha: 0.13),
                           borderRadius: BorderRadius.circular(99),
                         ),
                         child: Row(mainAxisSize: MainAxisSize.min, children: [
                           Icon(Icons.timer_outlined,
-                              size: 11, color: urgency),
-                          const SizedBox(width: 3),
+                              size: 12, color: urgency),
+                          const SizedBox(width: 4),
                           Text(_fmtElapsed(elapsed),
                               style: TextStyle(
                                   fontFamily: kFontMono,
-                                  fontSize: 11,
+                                  fontSize: 12,
                                   fontWeight: FontWeight.w800,
                                   color: urgency)),
                         ]),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 2),
-                  Text(shortId(o.id),
-                      style: TextStyle(
-                          fontFamily: kFontMono,
-                          fontSize: 10,
-                          fontWeight: FontWeight.w600,
-                          color: pal.faint)),
-                  if (baristaMode) ...[
-                    const SizedBox(height: 2),
-                    Text('Drinks only — food lines stay on the Kitchen screen',
-                        style: TextStyle(
-                            fontFamily: kFontBody,
-                            fontSize: 9.5,
-                            color: pal.faint)),
-                  ],
-                  const SizedBox(height: 7),
+                  const SizedBox(height: 3),
+                  // Row two: id · line count · (bar) drinks-only marker.
+                  Row(
+                    children: [
+                      Text(shortId(o.id),
+                          style: TextStyle(
+                              fontFamily: kFontMono,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w600,
+                              color: pal.faint)),
+                      Text('  ·  $total item${total == 1 ? '' : 's'}',
+                          style: TextStyle(
+                              fontFamily: kFontBody,
+                              fontSize: 10.5,
+                              color: pal.muted)),
+                      if (baristaMode)
+                        Text('  ·  drinks only',
+                            style: TextStyle(
+                                fontFamily: kFontBody,
+                                fontSize: 10.5,
+                                fontStyle: FontStyle.italic,
+                                color: pal.faint)),
+                    ],
+                  ),
+                  const SizedBox(height: 9),
                   // Cooking progress — n of m ready, hairline bar.
                   Row(children: [
                     Expanded(
@@ -869,62 +1156,55 @@ class _TicketCard extends StatelessWidget {
                         borderRadius: BorderRadius.circular(99),
                         child: LinearProgressIndicator(
                           value: progress,
-                          minHeight: 3,
+                          minHeight: 4,
                           backgroundColor: pal.sunken,
                           valueColor: AlwaysStoppedAnimation(urgency),
                         ),
                       ),
                     ),
-                    const SizedBox(width: 7),
-                    Text('$done/$total ready',
+                    const SizedBox(width: 8),
+                    Text('$done/$total',
                         style: TextStyle(
                             fontFamily: kFontMono,
-                            fontSize: 9.5,
+                            fontSize: 10.5,
                             fontWeight: FontWeight.w700,
                             color: allReady ? pal.success : pal.muted)),
                   ]),
-                  const SizedBox(height: 5),
-                  // Lines — tap to advance, status dot per line.
-                  Expanded(
-                    child: SingleChildScrollView(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          for (final l in ticket.lines)
-                            _LineRow(
-                              line: l,
-                              status: statusOfLine(ticket, l),
-                              onTap: () {
-                                const flow = {
-                                  'new': 'preparing',
-                                  'preparing': 'ready',
-                                };
-                                final s = statusOfLine(ticket, l);
-                                final to = flow[s];
-                                if (to != null) onAdvanceLine(ticket, l, to);
-                              },
-                            ),
-                        ],
-                      ),
+                  const SizedBox(height: 7),
+                  // Lines — tap to advance, status per line. The card
+                  // shrink-wraps (lane lists scroll, the card never clips).
+                  for (final l in ticket.lines)
+                    _LineRow(
+                      line: l,
+                      status: statusOfLine(ticket, l),
+                      onTap: () {
+                        const flow = {
+                          'new': 'preparing',
+                          'preparing': 'ready',
+                        };
+                        final s = statusOfLine(ticket, l);
+                        final to = flow[s];
+                        if (to != null) onAdvanceLine(ticket, l, to);
+                      },
                     ),
-                  ),
-                  const SizedBox(height: 8),
-                  // The bulk action, per state. Lines end at ready — the
-                  // handoff is the ticket-level pickup.
+                  const SizedBox(height: 9),
+                  // The one action that matters, per lane. Lines end at
+                  // ready — the handoff is the ticket-level pickup.
                   allReady && status == 'ready'
                       ? SizedBox(
                           width: double.infinity,
-                          height: 36,
+                          height: 42,
                           child: FilledButton.icon(
                             onPressed: () => onPickup(ticket),
                             style: FilledButton.styleFrom(
                               backgroundColor: pal.success,
                               textStyle: const TextStyle(
                                   fontFamily: kFontBody,
-                                  fontSize: 12,
+                                  fontSize: 12.5,
                                   fontWeight: FontWeight.w800),
                             ),
-                            icon: const Icon(Icons.outbox_rounded, size: 16),
+                            icon:
+                                const Icon(Icons.outbox_rounded, size: 17),
                             label: const Text('Picked up by waiter'),
                           ),
                         )
@@ -934,6 +1214,7 @@ class _TicketCard extends StatelessWidget {
             ),
           ),
         ],
+        ),
       ),
     );
   }
@@ -947,7 +1228,7 @@ class _TicketCard extends StatelessWidget {
     bool undoable = false;
     switch (status) {
       case 'new':
-        label = 'Start All';
+        label = 'Start Cooking';
         from = 'new';
         bg = pal.warning;
         icon = Icons.play_arrow_rounded;
@@ -965,17 +1246,17 @@ class _TicketCard extends StatelessWidget {
     }
     return SizedBox(
       width: double.infinity,
-      height: 36,
+      height: 42,
       child: FilledButton.icon(
         onPressed: () => onBulk(ticket, from, undoable: undoable),
         style: FilledButton.styleFrom(
           backgroundColor: bg,
           textStyle: const TextStyle(
               fontFamily: kFontBody,
-              fontSize: 12,
+              fontSize: 12.5,
               fontWeight: FontWeight.w800),
         ),
-        icon: Icon(icon, size: 16),
+        icon: Icon(icon, size: 17),
         label: Text(label),
       ),
     );
@@ -988,9 +1269,10 @@ class _TicketCard extends StatelessWidget {
   }
 }
 
-/// One ticket line with its own status dot — tap advances it one step.
-/// Ready is the line's terminal state (the handoff is ticket-level), so a
-/// ready line renders a check and ignores taps.
+/// One ticket line with its own status — tap advances it one step. Ready is
+/// the line's terminal state (the handoff is ticket-level), so a ready line
+/// renders a check and ignores taps. The qty chip and 34px row keep every
+/// tap target kitchen-glove friendly.
 class _LineRow extends StatelessWidget {
   final OrderItemLine line;
   final String status;
@@ -1016,62 +1298,90 @@ class _LineRow extends StatelessWidget {
     }
     final done = status == 'ready' || status == 'served' || status == 'fulfilled';
     final tappable = status == 'new' || status == 'preparing';
+    final hasNote = line.notes != null && line.notes!.trim().isNotEmpty;
 
-    final row = Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2.5),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: 7,
-            height: 7,
-            margin: const EdgeInsets.only(top: 5),
-            decoration: BoxDecoration(shape: BoxShape.circle, color: dotColor),
-          ),
-          const SizedBox(width: 7),
-          Text('${line.qty}×',
-              style: TextStyle(
-                  fontFamily: kFontMono,
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.w700,
-                  color: pal.primary)),
-          const SizedBox(width: 7),
-          Expanded(
-            child: Text.rich(
-              TextSpan(
-                text: line.name,
+    final content = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            // Qty chip — the first thing a cook's eye catches.
+            Container(
+              width: 30,
+              height: 22,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: done ? pal.sunken : pal.primary.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text('${line.qty}×',
+                  style: TextStyle(
+                      fontFamily: kFontMono,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w800,
+                      color: done ? pal.faint : pal.primary)),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                line.name,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                     fontFamily: kFontBody,
-                    fontSize: 12.5,
+                    fontSize: 13,
                     fontWeight: FontWeight.w600,
+                    height: 1.15,
                     color: done ? pal.faint : pal.heading,
-                    decoration: done ? TextDecoration.lineThrough : null,
+                    decoration:
+                        done ? TextDecoration.lineThrough : null,
                     decorationColor: pal.faint),
-                children: [
-                  if (line.notes != null && line.notes!.trim().isNotEmpty)
-                    TextSpan(
-                        text: '  · ${line.notes}',
-                        style: TextStyle(
-                            fontFamily: kFontBody,
-                            fontSize: 10.5,
-                            fontWeight: FontWeight.w500,
-                            color: pal.warning)),
-                ],
               ),
             ),
+            const SizedBox(width: 6),
+            if (done)
+              Icon(Icons.check_circle_outline_rounded,
+                  size: 15, color: pal.success)
+            else if (tappable)
+              Icon(Icons.chevron_right_rounded,
+                  size: 16, color: pal.muted)
+            else
+              Container(
+                width: 7,
+                height: 7,
+                decoration:
+                    BoxDecoration(shape: BoxShape.circle, color: dotColor),
+              ),
+          ],
+        ),
+        // Allergens and mods sit on their own amber line — never missed.
+        if (hasNote)
+          Padding(
+            padding: const EdgeInsets.only(left: 38, top: 1),
+            child: Row(children: [
+              Icon(Icons.priority_high_rounded,
+                  size: 10, color: pal.warning),
+              const SizedBox(width: 3),
+              Expanded(
+                child: Text(line.notes!,
+                    style: TextStyle(
+                        fontFamily: kFontBody,
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.w600,
+                        color: pal.warning)),
+              ),
+            ]),
           ),
-          const SizedBox(width: 4),
-          if (done)
-            Icon(Icons.check_circle_outline_rounded,
-                size: 13, color: pal.success)
-          else
-            Icon(Icons.chevron_right_rounded,
-                size: 14, color: tappable ? pal.muted : pal.faint),
-        ],
-      ),
+      ],
+    );
+
+    final row = Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: content,
     );
 
     if (!tappable) return row;
-    return InkWell(onTap: onTap, borderRadius: BorderRadius.circular(6), child: row);
+    return InkWell(onTap: onTap, borderRadius: BorderRadius.circular(8), child: row);
   }
 }

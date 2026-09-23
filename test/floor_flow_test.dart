@@ -80,8 +80,10 @@ Map<String, Object?> _orderJson(
       // reads it alongside payment_status, so the fixture must carry both.
       'payment': paymentStatus,
       'created': created ?? '${_todayKey()} 10:00:00',
+      // FOOD — the kitchen pass routes drinks to the bar, so a drink line
+      // here would make the ticket vanish from the board under test.
       'items': [
-        {'qty': 1, 'name': 'Macchiato'},
+        {'qty': 1, 'name': 'Omelette'},
       ],
     };
 
@@ -133,6 +135,24 @@ void main() {
       ),
     );
     await settle(tester);
+  }
+
+  /// The kitchen pass on a phone-sized surface (narrow → lane selector).
+  Future<void> pumpBoard(WidgetTester tester) async {
+    tester.view.physicalSize = const Size(430, 1600);
+    tester.view.devicePixelRatio = 1.0;
+    tester.view.padding =
+        const FakeViewPadding(top: 0, bottom: 0, left: 0, right: 0);
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(
+      ChangeNotifierProvider<AppState>.value(
+        value: app,
+        child: const MaterialApp(
+          home: Scaffold(body: KitchenBoard()),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 100));
   }
 
   group('serve grants', () {
@@ -305,6 +325,162 @@ void main() {
       expect(find.textContaining('#cccc'), findsNothing,
           reason: 'fulfilled = handed to the floor; the pass is clear');
       expect(find.text('All quiet on the pass'), findsOneWidget);
+    });
+  });
+
+  group('station routing — drinks to the bar, food to the kitchen', () {
+    // The owner: "when we order, all the order go to chef, even drinks".
+    // The kitchen pass must show FOOD lines only — a drinks-only ticket
+    // never renders there, and a mixed ticket leaves its drink lines out.
+    Map<String, Object?> mixedOrder(String id, String status) => {
+          ..._orderJson(id, status),
+          'items': [
+            {'qty': 1, 'name': 'Macchiato'},
+            {'qty': 2, 'name': 'Omelette'},
+          ],
+        };
+
+    testWidgets('the kitchen pass hides a drinks-only ticket',
+        (tester) async {
+      routes['GET /orders?open=1'] = (200, [
+        _orderJson('K-food', 'new', created: '${_todayKey()} 09:40:00'),
+        { // drinks only — the bar's work
+          ..._orderJson('K-drnk', 'new', created: '${_todayKey()} 09:41:00'),
+          'items': [
+            {'qty': 1, 'name': 'Ginger with Honey'},
+          ],
+        },
+      ]);
+      routes['GET /orders/items/active'] = (200, []);
+      // "Ginger with Honey" reads as a drink only through its HOT DRINKS
+      // category — the menu lookup is what routes it off the kitchen pass.
+      routes['GET /menu'] = (200, [
+        {'name': 'Ginger with Honey', 'category': 'HOT DRINKS'},
+        {'name': 'Omelette', 'category': 'Breakfast'},
+      ]);
+
+      await pumpBoard(tester);
+      await settle(tester);
+
+      expect(find.textContaining('#food'), findsOneWidget);
+      expect(find.textContaining('#drnk'), findsNothing,
+          reason: 'a ticket with no food never lands on the kitchen pass');
+    });
+
+    testWidgets('the kitchen pass strips drink lines from a mixed ticket',
+        (tester) async {
+      routes['GET /orders?open=1'] =
+          (200, [mixedOrder('K-mix', 'new')]);
+      routes['GET /orders/items/active'] = (200, []);
+
+      await pumpBoard(tester);
+      await settle(tester);
+
+      expect(find.text('Omelette'), findsOneWidget);
+      expect(find.text('Macchiato'), findsNothing,
+          reason: 'the coffee is the barista\'s work, not the kitchen\'s');
+    });
+
+    testWidgets('the bar board shows drink lines only, via the menu category',
+        (tester) async {
+      routes['GET /orders?open=1'] =
+          (200, [mixedOrder('K-bar', 'new')]);
+      routes['GET /orders/items/active'] = (200, []);
+      // "Ginger with Honey" is a drink only through its category — the
+      // exact name that defeats the name regex.
+      routes['GET /menu'] = (200, [
+        {'name': 'Macchiato', 'category': 'Coffee'},
+        {'name': 'Omelette', 'category': 'Breakfast'},
+      ]);
+
+      tester.view.physicalSize = const Size(430, 1600);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        ChangeNotifierProvider<AppState>.value(
+          value: app,
+          child: const MaterialApp(
+            home: Scaffold(body: KitchenBoard(baristaMode: true)),
+          ),
+        ),
+      );
+      await settle(tester);
+
+      expect(find.text('Macchiato'), findsOneWidget);
+      expect(find.text('Omelette'), findsNothing,
+          reason: 'the bar board never cooks breakfast');
+    });
+  });
+
+  group('line advance mapping under station filtering', () {
+    // The board advances a line by PUTting its tracked order_items id,
+    // matched by position. With drinks stripped from the kitchen pass the
+    // station lines are a SUBSET, so the position must be taken among ALL
+    // the ticket's lines — a drinks-first ticket is the trap: the food
+    // line's station-index (0) is not its row index (1).
+    testWidgets('Start Cooking bumps the food row, not the drink rows',
+        (tester) async {
+      routes['GET /orders?open=1'] = (200, [
+        { // drinks FIRST — the index-shift trap
+          ..._orderJson('K-adv', 'new'),
+          'items': [
+            {'qty': 1, 'name': 'Macchiato'},
+            {'qty': 2, 'name': 'Omelette'},
+            {'qty': 1, 'name': 'Ginger with Honey'},
+          ],
+        },
+      ]);
+      routes['GET /orders/items/active'] = (200, [
+        {'id': 'it-1', 'order_id': 'K-adv', 'name': 'Macchiato', 'status': 'new'},
+        {'id': 'it-2', 'order_id': 'K-adv', 'name': 'Omelette', 'status': 'new'},
+        {'id': 'it-3', 'order_id': 'K-adv', 'name': 'Ginger with Honey', 'status': 'new'},
+      ]);
+      // Without the menu lookup "Ginger with Honey" fails open as food —
+      // the category is what keeps the bar's rows out of the bulk advance.
+      routes['GET /menu'] = (200, [
+        {'name': 'Macchiato', 'category': 'Coffee'},
+        {'name': 'Omelette', 'category': 'Breakfast'},
+        {'name': 'Ginger with Honey', 'category': 'HOT DRINKS'},
+      ]);
+
+      await pumpBoard(tester);
+      await settle(tester);
+
+      await tester.tap(find.text('Start Cooking'));
+      await settle(tester);
+
+      final puts = recorded
+          .where((r) => r.method == 'PUT' && r.path.contains('/items/'))
+          .map((r) => r.path)
+          .toList();
+      expect(puts, ['/orders/K-adv/items/it-2'],
+          reason: 'exactly the Omelette row — drinks never move from the '
+              'kitchen pass');
+    });
+  });
+
+  group('the three lanes', () {
+    testWidgets('tickets sit in their lane; the selector moves between them',
+        (tester) async {
+      routes['GET /orders?open=1'] = (200, [
+        _orderJson('K-nnew', 'new', created: '${_todayKey()} 09:40:00'),
+        _orderJson('K-rddy', 'ready', created: '${_todayKey()} 08:40:00'),
+      ]);
+      routes['GET /orders/items/active'] = (200, []);
+
+      await pumpBoard(tester);
+      await settle(tester);
+
+      // Narrow board opens on NEW — the fresh ticket is on stage, the
+      // ready one is in its own lane.
+      expect(find.textContaining('#nnew'), findsOneWidget);
+      expect(find.textContaining('#rddy'), findsNothing);
+
+      await tester.tap(find.text('READY').last);
+      await settle(tester);
+
+      expect(find.textContaining('#rddy'), findsOneWidget);
+      expect(find.textContaining('#nnew'), findsNothing);
     });
   });
 }

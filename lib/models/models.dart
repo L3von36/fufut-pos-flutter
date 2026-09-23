@@ -226,6 +226,7 @@ class FufutOrder {
   final String? paymentStatus; // unpaid | paid
   final String? created; // "2026-08-06 01:55:46" style local stamp
   final String? updatedAt;
+  final String? readyAt; // first time the ticket reached ready — the pass clock
   final String? voidedAt; // set when the ticket was voided — history money rule
   final String? createdByName;
   final String? createdById; // the web's created_by — order scoping reads it
@@ -250,6 +251,7 @@ class FufutOrder {
     this.paymentStatus,
     this.created,
     this.updatedAt,
+    this.readyAt,
     this.voidedAt,
     this.createdByName,
     this.createdById,
@@ -319,6 +321,7 @@ class FufutOrder {
       paymentStatus: j['payment_status'] as String?,
       created: j['created'] as String?,
       updatedAt: j['updated_at'] as String?,
+      readyAt: (j['ready_at'] ?? j['readyAt']) as String?,
       voidedAt: (j['voided_at'] ?? j['voidedAt']) as String?,
       createdByName: j['created_by_name'] as String?,
       createdById: (j['created_by'] ?? j['created_by_id'])?.toString(),
