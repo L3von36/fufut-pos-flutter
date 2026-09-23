@@ -23,6 +23,7 @@ enum NavKey {
   kitchen, // also the barista board in drinks mode
   barista,
   tables,
+  tableHistory, // the floor's archive — per-table order history by day
   menuView,
   menuMgmt, // web /app/menu-mgmt — catalogue CRUD + dish-86 toggle
   orders,
@@ -81,6 +82,8 @@ const List<NavEntry> kAllNavEntries = [
       'Menu View', section: 'Sales'),
   NavEntry(NavKey.tables, Icons.grid_view_outlined, Icons.grid_view, 'Tables',
       section: 'Operations'),
+  NavEntry(NavKey.tableHistory, Icons.history_rounded, Icons.history,
+      'Table History', section: 'Operations'),
   NavEntry(NavKey.reservations, Icons.calendar_today_outlined,
       Icons.calendar_today, 'Reservations', section: 'Operations'),
   NavEntry(NavKey.delivery, Icons.local_shipping_outlined,
@@ -152,6 +155,7 @@ const Map<String, List<NavKey>> kRolePermissions = {
     NavKey.menuView,
     // Operations
     NavKey.tables,
+    NavKey.tableHistory,
     NavKey.reservations,
     NavKey.delivery,
     NavKey.kitchen,
@@ -190,7 +194,9 @@ const Map<String, List<NavKey>> kRolePermissions = {
     NavKey.orders,
     NavKey.dashboard,
     NavKey.alertsDash,
-    NavKey.pipeline,
+    // Pipeline left (owner's call, 2026-09): for the kitchen it duplicated
+    // the board ticket-for-ticket — the board IS the kitchen's pipeline. The
+    // kanban stays a manager's overview (served/cancelled lanes, cancel).
     NavKey.tables,
     NavKey.inventory,
     NavKey.recipes,
@@ -205,6 +211,7 @@ const Map<String, List<NavKey>> kRolePermissions = {
     NavKey.orders,
     NavKey.dashboard,
     NavKey.alertsDash,
+    // Pipeline left with the head chef (same owner call — the board covers it).
     NavKey.tables,
     NavKey.inventory,
     NavKey.recipes,
@@ -223,6 +230,7 @@ const Map<String, List<NavKey>> kRolePermissions = {
   // carry it either.
   'head-waiter': [
     NavKey.tables,
+    NavKey.tableHistory,
     NavKey.menuView,
     NavKey.orders,
     NavKey.openChecks,
@@ -323,6 +331,17 @@ const List<NavKey> kFallbackPermissions = [
 const Set<String> kCheckoutRoles = {'manager', 'cashier'};
 const Set<String> kPrepRoles = {'head-chef', 'assistant-chef'};
 
+/// Who may mark an order SERVED. Owner's rule (2026-09): the kitchen hands
+/// food over, the floor serves it — the chef says "picked up", the waiter
+/// says "served", and never the other way round. The till joins the floor
+/// set because takeaway hands over at the counter: the guest's last touch is
+/// the till, and an order the till cannot mark served would never reach the
+/// settle list (only served orders settle). The manager rides along.
+const Set<String> kServeRoles = {'manager', 'head-waiter', 'cashier'};
+
+/// May this role mark a fulfilled order served?
+bool canMarkServed(String? roleKey) => kServeRoles.contains(roleKey ?? '');
+
 /// Who opens a table's ticket. Starting a New Order / adding a round to a
 /// seated party is floor work — the head-waiter's, with the manager riding
 /// along. The till sells at the counter (Menu View), not off the floor plan;
@@ -406,6 +425,8 @@ String titleFor(NavKey key) {
       return 'Barista Display';
     case NavKey.tables:
       return 'Floor Plan';
+    case NavKey.tableHistory:
+      return 'Table History';
     case NavKey.menuView:
       return 'Menu View';
     case NavKey.menuMgmt:

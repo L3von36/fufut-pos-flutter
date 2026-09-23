@@ -40,9 +40,13 @@ void main() {
     for (final key in [NavKey.suppliers, NavKey.purchases, NavKey.stockControl, NavKey.reports, NavKey.expenses, NavKey.cashdrawer, NavKey.shifts]) {
       expect(chef.contains(key), isFalse, reason: 'head-chef must not see ${key.name}');
     }
-    for (final key in [NavKey.kitchen, NavKey.orders, NavKey.pipeline, NavKey.inventory, NavKey.recipes, NavKey.waste, NavKey.menuMgmt]) {
+    // Pipeline left the kitchen's nav (owner's call, 2026-09): the board IS
+    // the chef's pipeline — the kanban duplicated it ticket-for-ticket.
+    for (final key in [NavKey.kitchen, NavKey.orders, NavKey.tables, NavKey.inventory, NavKey.recipes, NavKey.waste, NavKey.menuMgmt]) {
       expect(chef.contains(key), isTrue, reason: 'head-chef lost ${key.name}');
     }
+    expect(chef.contains(NavKey.pipeline), isFalse,
+        reason: 'pipeline is the manager overview; the chef works the board');
     final cashier = kRolePermissions['cashier']!;
     for (final key in [NavKey.revenue, NavKey.analytics, NavKey.reports, NavKey.expenses, NavKey.pnl]) {
       expect(cashier.contains(key), isFalse, reason: 'cashier must not see ${key.name}');

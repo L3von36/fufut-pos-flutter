@@ -30,6 +30,7 @@ import 'recipes_screen.dart';
 import 'register_screen.dart';
 import 'reports_screen.dart';
 import 'reservations_screen.dart';
+import 'tables_history_screen.dart';
 import 'revenue_screen.dart';
 import 'role_dashboard.dart';
 import 'settings_screen.dart';
@@ -135,6 +136,8 @@ class _HomeShellState extends State<HomeShell> {
         case NavKey.tables:
           return TablesScreen(
               onNavigate: _select, activeTab: activeTab, self: NavKey.tables);
+        case NavKey.tableHistory:
+          return const TablesHistoryScreen();
         case NavKey.menuView:
           return const RegisterScreen();
         case NavKey.menuMgmt:

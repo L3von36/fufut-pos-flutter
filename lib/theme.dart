@@ -374,6 +374,19 @@ ThemeData _theme(Pal p, Brightness brightness) {
         textStyle: const TextStyle(
             fontFamily: kFontBody, fontSize: 12.5, fontWeight: FontWeight.w600),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        elevation: 0,
+      ).copyWith(
+        // Visible press/hover states app-wide (owner's call, 2026-09):
+        // every button answers the finger — pressed dims, hover tints.
+        overlayColor: WidgetStateProperty.resolveWith((states) {
+          if (states.contains(WidgetState.pressed)) {
+            return Colors.black.withValues(alpha: 0.18);
+          }
+          if (states.contains(WidgetState.hovered)) {
+            return Colors.white.withValues(alpha: 0.10);
+          }
+          return null;
+        }),
       ),
     ),
     outlinedButtonTheme: OutlinedButtonThemeData(
@@ -385,6 +398,16 @@ ThemeData _theme(Pal p, Brightness brightness) {
         textStyle: const TextStyle(
             fontFamily: kFontBody, fontSize: 12.5, fontWeight: FontWeight.w600),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      ).copyWith(
+        overlayColor: WidgetStateProperty.resolveWith((states) {
+          if (states.contains(WidgetState.pressed)) {
+            return p.primary.withValues(alpha: 0.12);
+          }
+          if (states.contains(WidgetState.hovered)) {
+            return p.primary.withValues(alpha: 0.06);
+          }
+          return null;
+        }),
       ),
     ),
     textButtonTheme: TextButtonThemeData(
@@ -394,6 +417,13 @@ ThemeData _theme(Pal p, Brightness brightness) {
             fontFamily: kFontBody,
             fontSize: 12.5,
             fontWeight: FontWeight.w600),
+      ).copyWith(
+        overlayColor: WidgetStateProperty.resolveWith((states) {
+          if (states.contains(WidgetState.pressed)) {
+            return p.primary.withValues(alpha: 0.14);
+          }
+          return null;
+        }),
       ),
     ),
     snackBarTheme: SnackBarThemeData(

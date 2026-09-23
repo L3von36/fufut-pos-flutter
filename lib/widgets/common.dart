@@ -10,58 +10,160 @@ import '../theme.dart';
 
 const Color _toastSuccess = Color(0xF5227845);
 const Color _toastError = Color(0xF5C62828);
+const Color _toastWarn = Color(0xF5C8690A);
 
-void showError(BuildContext context, Object error) =>
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text('$error'),
-      backgroundColor: _toastError,
-      duration: const Duration(seconds: 4),
-    ));
-
-void showInfo(BuildContext context, String message) =>
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+/// One toast at a time, always.
+///
+/// Owner's rule (2026-09): a toast is a heartbeat, not wallpaper — it shows,
+/// it fades, the screen is clean again. Two things made toasts feel sticky:
+/// the snackbar QUEUE (each new toast waited behind the last, so four quick
+/// actions kept pills on screen for ~15s) and durations tuned per call site.
+/// Every helper now clears the queue first and carries one fixed duration:
+/// info/success 2.5s, warning 3.5s, error 4.5s (errors read longer).
+void _toast(
+  ScaffoldMessengerState messenger,
+  String message,
+  Color background, {
+  Duration duration = const Duration(seconds: 2, milliseconds: 500),
+  SnackBarAction? action,
+}) {
+  messenger
+    ..clearSnackBars()
+    ..showSnackBar(SnackBar(
       content: Text(message),
-      backgroundColor: _toastSuccess,
-      duration: const Duration(seconds: 2),
+      backgroundColor: background,
+      duration: duration,
+      behavior: SnackBarBehavior.floating,
+      action: action,
     ));
+}
+
+void showError(BuildContext context, Object error) => showErrorOn(
+    ScaffoldMessenger.of(context), error);
+
+void showInfo(BuildContext context, String message) => showInfoOn(
+    ScaffoldMessenger.of(context), message);
+
+void showWarn(BuildContext context, String message) => showWarnOn(
+    ScaffoldMessenger.of(context), message);
 
 /// Captured-messenger variants. An async action that pops its own sheet
 /// cannot use a BuildContext afterwards — the messenger state is the safe
 /// handle: captured before the await, used after it, no mounted dance needed.
-void showErrorOn(ScaffoldMessengerState messenger, Object error) {
-  messenger.showSnackBar(SnackBar(
-    content: Text('$error'),
-    backgroundColor: _toastError,
-    duration: const Duration(seconds: 4),
-  ));
-}
+void showErrorOn(ScaffoldMessengerState messenger, Object error) =>
+    _toast(messenger, '$error', _toastError,
+        duration: const Duration(milliseconds: 4500));
 
-void showInfoOn(ScaffoldMessengerState messenger, String message) {
-  messenger.showSnackBar(SnackBar(
-    content: Text(message),
-    backgroundColor: _toastSuccess,
-    duration: const Duration(seconds: 2),
-  ));
-}
+void showInfoOn(ScaffoldMessengerState messenger, String message) =>
+    _toast(messenger, message, _toastSuccess);
+
+/// Non-fatal but worth reading — a gate refused, a till is closed, a sweep
+/// released something. Amber, reads longer than info.
+void showWarnOn(ScaffoldMessengerState messenger, String message) =>
+    _toast(messenger, message, _toastWarn,
+        duration: const Duration(milliseconds: 3500));
 
 /// A snackbar with an inline Undo action — the cart's remove flow.
 void showUndoOn(
   ScaffoldMessengerState messenger,
   String message,
   VoidCallback onUndo,
-) {
-  messenger.clearSnackBars();
-  messenger.showSnackBar(SnackBar(
-    content: Text(message),
-    backgroundColor: _toastSuccess,
-    duration: const Duration(seconds: 3),
-    action: SnackBarAction(
-      label: 'UNDO',
-      textColor: Colors.white,
-      onPressed: onUndo,
-    ),
-  ));
+) =>
+    _toast(
+      messenger,
+      message,
+      _toastSuccess,
+      duration: const Duration(seconds: 4),
+      action: SnackBarAction(
+        label: 'UNDO',
+        textColor: Colors.white,
+        onPressed: onUndo,
+      ),
+    );
+
+/// Inline, non-blocking feedback — the screen-level counterpart of the toasts.
+/// Load failures, empty states with an explanation, refusals worth keeping on
+/// screen: things a 4-second pill cannot carry. Severity colors match the
+/// toasts; [onRetry] renders a trailing action button when provided.
+class InfoBanner extends StatelessWidget {
+  final String message;
+  final InfoSeverity severity;
+  final VoidCallback? onRetry;
+  final IconData? icon;
+
+  const InfoBanner(
+    this.message, {
+    super.key,
+    this.severity = InfoSeverity.info,
+    this.onRetry,
+    this.icon,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final (bg, fg, lead) = switch (severity) {
+      InfoSeverity.error => (
+          const Color(0xFFFDECEA),
+          const Color(0xFFB3261E),
+          Icons.error_outline_rounded
+        ),
+      InfoSeverity.warning => (
+          const Color(0xFFFFF6E5),
+          const Color(0xFF92510A),
+          Icons.warning_amber_rounded
+        ),
+      InfoSeverity.success => (
+          const Color(0xFFE8F5EE),
+          const Color(0xFF1B6644),
+          Icons.check_circle_outline_rounded
+        ),
+      InfoSeverity.info => (
+          const Color(0xFFEAF1FD),
+          const Color(0xFF1D4FA8),
+          Icons.info_outline_rounded
+        ),
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: fg.withValues(alpha: 0.25)),
+      ),
+      child: Row(
+        children: [
+          Icon(icon ?? lead, size: 17, color: fg),
+          const SizedBox(width: 9),
+          Expanded(
+            child: Text(message,
+                style: TextStyle(
+                    fontFamily: kFontBody,
+                    fontSize: 12.5,
+                    height: 1.35,
+                    color: fg)),
+          ),
+          if (onRetry != null) ...[
+            const SizedBox(width: 8),
+            TextButton(
+              onPressed: onRetry,
+              style: TextButton.styleFrom(
+                foregroundColor: fg,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              child: const Text('Retry'),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
 }
+
+/// Severity of an [InfoBanner].
+enum InfoSeverity { info, success, warning, error }
 
 /// The till displays the last 4 characters of an order id ("Order #abc123").
 /// Empty ids render as an empty tag rather than "#".

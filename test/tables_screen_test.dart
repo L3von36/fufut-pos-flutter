@@ -391,7 +391,9 @@ void main() {
     // Active Orders section lists the table's open check.
     expect(find.text('Active Orders'), findsOneWidget);
     expect(find.text('2x Macchiato'), findsOneWidget);
-    expect(find.text('120 ETB'), findsNWidgets(2)); // card + detail list
+    // card + detail list + the History row (the 7-day history fetch rides
+    // the same scripted fixture and shows the same ticket).
+    expect(find.text('120 ETB'), findsNWidgets(3));
 
     // Head-waiter may raise the bill request.
     routes['POST /tables/T2/request-bill'] =

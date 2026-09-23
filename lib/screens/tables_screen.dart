@@ -56,6 +56,7 @@ import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/dashboard.dart' show LoadError;
 import 'checkout_sheet.dart' show PaymentResult, PaymentSheet;
+import 'orders_screen.dart' show OrderDetailSheet;
 
 class TablesScreen extends StatefulWidget {
   final ValueChanged<NavKey>? onNavigate;
@@ -539,12 +540,22 @@ class _TablesScreenState extends State<TablesScreen>
   /// Go to Checkout — the cashier settles the table's open check. The web
   /// routes to /app/checkout with the check wired; here the same check opens
   /// in the payment sheet and settles via the same PUT.
+  ///
+  /// Owner's rule (2026-09): only SERVED orders settle. A check still in the
+  /// kitchen cannot be paid yet — the gate says so instead of hiding it.
   Future<void> _goToCheckout(CafeTable t) async {
     final app = context.read<AppState>();
     final latest = latestResumableCheck(_orders, t.number);
     if (latest == null) {
       showInfoOn(ScaffoldMessenger.of(context),
           'No open check for table ${t.number}');
+      return;
+    }
+    if (latest.status.toLowerCase() != 'served') {
+      showWarnOn(
+          ScaffoldMessenger.of(context),
+          'Table ${t.number}\'s check is ${latest.status} — '
+          'settle opens once the waiter marks it served.');
       return;
     }
     // fixedTotal: the bill is already on the server — the sheet must not
@@ -739,6 +750,21 @@ class _TablesScreenState extends State<TablesScreen>
             return all
                 .where((o) => o.tableNum == t.number && isResumableCheck(o))
                 .toList();
+          },
+          // The table's memory: every ticket that touched it in the last
+          // seven days, any status — survives the party leaving.
+          onLoadHistory: () async {
+            final now = DateTime.now();
+            String two(int v) => v.toString().padLeft(2, '0');
+            final to = '${now.year}-${two(now.month)}-${two(now.day)}';
+            final fd = now.subtract(const Duration(days: 7));
+            final from = '${fd.year}-${two(fd.month)}-${two(fd.day)}';
+            final all = await app.api.orders(from: from, to: to, limit: 200);
+            return all
+                .where((o) => o.tableNum == t.number || o.tableNum == t.id)
+                .toList()
+              ..sort((a, b) =>
+                  (b.created ?? '').compareTo(a.created ?? ''));
           },
           onSave: (payload) => _saveTable(payload, t.id),
           onFree: () => _freeTable(t.id),
@@ -2062,6 +2088,7 @@ class _DetailSheet extends StatefulWidget {
   final bool canFree;
   final List<String> servers;
   final Future<List<FufutOrder>> Function() onLoadOrders;
+  final Future<List<FufutOrder>> Function() onLoadHistory;
   final Future<String?> Function(Map<String, dynamic> payload) onSave;
   final Future<String?> Function() onFree;
   final Future<bool> Function() onDelete;
@@ -2083,6 +2110,7 @@ class _DetailSheet extends StatefulWidget {
     required this.canFree,
     required this.servers,
     required this.onLoadOrders,
+    required this.onLoadHistory,
     required this.onSave,
     required this.onFree,
     required this.onDelete,
@@ -2110,6 +2138,7 @@ class _DetailSheetState extends State<_DetailSheet> {
   bool _freeing = false;
   bool _billBusy = false;
   List<FufutOrder>? _detailOrders;
+  List<FufutOrder>? _detailHistory;
 
   late final TextEditingController _notesCtrl =
       TextEditingController(text: widget.table.notes ?? '');
@@ -2118,6 +2147,7 @@ class _DetailSheetState extends State<_DetailSheet> {
   void initState() {
     super.initState();
     _loadOrders();
+    _loadHistory();
   }
 
   @override
@@ -2134,6 +2164,17 @@ class _DetailSheetState extends State<_DetailSheet> {
     } catch (_) {
       if (!mounted) return;
       setState(() => _detailOrders = const []);
+    }
+  }
+
+  Future<void> _loadHistory() async {
+    try {
+      final rows = await widget.onLoadHistory();
+      if (!mounted) return;
+      setState(() => _detailHistory = rows);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _detailHistory = const []);
     }
   }
 
@@ -2538,6 +2579,17 @@ class _DetailSheetState extends State<_DetailSheet> {
                   ]),
                 ),
               ],
+
+              // The table's memory — every ticket it ran in the last week,
+              // any status, kept visible however the status chip turns
+              // (owner request: click a table, see its history).
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 14, 20, 0),
+                child: _DetailHistory(
+                  orders: _detailHistory,
+                  tableName: widget.table.name ?? 'Table ${widget.table.number}',
+                ),
+              ),
 
               // Actions
               Container(
@@ -3140,6 +3192,146 @@ class _DetailOrders extends StatelessWidget {
     if (d == null) return '';
     String two(int n) => n.toString().padLeft(2, '0');
     return '${two(d.hour)}:${two(d.minute)}';
+  }
+}
+
+/// The table's history — every ticket it ran in the last seven days, any
+/// status, newest first. The party leaving does not erase it: the owner's
+/// rule is that clicking a table shows what happened on it, however the
+/// status chip currently reads. Collapsed to the four latest tickets with
+/// a show-all expander so the panel stays scannable.
+class _DetailHistory extends StatefulWidget {
+  final List<FufutOrder>? orders;
+  final String tableName;
+
+  const _DetailHistory({required this.orders, required this.tableName});
+
+  @override
+  State<_DetailHistory> createState() => _DetailHistoryState();
+}
+
+class _DetailHistoryState extends State<_DetailHistory> {
+  bool _showAll = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = Pal.of(context);
+    final orders = widget.orders;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(children: [
+          Icon(Icons.history_rounded, size: 15, color: pal.muted),
+          const SizedBox(width: 6),
+          Text('History · last 7 days',
+              style: TextStyle(
+                  fontFamily: kFontBody,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                  color: pal.heading)),
+          const Spacer(),
+          if (orders != null && orders.length > 4)
+            TextButton(
+              onPressed: () => setState(() => _showAll = !_showAll),
+              style: TextButton.styleFrom(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              child: Text(
+                  _showAll
+                      ? 'Show less'
+                      : 'Show all (${orders.length})',
+                  style: TextStyle(
+                      fontFamily: kFontBody,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      color: pal.primary)),
+            ),
+        ]),
+        const SizedBox(height: 8),
+        if (orders == null)
+          const Padding(
+            padding: EdgeInsets.all(14),
+            child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+          )
+        else if (orders.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Text('No orders on this table in the last 7 days',
+                style: TextStyle(
+                    fontFamily: kFontBody, fontSize: 11.5, color: pal.muted)),
+          )
+        else
+          for (final o in (_showAll ? orders : orders.take(4)))
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: InkWell(
+                onTap: () => showModalBottomSheet(
+                  context: context,
+                  isScrollControlled: true,
+                  backgroundColor: pal.surface,
+                  shape: const RoundedRectangleBorder(
+                      borderRadius:
+                          BorderRadius.vertical(top: Radius.circular(16))),
+                  constraints: BoxConstraints(
+                      maxWidth: 680,
+                      maxHeight: MediaQuery.sizeOf(context).height * 0.9),
+                  builder: (_) => OrderDetailSheet(order: o),
+                ),
+                borderRadius: BorderRadius.circular(8),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 7),
+                  decoration: BoxDecoration(
+                    color: pal.sunken,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: pal.border),
+                  ),
+                  child: Row(children: [
+                    Text(shortId(o.id),
+                        style: TextStyle(
+                            fontFamily: kFontMono,
+                            fontSize: 10.5,
+                            fontWeight: FontWeight.w700,
+                            color: pal.heading)),
+                    const SizedBox(width: 8),
+                    StatusBadge(status: o.status),
+                    const Spacer(),
+                    Text(_fmtHistoryTime(o.created),
+                        style: TextStyle(
+                            fontFamily: kFontMono,
+                            fontSize: 10.5,
+                            color: pal.muted)),
+                    const SizedBox(width: 10),
+                    Text(formatETB(o.total),
+                        style: TextStyle(
+                            fontFamily: kFontBody,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: pal.heading)),
+                  ]),
+                ),
+              ),
+            ),
+      ],
+    );
+  }
+
+  static String _fmtHistoryTime(String? iso) {
+    if (iso == null || iso.isEmpty) return '';
+    final d = DateTime.tryParse(iso.trim().replaceFirst(' ', 'T')) ??
+        DateTime.tryParse(iso);
+    if (d == null) return iso;
+    String two(int n) => n.toString().padLeft(2, '0');
+    final now = DateTime.now();
+    final sameDay =
+        d.year == now.year && d.month == now.month && d.day == now.day;
+    final label = sameDay
+        ? '${two(d.hour)}:${two(d.minute)}'
+        : '${two(d.day)}/${two(d.month)} ${two(d.hour)}:${two(d.minute)}';
+    return label;
   }
 }
 

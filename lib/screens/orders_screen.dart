@@ -1061,7 +1061,7 @@ class _OrderTile extends StatelessWidget {
           maxHeight: MediaQuery.sizeOf(context).height * 0.85),
       builder: (_) => ChangeNotifierProvider.value(
         value: context.read<AppState>(),
-        child: _OrderDetailSheet(order: order),
+        child: OrderDetailSheet(order: order),
       ),
     );
   }
@@ -1093,9 +1093,9 @@ class _Tag extends StatelessWidget {
 // Detail sheet — lines, money rows, and the stage's action buttons.
 // ─────────────────────────────────────────────────────────────────────────────
 
-class _OrderDetailSheet extends StatelessWidget {
+class OrderDetailSheet extends StatelessWidget {
   final FufutOrder order;
-  const _OrderDetailSheet({required this.order});
+  const OrderDetailSheet({super.key, required this.order});
 
   /// The kitchen pipeline's prep stages — the web's row actions, and the
   /// web's gate with them: OrdersView shows "Start Prep" (new → preparing)
@@ -1112,16 +1112,26 @@ class _OrderDetailSheet extends StatelessWidget {
     final app = context.watch<AppState>();
     final status = order.status.toLowerCase();
     // Chef work sits behind the chef grant — the waiter reads the ticket,
-    // the kitchen moves it.
+    // the kitchen moves it: "Start Prep" (new → preparing) and "Ready"
+    // (preparing → ready) only to the two chef roles.
     final prep = canAdvancePrep(app.roleKey)
         ? _prepNext[status]
         : null;
-    // "Complete" (ready → fulfilled) is deliberately ungated on the web:
-    // handing the guest their food is the floor's moment too.
-    final complete = status == 'ready' ? 'fulfilled' : null;
-    // Money moves only with the checkout grant (manager, cashier) — the
-    // floor never sees a settle button, same as OpenChecksView's Settle.
-    final maySettle = canCheckout(app.roleKey) && !order.isPaid;
+    // Owner's flow (2026-09): the kitchen hands off, the floor serves.
+    //   ready → fulfilled is the chef's "picked up by waiter" — the pass is
+    //   clear once the floor takes the tray;
+    //   fulfilled → served is the floor's moment, never the chef's — the
+    //   guests say it was served, not the kitchen. The till joins the serve
+    //   set so takeaway hands over at the counter.
+    final pickup =
+        canAdvancePrep(app.roleKey) && status == 'ready' ? 'fulfilled' : null;
+    final serve =
+        canMarkServed(app.roleKey) && status == 'fulfilled' ? 'served' : null;
+    // Money moves only with the checkout grant (manager, cashier) — and only
+    // when the order has actually been served (owner's rule, 2026-09): a
+    // ticket nobody has cooked, let alone served, cannot be settled.
+    final maySettle =
+        canCheckout(app.roleKey) && !order.isPaid && status == 'served';
     // Station roles read only their own lines — barista the drinks, chefs
     // the food; null shows the ticket unchanged.
     final scoped = orderLinesForRole(order, app.roleKey);
@@ -1288,20 +1298,33 @@ class _OrderDetailSheet extends StatelessWidget {
                 label: Text('Mark ${_title(prep)}'),
               ),
             ],
-            if (complete != null) ...[
+            if (pickup != null) ...[
               const SizedBox(height: 9),
               OutlinedButton.icon(
-                onPressed: () => _advance(context, complete),
-                icon: const Icon(Icons.task_alt_rounded, size: 18),
-                label: Text('Mark ${_title(complete)}'),
+                onPressed: () => _advance(context, pickup),
+                icon: const Icon(Icons.outbox_rounded, size: 18),
+                label: const Text('Picked up by waiter'),
               ),
             ],
-            if (!maySettle && prep == null && complete == null) ...[
+            if (serve != null) ...[
+              const SizedBox(height: 9),
+              FilledButton.icon(
+                onPressed: () => _advance(context, serve),
+                icon: const Icon(Icons.room_service_rounded, size: 18),
+                label: const Text('Mark served'),
+              ),
+            ],
+            if (!maySettle &&
+                prep == null &&
+                pickup == null &&
+                serve == null) ...[
               const SizedBox(height: 14),
               Text(
                 order.isPaid
                     ? 'This check is settled.'
-                    : 'No actions for your role on this stage.',
+                    : status != 'served' && canCheckout(app.roleKey)
+                        ? 'Settle opens once the order is served.'
+                        : 'No actions for your role on this stage.',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                     fontFamily: kFontBody, fontSize: 11.5, color: pal.faint),
