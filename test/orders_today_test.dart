@@ -60,11 +60,13 @@ class _ScriptedClient extends http.BaseClient {
 
 String _todayKey() => localTodayKey();
 
-String _yesterdayStamp() {
+String _yesterdayKey() {
   final y = DateTime.now().subtract(const Duration(days: 1));
   String two(int v) => v.toString().padLeft(2, '0');
-  return '${y.year}-${two(y.month)}-${two(y.day)} 09:30:00';
+  return '${y.year}-${two(y.month)}-${two(y.day)}';
 }
+
+String _yesterdayStamp() => '${_yesterdayKey()} 09:30:00';
 
 Map<String, Object?> _orderJson(
   String id,
@@ -205,12 +207,17 @@ void main() {
         (tester) async {
       routes['GET /orders?from=${_todayKey()}&to=${_todayKey()}'] =
           (200, []);
-      routes['GET /orders?from=2026-09-21&to=2026-09-21&limit=100&offset=0'] =
-          (
+      // The history screen derives its default yesterday window from the
+      // clock at runtime — the mock must be derived the same way or the
+      // route misses the day the calendar rolls over (2026-09-21 was pinned
+      // and CI went red the next midnight).
+      final historyWindow =
+          'GET /orders?from=${_yesterdayKey()}&to=${_yesterdayKey()}&limit=100&offset=0';
+      routes[historyWindow] = (
         200,
         [
           _orderJson('H1', 'completed',
-              created: '2026-09-21 15:00:00', total: 90),
+              created: '${_yesterdayKey()} 15:00:00', total: 90),
         ]
       );
 
@@ -226,8 +233,7 @@ void main() {
       expect(find.textContaining('#H1'), findsOneWidget);
       expect(
         recorded.map((r) => '${r.method} ${r.path}'),
-        contains(
-            'GET /orders?from=2026-09-21&to=2026-09-21&limit=100&offset=0'),
+        contains(historyWindow),
       );
     });
   });
