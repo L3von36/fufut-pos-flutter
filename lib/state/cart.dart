@@ -410,16 +410,19 @@ class CartState {
   }
 }
 
-/// Riverpod wiring for [CartState]. One cart for the app's lifetime (no
-/// autoDispose — an open tab must survive navigation), with
-/// `ref.notifyListeners` as the mutation bell. Tests can hand over a
-/// preconfigured cart: `cartProvider.overrideWith(() => CartNotifier(seed: cart))`.
+/// Riverpod wiring for [CartState]. One cart for the app's lifetime —
+/// `ref.keepAlive()` pins it even under Riverpod 3's autoDispose default,
+/// so an open tab survives stretches where no screen happens to watch the
+/// cart (it must not silently fall back to the 12h prefs restore
+/// mid-shift). `ref.notifyListeners` is the mutation bell. Tests can hand
+/// over a preconfigured cart: `cartProvider.overrideWith(() => CartNotifier(seed: cart))`.
 class CartNotifier extends Notifier<CartState> {
   CartNotifier({CartState? seed}) : _seed = seed;
   final CartState? _seed;
 
   @override
   CartState build() {
+    ref.keepAlive();
     final s = _seed ?? CartState();
     s._onChanged = ref.notifyListeners;
     return s;

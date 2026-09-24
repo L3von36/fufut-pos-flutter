@@ -258,8 +258,9 @@ class AppState {
 }
 
 /// Riverpod wiring for [AppState]. The notifier keeps one [AppState] alive
-/// for the app's lifetime (no autoDispose — session state must survive
-/// navigation), and lends it `ref.notifyListeners` as the mutation bell.
+/// for the app's lifetime — `ref.keepAlive()` pins it under Riverpod 3's
+/// autoDispose default — and lends it `ref.notifyListeners` as the
+/// mutation bell.
 ///
 /// Tests that script a fake API build their own [AppState] first (client,
 /// identity, role) and hand it over as a seed:
@@ -270,6 +271,7 @@ class AppStateNotifier extends Notifier<AppState> {
 
   @override
   AppState build() {
+    ref.keepAlive();
     final s = _seed ?? AppState();
     s._onChanged = ref.notifyListeners;
     return s;

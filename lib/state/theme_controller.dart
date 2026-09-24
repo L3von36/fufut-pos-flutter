@@ -12,6 +12,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 class ThemeModeNotifier extends Notifier<ThemeMode> {
   @override
   ThemeMode build() {
+    ref.keepAlive(); // the choice outlives any single watcher
     _restore();
     return ThemeMode.light;
   }
