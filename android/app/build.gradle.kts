@@ -7,7 +7,7 @@ plugins {
 android {
     namespace = "et.fufut.fufut_pos"
     compileSdk = flutter.compileSdkVersion
-    ndkVersion = flutter.ndkVersion
+    // NDK not required: every plugin in this app ships JVM (Java/Kotlin) code only.
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
