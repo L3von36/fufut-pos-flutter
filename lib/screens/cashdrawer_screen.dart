@@ -17,7 +17,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../models/models.dart';
@@ -27,16 +27,16 @@ import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/dashboard.dart';
 
-class CashDrawerScreen extends StatefulWidget {
+class CashDrawerScreen extends ConsumerStatefulWidget {
   final ValueChanged<NavKey>? onNavigate;
 
   const CashDrawerScreen({super.key, this.onNavigate});
 
   @override
-  State<CashDrawerScreen> createState() => _CashDrawerScreenState();
+  ConsumerState<CashDrawerScreen> createState() => _CashDrawerScreenState();
 }
 
-class _CashDrawerScreenState extends State<CashDrawerScreen> {
+class _CashDrawerScreenState extends ConsumerState<CashDrawerScreen> {
   DashboardStats? _stats;
   CashDrawerState? _drawer;
   List<DrawerSession> _history = [];
@@ -60,7 +60,7 @@ class _CashDrawerScreenState extends State<CashDrawerScreen> {
   }
 
   Future<void> _load({bool quiet = false}) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
       final results = await Future.wait([
@@ -95,7 +95,7 @@ class _CashDrawerScreenState extends State<CashDrawerScreen> {
   Future<void> _openDrawerFlow() async {
     final amount = await _promptOpenDrawer();
     if (amount == null || !mounted) return;
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final messenger = ScaffoldMessenger.of(context);
     try {
       await app.api.openDrawer(amount);
@@ -111,7 +111,7 @@ class _CashDrawerScreenState extends State<CashDrawerScreen> {
     final result = await _promptCloseDrawer(active);
     if (result == null || !mounted) return;
     final (closingBal, denoms) = result;
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final messenger = ScaffoldMessenger.of(context);
     try {
       await app.api.closeDrawer(active.id, closingBal, denoms);
@@ -137,7 +137,7 @@ class _CashDrawerScreenState extends State<CashDrawerScreen> {
     final result = await _promptPaidInOut();
     if (result == null || !mounted) return;
     final (kind, amount, reason) = result;
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final messenger = ScaffoldMessenger.of(context);
     try {
       if (kind == 'in') {
@@ -156,7 +156,7 @@ class _CashDrawerScreenState extends State<CashDrawerScreen> {
   Future<void> _popFlow() async {
     final reason = await _promptPop();
     if (reason == null || !mounted) return;
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final messenger = ScaffoldMessenger.of(context);
     try {
       await app.api.popDrawer(reason);
@@ -168,7 +168,7 @@ class _CashDrawerScreenState extends State<CashDrawerScreen> {
   }
 
   Future<void> _showZReport(String drawerId) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final messenger = ScaffoldMessenger.of(context);
     try {
       final z = await app.api.zReport(drawerId);
@@ -1059,7 +1059,7 @@ class _CashDrawerScreenState extends State<CashDrawerScreen> {
 
   Widget _recentPayments() {
     final pal = Pal.of(context);
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final paid = app.roleKey == 'cashier' || app.roleKey == 'manager';
     if (!paid) return const SizedBox.shrink();
     return FutureBuilder<List<FufutOrder>>(

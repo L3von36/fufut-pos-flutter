@@ -5,7 +5,7 @@
 library;
 
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../models/models.dart';
@@ -15,14 +15,14 @@ import '../widgets/backoffice.dart';
 import '../widgets/common.dart';
 import '../widgets/dashboard.dart';
 
-class ReservationsScreen extends StatefulWidget {
+class ReservationsScreen extends ConsumerStatefulWidget {
   const ReservationsScreen({super.key});
 
   @override
-  State<ReservationsScreen> createState() => _ReservationsScreenState();
+  ConsumerState<ReservationsScreen> createState() => _ReservationsScreenState();
 }
 
-class _ReservationsScreenState extends State<ReservationsScreen> {
+class _ReservationsScreenState extends ConsumerState<ReservationsScreen> {
   List<Reservation> _rows = [];
   List<CafeTable> _tables = [];
   bool _loading = true;
@@ -43,7 +43,7 @@ class _ReservationsScreenState extends State<ReservationsScreen> {
   }
 
   Future<void> _load({bool quiet = false}) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
       final results = await Future.wait<dynamic>(
@@ -77,7 +77,7 @@ class _ReservationsScreenState extends State<ReservationsScreen> {
 
   Future<void> _book() async {
     final messenger = ScaffoldMessenger.of(context);
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final nameC = TextEditingController();
     final guestsC = TextEditingController(text: '2');
     final phoneC = TextEditingController();
@@ -174,7 +174,7 @@ class _ReservationsScreenState extends State<ReservationsScreen> {
 
   Future<void> _setStatus(Reservation r, String status) async {
     final messenger = ScaffoldMessenger.of(context);
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     try {
       await app.api.updateReservation(r.id, status);
       showInfoOn(messenger, '${r.name} → $status');
@@ -186,7 +186,7 @@ class _ReservationsScreenState extends State<ReservationsScreen> {
 
   Future<void> _release(Reservation r) async {
     final messenger = ScaffoldMessenger.of(context);
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     try {
       await app.api.releaseReservation(r.id);
       showInfoOn(messenger, 'Hold on table ${r.tableNum ?? '—'} released');

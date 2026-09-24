@@ -16,7 +16,7 @@
 library;
 
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../models/models.dart';
@@ -27,16 +27,16 @@ import '../widgets/common.dart';
 import '../widgets/dashboard.dart' show LoadError;
 import 'orders_screen.dart' show OrderDetailSheet;
 
-class TablesHistoryScreen extends StatefulWidget {
+class TablesHistoryScreen extends ConsumerStatefulWidget {
   /// Pre-select a table (the floor plan's "view history" deep link).
   final String? initialTableId;
 
   const TablesHistoryScreen({super.key, this.initialTableId});
   @override
-  State<TablesHistoryScreen> createState() => _TablesHistoryScreenState();
+  ConsumerState<TablesHistoryScreen> createState() => _TablesHistoryScreenState();
 }
 
-class _TablesHistoryScreenState extends State<TablesHistoryScreen> {
+class _TablesHistoryScreenState extends ConsumerState<TablesHistoryScreen> {
   List<CafeTable> _tables = [];
   List<FufutOrder> _orders = [];
   bool _loading = true;
@@ -73,7 +73,7 @@ class _TablesHistoryScreenState extends State<TablesHistoryScreen> {
   }
 
   Future<void> _load({bool quiet = false}) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     if (!mounted) return;
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
@@ -91,7 +91,7 @@ class _TablesHistoryScreenState extends State<TablesHistoryScreen> {
     } on ApiError catch (e) {
       if (!mounted) return;
       if (e.isAuthError) {
-        await context.read<AppState>().sessionExpired();
+        await ref.read(appStateProvider).sessionExpired();
         return;
       }
       setState(() { _loading = false; _error = e; });

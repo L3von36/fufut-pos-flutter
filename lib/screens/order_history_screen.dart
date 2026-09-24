@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../models/models.dart';
@@ -20,14 +20,14 @@ import '../widgets/dashboard.dart';
 /// progress — status changes belong to today's board where they can be acted
 /// on. The money line follows REAL_ORDERS (voided and cancelled excluded),
 /// mirroring the web's isRealOrder and reports.js.
-class OrderHistoryScreen extends StatefulWidget {
+class OrderHistoryScreen extends ConsumerStatefulWidget {
   const OrderHistoryScreen({super.key});
 
   @override
-  State<OrderHistoryScreen> createState() => _OrderHistoryScreenState();
+  ConsumerState<OrderHistoryScreen> createState() => _OrderHistoryScreenState();
 }
 
-class _OrderHistoryScreenState extends State<OrderHistoryScreen> {
+class _OrderHistoryScreenState extends ConsumerState<OrderHistoryScreen> {
   static const _page = 100;
 
   static const _presets = [
@@ -111,7 +111,7 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen> {
   }
 
   Future<void> _load() async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     setState(() { _loading = true; _error = null; });
     try {
       final rows = await app.api.orders(
@@ -136,7 +136,7 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen> {
   }
 
   Future<void> _loadMore() async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final messenger = ScaffoldMessenger.of(context);
     setState(() => _loadingMore = true);
     try {

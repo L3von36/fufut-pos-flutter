@@ -9,7 +9,7 @@ library;
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../models/models.dart';
@@ -18,14 +18,14 @@ import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/dashboard.dart';
 
-class DeliveryScreen extends StatefulWidget {
+class DeliveryScreen extends ConsumerStatefulWidget {
   const DeliveryScreen({super.key});
 
   @override
-  State<DeliveryScreen> createState() => _DeliveryScreenState();
+  ConsumerState<DeliveryScreen> createState() => _DeliveryScreenState();
 }
 
-class _DeliveryScreenState extends State<DeliveryScreen> {
+class _DeliveryScreenState extends ConsumerState<DeliveryScreen> {
   List<DeliveryJob> _jobs = [];
   bool _loading = true;
   Object? _error;
@@ -45,7 +45,7 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
   }
 
   Future<void> _load({bool quiet = false}) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
       final jobs = await app.api.deliveries();
@@ -65,7 +65,7 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
   }
 
   Future<void> _advance(DeliveryJob j) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final messenger = ScaffoldMessenger.of(context);
     final to = _next(j.status);
     if (to == null) return;

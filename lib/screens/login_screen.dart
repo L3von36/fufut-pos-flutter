@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../state/app_state.dart';
@@ -15,14 +15,14 @@ import '../theme.dart';
 /// One field takes either a staff id (e.g. `MGR-01`) or an email — the API
 /// disambiguates by the `@`. The server URL sits behind a collapsed tile so
 /// a deployment move is fixable from the tablet itself.
-class LoginScreen extends StatefulWidget {
+class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
 
   @override
-  State<LoginScreen> createState() => _LoginScreenState();
+  ConsumerState<LoginScreen> createState() => _LoginScreenState();
 }
 
-class _LoginScreenState extends State<LoginScreen> {
+class _LoginScreenState extends ConsumerState<LoginScreen> {
   final _account = TextEditingController();
   final _password = TextEditingController();
   final _server = TextEditingController();
@@ -34,12 +34,12 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   void initState() {
     super.initState();
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     _server.text = app.baseUrl;
   }
 
   Future<void> _submit() async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final account = _account.text.trim();
     final password = _password.text;
     if (account.isEmpty || password.isEmpty) {

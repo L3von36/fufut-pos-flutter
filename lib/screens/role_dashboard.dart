@@ -20,7 +20,7 @@ library;
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../models/models.dart';
@@ -53,14 +53,14 @@ String timeAgo(String? stamp) {
 }
 
 /// Entry point — dispatches on the signed-in role.
-class RoleDashboard extends StatelessWidget {
+class RoleDashboard extends ConsumerWidget {
   final ValueChanged<NavKey>? onNavigate;
 
   const RoleDashboard({super.key, this.onNavigate});
 
   @override
-  Widget build(BuildContext context) {
-    final role = context.watch<AppState>().roleKey ?? '';
+  Widget build(BuildContext context, WidgetRef ref) {
+    final role = ref.watch(appStateProvider).roleKey ?? '';
     switch (role) {
       case 'head-waiter':
         return WaiterDashboard(onNavigate: onNavigate);
@@ -86,15 +86,15 @@ class RoleDashboard extends StatelessWidget {
 // Head waiter
 // ─────────────────────────────────────────────────────────────────────────────
 
-class WaiterDashboard extends StatefulWidget {
+class WaiterDashboard extends ConsumerStatefulWidget {
   final ValueChanged<NavKey>? onNavigate;
   const WaiterDashboard({super.key, this.onNavigate});
 
   @override
-  State<WaiterDashboard> createState() => _WaiterDashboardState();
+  ConsumerState<WaiterDashboard> createState() => _WaiterDashboardState();
 }
 
-class _WaiterDashboardState extends State<WaiterDashboard> {
+class _WaiterDashboardState extends ConsumerState<WaiterDashboard> {
   List<FufutOrder> _orders = [];
   List<CafeTable> _tables = [];
   List<Reservation> _reservations = [];
@@ -116,7 +116,7 @@ class _WaiterDashboardState extends State<WaiterDashboard> {
   }
 
   Future<void> _load({bool quiet = false}) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
       final results = await Future.wait([
@@ -314,15 +314,15 @@ class _WaiterDashboardState extends State<WaiterDashboard> {
 // Kitchen — head chef / assistant chef / barista
 // ─────────────────────────────────────────────────────────────────────────────
 
-class ChefDashboard extends StatefulWidget {
+class ChefDashboard extends ConsumerStatefulWidget {
   final ValueChanged<NavKey>? onNavigate;
   const ChefDashboard({super.key, this.onNavigate});
 
   @override
-  State<ChefDashboard> createState() => _ChefDashboardState();
+  ConsumerState<ChefDashboard> createState() => _ChefDashboardState();
 }
 
-class _ChefDashboardState extends State<ChefDashboard> {
+class _ChefDashboardState extends ConsumerState<ChefDashboard> {
   List<FufutOrder> _orders = [];
   bool _loading = true;
   Object? _error;
@@ -342,7 +342,7 @@ class _ChefDashboardState extends State<ChefDashboard> {
   }
 
   Future<void> _load({bool quiet = false}) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
       final rows = await app.api.orders();
@@ -479,7 +479,7 @@ class _ChefDashboardState extends State<ChefDashboard> {
 
   Widget _quickActions() {
     void go(NavKey k) => widget.onNavigate?.call(k);
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final chef = app.roleKey == 'head-chef';
     return GridView.count(
       crossAxisCount: 4,
@@ -517,15 +517,15 @@ class _ChefDashboardState extends State<ChefDashboard> {
 // Cashier — sales tiles + live till float + bill requests
 // ─────────────────────────────────────────────────────────────────────────────
 
-class CashierDashboard extends StatefulWidget {
+class CashierDashboard extends ConsumerStatefulWidget {
   final ValueChanged<NavKey>? onNavigate;
   const CashierDashboard({super.key, this.onNavigate});
 
   @override
-  State<CashierDashboard> createState() => _CashierDashboardState();
+  ConsumerState<CashierDashboard> createState() => _CashierDashboardState();
 }
 
-class _CashierDashboardState extends State<CashierDashboard> {
+class _CashierDashboardState extends ConsumerState<CashierDashboard> {
   DashboardStats? _stats;
   CashDrawerState? _drawer;
   List<CafeTable> _tables = [];
@@ -548,7 +548,7 @@ class _CashierDashboardState extends State<CashierDashboard> {
   }
 
   Future<void> _load({bool quiet = false}) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
       final results = await Future.wait([
@@ -585,7 +585,7 @@ class _CashierDashboardState extends State<CashierDashboard> {
     if (_error != null && _stats == null) {
       return LoadError(error: _error!, onRetry: () => _load());
     }
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final s = _stats;
     final isManager = app.roleKey == 'manager';
 
@@ -826,7 +826,7 @@ class _CashierDashboardState extends State<CashierDashboard> {
                     height: 30,
                     child: OutlinedButton(
                       onPressed: () async {
-                        final app = context.read<AppState>();
+                        final app = ref.read(appStateProvider);
                         final messenger = ScaffoldMessenger.of(context);
                         try {
                           await app.api.cancelBillRequest(t.id);
@@ -887,15 +887,15 @@ class _CashierDashboardState extends State<CashierDashboard> {
 // Delivery staff
 // ─────────────────────────────────────────────────────────────────────────────
 
-class DriverDashboard extends StatefulWidget {
+class DriverDashboard extends ConsumerStatefulWidget {
   final ValueChanged<NavKey>? onNavigate;
   const DriverDashboard({super.key, this.onNavigate});
 
   @override
-  State<DriverDashboard> createState() => _DriverDashboardState();
+  ConsumerState<DriverDashboard> createState() => _DriverDashboardState();
 }
 
-class _DriverDashboardState extends State<DriverDashboard> {
+class _DriverDashboardState extends ConsumerState<DriverDashboard> {
   List<DeliveryJob> _jobs = [];
   bool _loading = true;
   Object? _error;
@@ -915,7 +915,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
   }
 
   Future<void> _load({bool quiet = false}) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
       final rows = await app.api.deliveries();
@@ -1061,15 +1061,15 @@ class _DriverDashboardState extends State<DriverDashboard> {
 // Cleaner
 // ─────────────────────────────────────────────────────────────────────────────
 
-class CleanerDashboard extends StatefulWidget {
+class CleanerDashboard extends ConsumerStatefulWidget {
   final ValueChanged<NavKey>? onNavigate;
   const CleanerDashboard({super.key, this.onNavigate});
 
   @override
-  State<CleanerDashboard> createState() => _CleanerDashboardState();
+  ConsumerState<CleanerDashboard> createState() => _CleanerDashboardState();
 }
 
-class _CleanerDashboardState extends State<CleanerDashboard> {
+class _CleanerDashboardState extends ConsumerState<CleanerDashboard> {
   List<CafeTable> _tables = [];
   List<WasteEntry> _waste = [];
   bool _loading = true;
@@ -1090,7 +1090,7 @@ class _CleanerDashboardState extends State<CleanerDashboard> {
   }
 
   Future<void> _load({bool quiet = false}) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
       final results = await Future.wait([

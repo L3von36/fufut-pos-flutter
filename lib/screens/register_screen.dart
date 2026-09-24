@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/api_client.dart';
@@ -18,14 +18,14 @@ import 'cart_sheet.dart';
 /// density toggle, course chips (dine-in), then the photo grid. The check
 /// floats as a teal pill on phones and docks as a 340px right column on
 /// wide landscape screens — the web's two cart layouts.
-class RegisterScreen extends StatefulWidget {
+class RegisterScreen extends ConsumerStatefulWidget {
   const RegisterScreen({super.key});
 
   @override
-  State<RegisterScreen> createState() => _RegisterScreenState();
+  ConsumerState<RegisterScreen> createState() => _RegisterScreenState();
 }
 
-class _RegisterScreenState extends State<RegisterScreen> {
+class _RegisterScreenState extends ConsumerState<RegisterScreen> {
   List<MenuItem> _menu = const [];
   bool _loading = true;
   bool _offline = false;
@@ -58,7 +58,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
   }
 
   Future<void> _load() async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     setState(() {
       _loading = true;
       _offline = false;
@@ -138,7 +138,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final cart = context.watch<CartState>();
+    final cart = ref.watch(cartProvider);
     final size = MediaQuery.sizeOf(context);
     // The web docks the check at (min-width:1024px) + landscape.
     final docked = size.width >= 1024 && size.width > size.height;
@@ -404,7 +404,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
         itemCount: _filtered.length,
         itemBuilder: (context, i) => _ProductCard(
           item: _filtered[i],
-          app: context.read<AppState>(),
+          app: ref.read(appStateProvider),
           overlay: overlay,
           onAdd: () => _add(_filtered[i], 1),
           onLongPress: () => _openQtySheet(_filtered[i]),
@@ -416,7 +416,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
   /// Compact list rows — the web's list density: no photo, one line.
   Widget _buildListRow(MenuItem item) {
     final pal = Pal.of(context);
-    final cart = context.watch<CartState>();
+    final cart = ref.watch(cartProvider);
     final inCart = cart.qtyForItem(item.id);
     return Padding(
       padding: const EdgeInsets.only(bottom: 5),
@@ -461,7 +461,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
   // ── Add / qty flows ─────────────────────────────────────────────────────────
 
   void _add(MenuItem item, int qty) {
-    final cart = context.read<CartState>();
+    final cart = ref.read(cartProvider);
     if (item.modifiers.isNotEmpty) {
       _showModifierSheet(context, item, qty);
       return;
@@ -539,17 +539,14 @@ class _RegisterScreenState extends State<RegisterScreen> {
           borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
       constraints: BoxConstraints(
           maxWidth: 500, maxHeight: MediaQuery.sizeOf(context).height * 0.75),
-      builder: (_) => ChangeNotifierProvider.value(
-        value: context.read<CartState>(),
-        child: const CartPanel(),
-      ),
+      builder: (_) => const CartPanel(),
     );
   }
 
   // ── Modifiers ───────────────────────────────────────────────────────────────
 
   void _showModifierSheet(BuildContext context, MenuItem item, int qty) {
-    final cart = context.read<CartState>();
+    final cart = ref.read(cartProvider);
     final selected = <int>{};
     final pal = Pal.of(context);
     showModalBottomSheet(
@@ -781,7 +778,7 @@ class _CatChip extends StatelessWidget {
 // Product card — photo 16:10, name/price block, + button, in-cart ring.
 // ─────────────────────────────────────────────────────────────────────────────
 
-class _ProductCard extends StatelessWidget {
+class _ProductCard extends ConsumerWidget {
   final MenuItem item;
   final AppState app;
   final bool overlay;
@@ -797,9 +794,9 @@ class _ProductCard extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final pal = Pal.of(context);
-    final cart = context.watch<CartState>();
+    final cart = ref.watch(cartProvider);
     final disabled = !item.available;
     final inCart = cart.qtyForItem(item.id);
 

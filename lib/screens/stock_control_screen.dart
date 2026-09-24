@@ -4,7 +4,7 @@
 library;
 
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../models/models.dart';
@@ -19,14 +19,14 @@ const kCountReasons = [
   'Delivery not recorded', 'Transfer', 'Other',
 ];
 
-class StockControlScreen extends StatefulWidget {
+class StockControlScreen extends ConsumerStatefulWidget {
   const StockControlScreen({super.key});
 
   @override
-  State<StockControlScreen> createState() => _StockControlScreenState();
+  ConsumerState<StockControlScreen> createState() => _StockControlScreenState();
 }
 
-class _StockControlScreenState extends State<StockControlScreen> {
+class _StockControlScreenState extends ConsumerState<StockControlScreen> {
   int _tab = 0;
   bool _loading = true;
   Object? _error;
@@ -74,7 +74,7 @@ class _StockControlScreenState extends State<StockControlScreen> {
   String get _toIso => '${_to}T23:59:59.999Z';
 
   Future<void> _loadTab(int tab, {bool quiet = false}) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     setState(() {
       _tab = tab;
       if (!quiet) { _loading = true; _error = null; }
@@ -117,7 +117,7 @@ class _StockControlScreenState extends State<StockControlScreen> {
 
   Future<void> _postCount() async {
     final messenger = ScaffoldMessenger.of(context);
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final items = <Map<String, dynamic>>[];
     for (final i in _countSheet) {
       final raw = _countCtrl[i.id]?.text.trim() ?? '';

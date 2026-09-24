@@ -5,7 +5,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:fufut_pos/api/api_client.dart';
@@ -217,10 +217,9 @@ void main() {
     addTearDown(tester.view.reset);
 
     await tester.pumpWidget(
-      MultiProvider(
-        providers: [
-          ChangeNotifierProvider<AppState>.value(value: app),
-          ChangeNotifierProvider<CartState>(create: (_) => CartState()),
+      ProviderScope(
+        overrides: [
+          appStateProvider.overrideWith(() => AppStateNotifier(seed: app)),
         ],
         child: const MaterialApp(home: Scaffold(body: TablesScreen())),
       ),

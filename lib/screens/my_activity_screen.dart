@@ -10,7 +10,7 @@ library;
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../models/models.dart';
@@ -19,14 +19,14 @@ import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/dashboard.dart';
 
-class MyActivityScreen extends StatefulWidget {
+class MyActivityScreen extends ConsumerStatefulWidget {
   const MyActivityScreen({super.key});
 
   @override
-  State<MyActivityScreen> createState() => _MyActivityScreenState();
+  ConsumerState<MyActivityScreen> createState() => _MyActivityScreenState();
 }
 
-class _MyActivityScreenState extends State<MyActivityScreen> {
+class _MyActivityScreenState extends ConsumerState<MyActivityScreen> {
   List<AuditEntry> _entries = [];
   String _range = 'today';
   bool _loading = true;
@@ -59,7 +59,7 @@ class _MyActivityScreenState extends State<MyActivityScreen> {
   }
 
   Future<void> _load({bool quiet = false}) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final me = app.user;
     if (me == null) return;
     if (!quiet) setState(() { _loading = true; _error = null; });
@@ -186,7 +186,7 @@ class _MyActivityScreenState extends State<MyActivityScreen> {
       return LoadError(error: _error!, onRetry: () => _load());
     }
     final pal = Pal.of(context);
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final role = app.roleKey ?? '';
     final kpis = _kpisFor(role);
     final byArea = _topBy(true);

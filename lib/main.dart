@@ -1,13 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_native_splash/flutter_native_splash.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'screens/change_password_screen.dart';
 import 'screens/home_shell.dart';
 import 'screens/login_screen.dart';
 import 'screens/splash_screen.dart';
 import 'state/app_state.dart';
-import 'state/cart.dart';
 import 'state/theme_controller.dart';
 import 'theme.dart';
 
@@ -29,59 +28,49 @@ void main() {
   // invisible anyway.
   WidgetsFlutterBinding.ensureInitialized();
   initSystemChrome();
-  runApp(const FufutPosApp());
+  // One container above MaterialApp: every route, dialog and modal bottom
+  // sheet reads the same providers (the old ChangeNotifierProvider.value
+  // re-provisioning for sheets is no longer needed).
+  runApp(const ProviderScope(child: FufutPosApp()));
 }
 
-class FufutPosApp extends StatelessWidget {
+class FufutPosApp extends ConsumerWidget {
   const FufutPosApp({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    return MultiProvider(
-      providers: [
-        ChangeNotifierProvider(create: (_) => AppState()),
-        ChangeNotifierProvider(create: (_) => CartState()),
-        ChangeNotifierProvider(create: (_) => ThemeController()..load()),
-      ],
-      child: Consumer<ThemeController>(
-        builder: (context, theme, _) => MaterialApp(
-          title: 'FU FUT POS',
-          debugShowCheckedModeBanner: false,
-          theme: buildLightTheme(),
-          darkTheme: buildDarkTheme(),
-          themeMode: theme.mode,
-          home: const RootGate(),
-        ),
-      ),
+  Widget build(BuildContext context, WidgetRef ref) {
+    final themeMode = ref.watch(themeModeProvider);
+    return MaterialApp(
+      title: 'FU FUT POS',
+      debugShowCheckedModeBanner: false,
+      theme: buildLightTheme(),
+      darkTheme: buildDarkTheme(),
+      themeMode: themeMode,
+      home: const RootGate(),
     );
   }
 }
 
 /// Waits for the session cache to load, then routes to the shell or login.
-class RootGate extends StatefulWidget {
+class RootGate extends ConsumerStatefulWidget {
   const RootGate({super.key});
 
   @override
-  State<RootGate> createState() => _RootGateState();
+  ConsumerState<RootGate> createState() => _RootGateState();
 }
 
-class _RootGateState extends State<RootGate> {
-  AppState? _app;
+class _RootGateState extends ConsumerState<RootGate> {
   DateTime? _bootStarted;
   bool _splashDismissed = false;
 
   @override
   void initState() {
     super.initState();
-    // Save the reference: context.read inside dispose() looks up a
-    // deactivated widget's ancestor and throws.
-    final app = context.read<AppState>();
-    _app = app;
     // boot() restores the persisted session and fires the /auth/me check;
-    // the gate listens once and moves when the first notify arrives.
+    // build()'s ref.watch(appStateProvider) moves the gate on the first
+    // notify — no manual listener bookkeeping anymore.
     _bootStarted = DateTime.now();
-    app.boot().whenComplete(_finishSplash);
-    app.addListener(_onAppChange);
+    ref.read(appStateProvider).boot().whenComplete(_finishSplash);
     // Release the native/HTML launch screen as soon as the first Flutter
     // frame is on screen — the splash shows the same seal on the same teal,
     // so there is no visible seam. On web this also drops the #splash DOM
@@ -102,19 +91,9 @@ class _RootGateState extends State<RootGate> {
     if (mounted) setState(() => _splashDismissed = true);
   }
 
-  void _onAppChange() {
-    if (mounted) setState(() {});
-  }
-
-  @override
-  void dispose() {
-    _app?.removeListener(_onAppChange);
-    super.dispose();
-  }
-
   @override
   Widget build(BuildContext context) {
-    final app = context.watch<AppState>();
+    final app = ref.watch(appStateProvider);
     // Stage 0 — session still restoring: the branded splash (boot errors
     // surface on the login screen, same as before).
     if (!app.booted || !_splashDismissed) {

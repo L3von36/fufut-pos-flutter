@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../state/app_state.dart';
@@ -10,21 +10,21 @@ import '../widgets/common.dart';
 /// Session + server settings. Deliberately small: this is the tablet's
 /// "who am I / where do I point" screen, not a management dashboard — all of
 /// that stays on the web backoffice.
-class SettingsScreen extends StatefulWidget {
+class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
 
   @override
-  State<SettingsScreen> createState() => _SettingsScreenState();
+  ConsumerState<SettingsScreen> createState() => _SettingsScreenState();
 }
 
-class _SettingsScreenState extends State<SettingsScreen> {
+class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   final _server = TextEditingController();
   bool _editingServer = false;
 
   @override
   void initState() {
     super.initState();
-    _server.text = context.read<AppState>().baseUrl;
+    _server.text = ref.read(appStateProvider).baseUrl;
   }
 
   /// Voluntary password change — the same POST the forced flow uses, but
@@ -70,7 +70,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final app = context.watch<AppState>();
+    final app = ref.watch(appStateProvider);
     final pal = Pal.of(context);
     final user = app.user;
     return ListView(
@@ -305,7 +305,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               );
               if (ok == true && context.mounted) {
-                await context.read<AppState>().logout();
+                await ref.read(appStateProvider).logout();
               }
             },
             icon: const Icon(Icons.logout, size: 17),

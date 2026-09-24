@@ -4,7 +4,7 @@
 library;
 
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../models/models.dart';
@@ -17,14 +17,14 @@ import '../widgets/dashboard.dart';
 
 const kShiftTypes = ['morning', 'afternoon', 'evening'];
 
-class ShiftsScreen extends StatefulWidget {
+class ShiftsScreen extends ConsumerStatefulWidget {
   const ShiftsScreen({super.key});
 
   @override
-  State<ShiftsScreen> createState() => _ShiftsScreenState();
+  ConsumerState<ShiftsScreen> createState() => _ShiftsScreenState();
 }
 
-class _ShiftsScreenState extends State<ShiftsScreen> {
+class _ShiftsScreenState extends ConsumerState<ShiftsScreen> {
   List<ShiftRow> _rows = [];
   List<StaffMember> _staff = [];
   bool _loading = true;
@@ -44,11 +44,11 @@ class _ShiftsScreenState extends State<ShiftsScreen> {
     super.dispose();
   }
 
-  String get _role => context.read<AppState>().roleKey ?? '';
+  String get _role => ref.read(appStateProvider).roleKey ?? '';
   bool get _canWrite => _role == 'manager';
 
   Future<void> _load({bool quiet = false}) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
       final results = await Future.wait<dynamic>(
@@ -89,7 +89,7 @@ class _ShiftsScreenState extends State<ShiftsScreen> {
       return;
     }
     final messenger = ScaffoldMessenger.of(context);
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     String staffId = edit?.staffId ?? _staff.first.id;
     String type = edit?.shiftType.isEmpty == false ? edit!.shiftType : 'morning';
     final dateC = TextEditingController(
@@ -153,7 +153,7 @@ class _ShiftsScreenState extends State<ShiftsScreen> {
 
   Future<void> _delete(ShiftRow s) async {
     final messenger = ScaffoldMessenger.of(context);
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     try {
       await app.api.deleteShift(s.id);
       showInfoOn(messenger, 'Shift removed');

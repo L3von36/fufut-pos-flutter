@@ -44,7 +44,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../api/sse/sse_channel.dart';
@@ -58,7 +58,7 @@ import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/dashboard.dart';
 
-class KitchenBoard extends StatefulWidget {
+class KitchenBoard extends ConsumerStatefulWidget {
   final bool baristaMode;
 
   /// Which tab this board instance lives on, and the shell's active-tab
@@ -78,10 +78,10 @@ class KitchenBoard extends StatefulWidget {
   });
 
   @override
-  State<KitchenBoard> createState() => _KitchenBoardState();
+  ConsumerState<KitchenBoard> createState() => _KitchenBoardState();
 }
 
-class _KitchenBoardState extends State<KitchenBoard>
+class _KitchenBoardState extends ConsumerState<KitchenBoard>
     with WidgetsBindingObserver {
   List<FufutOrder> _orders = [];
   // orderId → itemId → status, from `GET /api/orders/items/active`.
@@ -130,7 +130,7 @@ class _KitchenBoardState extends State<KitchenBoard>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _app = context.read<AppState>();
+    _app = ref.read(appStateProvider);
     _tabUp = widget.activeTab?.value == widget.self;
     widget.activeTab?.addListener(_onTabChanged);
     _load();
@@ -388,7 +388,7 @@ class _KitchenBoardState extends State<KitchenBoard>
     _messenger = ScaffoldMessenger.of(context);
     // Settings can re-point the API mid-shift; the channel rebuilds so the
     // stream follows the same base URL the REST calls use.
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     if (_sse != null && _sse!.baseUrl != app.baseUrl) {
       _app = app;
       _connectSse();
@@ -485,7 +485,7 @@ class _KitchenBoardState extends State<KitchenBoard>
   /// sees the failure too.
   Future<void> _pickupTicket(_Ticket t) async {
     if (_busyTicket != null) return;
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final messenger = ScaffoldMessenger.of(context);
     _busyTicket = t.order.id;
     if (mounted) setState(() {});
@@ -511,7 +511,7 @@ class _KitchenBoardState extends State<KitchenBoard>
   /// write (that is exactly the bug that moved both stations) — refresh
   /// instead.
   Future<void> _advanceLine(_Ticket t, OrderItemLine line, String to) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final messenger = ScaffoldMessenger.of(context);
     final lineKey = '${t.order.id}/${line.name}/${line.qty}';
     if (_busyLines.contains(lineKey) || _busyTicket != null) return;
@@ -607,7 +607,7 @@ class _KitchenBoardState extends State<KitchenBoard>
   Future<void> _bulkAdvance(_Ticket t, String from, {bool undoable = false}) async {
     const flow = {'new': 'preparing', 'preparing': 'ready'};
     final to = flow[from]!;
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final messenger = ScaffoldMessenger.of(context);
     if (_busyTicket != null) return;
 

@@ -10,7 +10,7 @@ library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../models/models.dart';
@@ -19,14 +19,14 @@ import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/dashboard.dart';
 
-class TimeClockScreen extends StatefulWidget {
+class TimeClockScreen extends ConsumerStatefulWidget {
   const TimeClockScreen({super.key});
 
   @override
-  State<TimeClockScreen> createState() => _TimeClockScreenState();
+  ConsumerState<TimeClockScreen> createState() => _TimeClockScreenState();
 }
 
-class _TimeClockScreenState extends State<TimeClockScreen> {
+class _TimeClockScreenState extends ConsumerState<TimeClockScreen> {
   TimeclockMe? _me;
   List<TimeclockEntry> _history = [];
   List<TimeclockEntry> _roster = [];
@@ -43,7 +43,7 @@ class _TimeClockScreenState extends State<TimeClockScreen> {
   }
 
   Future<void> _load({bool quiet = false}) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
       final results = await Future.wait([
@@ -81,7 +81,7 @@ class _TimeClockScreenState extends State<TimeClockScreen> {
   // ── Actions ───────────────────────────────────────────────────────────────
 
   Future<void> _clockIn() async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final messenger = ScaffoldMessenger.of(context);
     try {
       await app.api.clockIn();
@@ -94,7 +94,7 @@ class _TimeClockScreenState extends State<TimeClockScreen> {
   }
 
   Future<void> _clockOut({bool force = false}) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final messenger = ScaffoldMessenger.of(context);
     try {
       await app.api.clockOut(force: force);
@@ -154,7 +154,7 @@ class _TimeClockScreenState extends State<TimeClockScreen> {
   }
 
   Future<void> _break(bool start) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final messenger = ScaffoldMessenger.of(context);
     try {
       if (start) {
@@ -400,14 +400,14 @@ class _TimeClockScreenState extends State<TimeClockScreen> {
 // Handover form — six fields, exactly the web's shift handover.
 // ─────────────────────────────────────────────────────────────────────────────
 
-class _HandoverSheet extends StatefulWidget {
+class _HandoverSheet extends ConsumerStatefulWidget {
   const _HandoverSheet();
 
   @override
-  State<_HandoverSheet> createState() => _HandoverSheetState();
+  ConsumerState<_HandoverSheet> createState() => _HandoverSheetState();
 }
 
-class _HandoverSheetState extends State<_HandoverSheet> {
+class _HandoverSheetState extends ConsumerState<_HandoverSheet> {
   final _pendingOrders = TextEditingController();
   final _pendingTasks = TextEditingController();
   final _cashInfo = TextEditingController();
@@ -428,7 +428,7 @@ class _HandoverSheetState extends State<_HandoverSheet> {
   }
 
   Future<void> _save() async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final messenger = ScaffoldMessenger.of(context);
     final navigator = Navigator.of(context);
     setState(() => _saving = true);

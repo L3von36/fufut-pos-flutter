@@ -12,6 +12,7 @@ library;
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/api_client.dart';
@@ -26,7 +27,18 @@ const String kDefaultBaseUrl = kIsWeb
     ? ''
     : 'https://fufut-api.fufutcoffee.workers.dev';
 
-class AppState extends ChangeNotifier {
+/// Session + settings state. Mutable by design: the whole app holds one
+/// instance and calls its methods (`app.login(...)`, `app.sessionExpired()`)
+/// the same way it did under `package:provider`. The Riverpod wiring lives
+/// in [AppStateNotifier] below — mutations funnel through [_onChanged] (the
+/// old `notifyListeners()`), which the notifier maps to `ref.notifyListeners`
+/// so every `ref.watch(appStateProvider)` repaints.
+class AppState {
+  /// Invoked after every state mutation. Assigned by [AppStateNotifier] on
+  /// build; stays null only for bare unit-test instances that nobody
+  /// watches.
+  void Function()? _onChanged;
+
   late ApiClient client;
   late FufutApi api;
 
@@ -87,7 +99,7 @@ class AppState extends ChangeNotifier {
     } catch (_) {
       // Unreachable or refused: keep the last known value.
     }
-    notifyListeners();
+    _notifyListeners();
   }
 
   SharedPreferences? _prefs;
@@ -96,10 +108,12 @@ class AppState extends ChangeNotifier {
   static const _kSession = 'fufut.pos.session';
   static const _kIdentity = 'fufut.pos.identity';
 
-  AppState() {
+  AppState({void Function()? onChanged}) : _onChanged = onChanged {
     client = ApiClient(baseUrl: baseUrl);
     api = FufutApi(client);
   }
+
+  void _notifyListeners() => _onChanged?.call();
 
   Future<void> boot() async {
     if (_booted) return;
@@ -129,7 +143,7 @@ class AppState extends ChangeNotifier {
       _revalidateSession();
     }
     _booted = true;
-    notifyListeners();
+    _notifyListeners();
     // The till gate needs a fresh answer for the shell's screens.
     if (savedSession != null) refreshTill();
   }
@@ -147,7 +161,7 @@ class AppState extends ChangeNotifier {
         // The server answered and said no — the session is over.
         await _clearSession();
       }
-      notifyListeners();
+      _notifyListeners();
     } on ApiError {
       // Unreachable: keep the cached identity, stay on the current screen.
       // The next real request will surface auth errors if the cookie died.
@@ -160,7 +174,7 @@ class AppState extends ChangeNotifier {
     baseUrl = clean;
     client.baseUrl = clean;
     await _prefs?.setString(_kBaseUrl, clean);
-    notifyListeners();
+    _notifyListeners();
   }
 
   Future<void> login(String account, String password) async {
@@ -184,7 +198,7 @@ class AppState extends ChangeNotifier {
     }
     _rememberIdentity();
     refreshTill(); // the shell's gates read this
-    notifyListeners();
+    _notifyListeners();
   }
 
   Future<void> logout() async {
@@ -194,7 +208,7 @@ class AppState extends ChangeNotifier {
       // The local sign-out must happen regardless.
     }
     await _clearSession();
-    notifyListeners();
+    _notifyListeners();
   }
 
   Future<void> _clearSession() async {
@@ -215,7 +229,7 @@ class AppState extends ChangeNotifier {
   Future<void> changePassword(String current, String next) async {
     await api.changePassword(current, next);
     mustChangePassword = false;
-    notifyListeners();
+    _notifyListeners();
   }
 
   void _rememberIdentity() {
@@ -239,6 +253,28 @@ class AppState extends ChangeNotifier {
   /// died server-side. Clears state so the router lands on Login.
   Future<void> sessionExpired() async {
     await _clearSession();
-    notifyListeners();
+    _notifyListeners();
   }
 }
+
+/// Riverpod wiring for [AppState]. The notifier keeps one [AppState] alive
+/// for the app's lifetime (no autoDispose — session state must survive
+/// navigation), and lends it `ref.notifyListeners` as the mutation bell.
+///
+/// Tests that script a fake API build their own [AppState] first (client,
+/// identity, role) and hand it over as a seed:
+/// `appStateProvider.overrideWith(() => AppStateNotifier(seed: app))`.
+class AppStateNotifier extends Notifier<AppState> {
+  AppStateNotifier({AppState? seed}) : _seed = seed;
+  final AppState? _seed;
+
+  @override
+  AppState build() {
+    final s = _seed ?? AppState();
+    s._onChanged = ref.notifyListeners;
+    return s;
+  }
+}
+
+final appStateProvider =
+    NotifierProvider<AppStateNotifier, AppState>(AppStateNotifier.new);

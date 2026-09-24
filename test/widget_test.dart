@@ -2,12 +2,13 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:fufut_pos/main.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 void main() {
   testWidgets('boots to the login screen when no session is stored',
       (tester) async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
-    await tester.pumpWidget(const FufutPosApp());
+    await tester.pumpWidget(const ProviderScope(child: FufutPosApp()));
     await tester.pumpAndSettle();
     // The split login card: brand panel + form, PWA wording.
     expect(find.text('FU FUT'), findsWidgets);

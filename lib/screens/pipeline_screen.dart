@@ -8,7 +8,7 @@ library;
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../api/sse/sse_channel.dart';
@@ -21,17 +21,17 @@ import '../widgets/backoffice.dart';
 import '../widgets/common.dart';
 import '../widgets/dashboard.dart';
 
-class PipelineScreen extends StatefulWidget {
+class PipelineScreen extends ConsumerStatefulWidget {
   final ValueNotifier<NavKey>? activeTab;
   final NavKey? self;
 
   const PipelineScreen({super.key, this.activeTab, this.self});
 
   @override
-  State<PipelineScreen> createState() => _PipelineScreenState();
+  ConsumerState<PipelineScreen> createState() => _PipelineScreenState();
 }
 
-class _PipelineScreenState extends State<PipelineScreen> {
+class _PipelineScreenState extends ConsumerState<PipelineScreen> {
   List<FufutOrder> _orders = [];
   bool _loading = true;
   Object? _error;
@@ -77,7 +77,7 @@ class _PipelineScreenState extends State<PipelineScreen> {
   }
 
   void _connect() {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final ch = SseChannel(
       baseUrl: app.baseUrl,
       channel: 'kitchen',
@@ -124,7 +124,7 @@ class _PipelineScreenState extends State<PipelineScreen> {
   }
 
   Future<void> _refreshFromApi() async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     try {
       final rows = await app.api.orders();
       if (!mounted) return;
@@ -135,7 +135,7 @@ class _PipelineScreenState extends State<PipelineScreen> {
   }
 
   Future<void> _load({bool quiet = false}) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
       final rows = await app.api.orders();
@@ -151,7 +151,7 @@ class _PipelineScreenState extends State<PipelineScreen> {
     }
   }
 
-  String get _role => context.read<AppState>().roleKey ?? '';
+  String get _role => ref.read(appStateProvider).roleKey ?? '';
   bool get _canCancel => _role == 'manager';
 
   static const _lanes = [
@@ -180,7 +180,7 @@ class _PipelineScreenState extends State<PipelineScreen> {
 
   Future<void> _advance(FufutOrder o, String status) async {
     final messenger = ScaffoldMessenger.of(context);
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     // Optimistic move, revert on refusal — the web drag contract.
     setState(() {
       _orders = [

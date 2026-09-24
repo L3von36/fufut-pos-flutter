@@ -42,7 +42,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../api/sse/sse_channel.dart';
@@ -58,7 +58,7 @@ import '../widgets/dashboard.dart' show LoadError;
 import 'checkout_sheet.dart' show PaymentResult, PaymentSheet;
 import 'orders_screen.dart' show OrderDetailSheet;
 
-class TablesScreen extends StatefulWidget {
+class TablesScreen extends ConsumerStatefulWidget {
   final ValueChanged<NavKey>? onNavigate;
 
   /// The shell's active-tab notifier — the keep-alive contract. An offstage
@@ -69,10 +69,10 @@ class TablesScreen extends StatefulWidget {
   const TablesScreen({super.key, this.onNavigate, this.activeTab, this.self});
 
   @override
-  State<TablesScreen> createState() => _TablesScreenState();
+  ConsumerState<TablesScreen> createState() => _TablesScreenState();
 }
 
-class _TablesScreenState extends State<TablesScreen>
+class _TablesScreenState extends ConsumerState<TablesScreen>
     with WidgetsBindingObserver {
   List<CafeTable> _tables = [];
   List<FufutOrder> _orders = []; // floor-relevant orders (the web's filter)
@@ -155,7 +155,7 @@ class _TablesScreenState extends State<TablesScreen>
   // ── Data loading (each feed catches its own failures, like the web) ──────
 
   Future<void> _loadTables({bool quiet = false}) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     if (!quiet) setState(() => _loading = true);
     try {
       final rows = await app.api.tables();
@@ -191,7 +191,7 @@ class _TablesScreenState extends State<TablesScreen>
   }
 
   Future<void> _loadOrders({bool quiet = true}) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     try {
       final all = await app.api.orders();
       if (!mounted) return;
@@ -203,7 +203,7 @@ class _TablesScreenState extends State<TablesScreen>
   }
 
   Future<void> _loadPending() async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     try {
       final rows = await app.api.pendingOrders();
       if (!mounted) return;
@@ -218,7 +218,7 @@ class _TablesScreenState extends State<TablesScreen>
   }
 
   Future<void> _loadSections() async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     try {
       final serverList = await app.api.tableSections();
       if (!mounted) return;
@@ -318,7 +318,7 @@ class _TablesScreenState extends State<TablesScreen>
   static int _createdMs(FufutOrder o) =>
       DateTime.tryParse(o.created ?? '')?.toUtc().millisecondsSinceEpoch ?? -1;
 
-  bool get _isManager => context.read<AppState>().roleKey == 'manager';
+  bool get _isManager => ref.read(appStateProvider).roleKey == 'manager';
 
   // ── Keep-alive / lifecycle ────────────────────────────────────────────────
 
@@ -349,7 +349,7 @@ class _TablesScreenState extends State<TablesScreen>
   }
 
   void _connectSse() {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     _tablesSub?.cancel();
     _tablesSse?.disconnect();
     _kitchenSub?.cancel();
@@ -495,7 +495,7 @@ class _TablesScreenState extends State<TablesScreen>
   Future<void> _acceptOrder(FufutOrder order) async {
     if (_accepting != null) return;
     setState(() => _accepting = order.id);
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final messenger = ScaffoldMessenger.of(context);
     try {
       await app.api.acceptOrder(order.id);
@@ -529,7 +529,7 @@ class _TablesScreenState extends State<TablesScreen>
   /// one exists (served-but-unpaid counts; that is how dessert gets sold)
   /// and jump to the menu, exactly the web's newOrderForTable.
   void _newOrderForTable(CafeTable t) {
-    final cart = context.read<CartState>();
+    final cart = ref.read(cartProvider);
     if (t.status == 'occupied') {
       final latest = latestResumableCheck(_orders, t.number);
       if (latest != null) {
@@ -549,7 +549,7 @@ class _TablesScreenState extends State<TablesScreen>
   /// Owner's rule (2026-09): only SERVED orders settle. A check still in the
   /// kitchen cannot be paid yet — the gate says so instead of hiding it.
   Future<void> _goToCheckout(CafeTable t) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final latest = latestResumableCheck(_orders, t.number);
     if (latest == null) {
       showInfoOn(ScaffoldMessenger.of(context),
@@ -595,7 +595,7 @@ class _TablesScreenState extends State<TablesScreen>
   }
 
   Future<String?> _requestBill(CafeTable t) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final messenger = ScaffoldMessenger.of(context);
     try {
       await app.api.requestBill(t.id);
@@ -615,7 +615,7 @@ class _TablesScreenState extends State<TablesScreen>
   }
 
   Future<String?> _cancelBillRequest(CafeTable t) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final messenger = ScaffoldMessenger.of(context);
     try {
       await app.api.cancelBillRequest(t.id);
@@ -644,7 +644,7 @@ class _TablesScreenState extends State<TablesScreen>
   /// Returns null on success, the failure message otherwise (the sheet stays
   /// open on failure, exactly like the web's saveDetail catch).
   Future<String?> _saveTable(Map<String, dynamic> payload, String id) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final messenger = ScaffoldMessenger.of(context);
     try {
       await app.api.updateTable(id, payload);
@@ -669,7 +669,7 @@ class _TablesScreenState extends State<TablesScreen>
   /// (“settle first”), so it surfaces verbatim. Returns null on success, the
   /// failure message otherwise (same contract as _saveTable).
   Future<String?> _freeTable(String id) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final messenger = ScaffoldMessenger.of(context);
     try {
       await app.api.freeTable(id);
@@ -687,7 +687,7 @@ class _TablesScreenState extends State<TablesScreen>
   }
 
   Future<bool> _deleteTable(CafeTable t) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final messenger = ScaffoldMessenger.of(context);
     try {
       await app.api.deleteTable(t.id);
@@ -705,7 +705,7 @@ class _TablesScreenState extends State<TablesScreen>
   }
 
   Future<bool> _releaseHold(CafeTable t, TableHold hold) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final messenger = ScaffoldMessenger.of(context);
     try {
       await app.api.releaseReservation(hold.id);
@@ -724,7 +724,7 @@ class _TablesScreenState extends State<TablesScreen>
 
   Future<void> _openDetail(CafeTable t) async {
     if (_isManager) _loadStaffServers();
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     await showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -733,9 +733,7 @@ class _TablesScreenState extends State<TablesScreen>
           borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
       constraints: BoxConstraints(
           maxWidth: 640, maxHeight: MediaQuery.sizeOf(context).height * 0.92),
-      builder: (_) => ChangeNotifierProvider.value(
-        value: app,
-        child: _DetailSheet(
+      builder: (_) => _DetailSheet(
           table: t,
           tables: _tables,
           isManager: app.roleKey == 'manager',
@@ -781,7 +779,6 @@ class _TablesScreenState extends State<TablesScreen>
           onGoToCheckout: () => _goToCheckout(t),
           onShowQr: () => _generateQr(t),
         ),
-      ),
     );
   }
 
@@ -800,7 +797,7 @@ class _TablesScreenState extends State<TablesScreen>
 
   Future<void> _loadStaffServers() async {
     if (_staffServers.isNotEmpty) return;
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     try {
       final staff = await app.api.staff();
       if (mounted) setState(() => _staffServers = staff);
@@ -810,7 +807,7 @@ class _TablesScreenState extends State<TablesScreen>
   }
 
   Future<void> _generateQr(CafeTable t) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final messenger = ScaffoldMessenger.of(context);
     try {
       final res = await app.api.tableQr(t.id);
@@ -829,7 +826,7 @@ class _TablesScreenState extends State<TablesScreen>
   }
 
   Future<void> _openAddTable() async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     await showModalBottomSheet(
       context: context,
       isScrollControlled: true,

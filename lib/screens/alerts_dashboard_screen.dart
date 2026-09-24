@@ -6,7 +6,7 @@ library;
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../api/sse/sse_channel.dart';
@@ -19,17 +19,17 @@ import '../widgets/backoffice.dart';
 import '../widgets/common.dart';
 import '../widgets/dashboard.dart';
 
-class AlertsDashboardScreen extends StatefulWidget {
+class AlertsDashboardScreen extends ConsumerStatefulWidget {
   final ValueNotifier<NavKey>? activeTab;
   final NavKey? self;
 
   const AlertsDashboardScreen({super.key, this.activeTab, this.self});
 
   @override
-  State<AlertsDashboardScreen> createState() => _AlertsDashboardScreenState();
+  ConsumerState<AlertsDashboardScreen> createState() => _AlertsDashboardScreenState();
 }
 
-class _AlertsDashboardScreenState extends State<AlertsDashboardScreen> {
+class _AlertsDashboardScreenState extends ConsumerState<AlertsDashboardScreen> {
   List<OpsAlert> _open = [];
   List<OpsAlert> _acked = [];
   List<OpsAlert> _resolved = [];
@@ -68,7 +68,7 @@ class _AlertsDashboardScreenState extends State<AlertsDashboardScreen> {
   }
 
   void _connect() {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final ch = SseChannel(
         baseUrl: app.baseUrl,
         channel: 'alerts',
@@ -82,12 +82,12 @@ class _AlertsDashboardScreenState extends State<AlertsDashboardScreen> {
     ch.connect();
   }
 
-  String get _role => context.read<AppState>().roleKey ?? '';
+  String get _role => ref.read(appStateProvider).roleKey ?? '';
   bool get _canAck => kAlertAckRoles.contains(_role);
   bool get _canAckAll => _role == 'manager';
 
   Future<void> _load({bool quiet = false}) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
       final results = await Future.wait<dynamic>([
@@ -117,7 +117,7 @@ class _AlertsDashboardScreenState extends State<AlertsDashboardScreen> {
 
   Future<void> _ack(OpsAlert a) async {
     final messenger = ScaffoldMessenger.of(context);
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     try {
       await app.api.acknowledgeAlert(a.id);
       showInfoOn(messenger, 'Acknowledged');
@@ -129,7 +129,7 @@ class _AlertsDashboardScreenState extends State<AlertsDashboardScreen> {
 
   Future<void> _ackAll() async {
     final messenger = ScaffoldMessenger.of(context);
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     try {
       await app.api.acknowledgeAllAlerts();
       showInfoOn(messenger, 'All open alerts acknowledged');

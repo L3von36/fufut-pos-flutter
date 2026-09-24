@@ -10,12 +10,30 @@ library;
 
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/models.dart';
 
-class CartState extends ChangeNotifier {
+/// Cart state — a faithful port of the web POS `stores/order.js` cart half.
+///
+/// Two invariants carried over:
+///  * Line identity includes name, price, modifiers and notes, so a blank or
+///    duplicated menu id can never silently merge two different products
+///    (the worst case becomes a visible split line, not a wrong total).
+///  * The cart persists to disk for one shift's length (12h), so a flat
+///    battery does not eat an order a waiter already read back to the guest.
+///
+/// The Riverpod wiring lives in [CartNotifier] below — mutations funnel
+/// through [_onChanged] (the old `notifyListeners()`), which the notifier
+/// maps to `ref.notifyListeners` so every `ref.watch(cartProvider)`
+/// repaints.
+class CartState {
+  /// Invoked after every state mutation. Assigned by [CartNotifier] on
+  /// build; stays null only for bare unit-test instances that nobody
+  /// watches.
+  void Function()? _onChanged;
+
   final List<CartLine> _items = [];
 
   // Order context
@@ -44,7 +62,7 @@ class CartState extends ChangeNotifier {
     orderType = 'dine-in';
     this.tableNum = tableNum;
     _persist();
-    notifyListeners();
+    _notifyListeners();
   }
 
   /// Start a fresh order for a table (no open check to attach to).
@@ -55,7 +73,7 @@ class CartState extends ChangeNotifier {
     orderType = 'dine-in';
     this.tableNum = tableNum;
     _persist();
-    notifyListeners();
+    _notifyListeners();
   }
 
   /// Whether Send to Kitchen should PATCH the open ticket instead of POSTing
@@ -66,9 +84,11 @@ class CartState extends ChangeNotifier {
   String paymentMethod = 'cash'; // cash | card | mobile | telebirr | cbe | bank
   double tendered = 0;
 
-  CartState() {
+  CartState({void Function()? onChanged}) : _onChanged = onChanged {
     _restore();
   }
+
+  void _notifyListeners() => _onChanged?.call();
 
   // ── Getters ───────────────────────────────────────────────────────────────
 
@@ -144,7 +164,7 @@ class CartState extends ChangeNotifier {
       ));
     }
     _persist();
-    notifyListeners();
+    _notifyListeners();
   }
 
   /// Total quantity of a menu item across all its lines (with any
@@ -161,13 +181,13 @@ class CartState extends ChangeNotifier {
     final i = index.clamp(0, _items.length);
     _items.insert(i, line);
     _persist();
-    notifyListeners();
+    _notifyListeners();
   }
 
   void incrementQty(CartLine line) {
     line.qty++;
     _persist();
-    notifyListeners();
+    _notifyListeners();
   }
 
   void decrementQty(CartLine line) {
@@ -177,13 +197,13 @@ class CartState extends ChangeNotifier {
       line.qty--;
     }
     _persist();
-    notifyListeners();
+    _notifyListeners();
   }
 
   void removeLine(CartLine line) {
     _items.remove(line);
     _persist();
-    notifyListeners();
+    _notifyListeners();
   }
 
   void clear() {
@@ -202,7 +222,7 @@ class CartState extends ChangeNotifier {
     isAddRound = false;
     activeOpenOrderId = null;
     _persist();
-    notifyListeners();
+    _notifyListeners();
   }
 
   /// Clears payment state but keeps who/where the order is for.
@@ -210,7 +230,7 @@ class CartState extends ChangeNotifier {
     paymentMethod = 'cash';
     tendered = 0;
     _persist();
-    notifyListeners();
+    _notifyListeners();
   }
 
   void setOrderType(String t) {
@@ -221,56 +241,56 @@ class CartState extends ChangeNotifier {
       deliveryFee = 0;
     }
     _persist();
-    notifyListeners();
+    _notifyListeners();
   }
 
   void setTable(String num) {
     tableNum = num;
     _persist();
-    notifyListeners();
+    _notifyListeners();
   }
 
   void setCustomer(String name) {
     customerName = name;
     _persist();
-    notifyListeners();
+    _notifyListeners();
   }
 
   void setCustomerPhone(String phone) {
     customerPhone = phone;
     _persist();
-    notifyListeners();
+    _notifyListeners();
   }
 
   void setDeliveryAddress(String addr) {
     deliveryAddress = addr;
     _persist();
-    notifyListeners();
+    _notifyListeners();
   }
 
   void setDeliveryFee(double fee) {
     deliveryFee = fee;
     _persist();
-    notifyListeners();
+    _notifyListeners();
   }
 
   void setNotes(String n) {
     notes = n;
     _persist();
-    notifyListeners();
+    _notifyListeners();
   }
 
   void setPaymentMethod(String m) {
     paymentMethod = m;
     if (m != 'cash') tendered = 0;
     _persist();
-    notifyListeners();
+    _notifyListeners();
   }
 
   void setTendered(double amount) {
     tendered = amount;
     _persist();
-    notifyListeners();
+    _notifyListeners();
   }
 
   // ── Serialization for the API ─────────────────────────────────────────────
@@ -383,9 +403,27 @@ class CartState extends ChangeNotifier {
       customerPhone = (saved['customerPhone'] ?? '') as String;
       deliveryAddress = (saved['deliveryAddress'] ?? '') as String;
       notes = (saved['notes'] ?? '') as String;
-      notifyListeners();
+      _notifyListeners();
     } catch (_) {
       // A half-written entry must not take the till down at boot.
     }
   }
 }
+
+/// Riverpod wiring for [CartState]. One cart for the app's lifetime (no
+/// autoDispose — an open tab must survive navigation), with
+/// `ref.notifyListeners` as the mutation bell. Tests can hand over a
+/// preconfigured cart: `cartProvider.overrideWith(() => CartNotifier(seed: cart))`.
+class CartNotifier extends Notifier<CartState> {
+  CartNotifier({CartState? seed}) : _seed = seed;
+  final CartState? _seed;
+
+  @override
+  CartState build() {
+    final s = _seed ?? CartState();
+    s._onChanged = ref.notifyListeners;
+    return s;
+  }
+}
+
+final cartProvider = NotifierProvider<CartNotifier, CartState>(CartNotifier.new);

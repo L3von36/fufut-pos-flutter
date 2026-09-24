@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:fufut_pos/main.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 /// Exercises the shell layouts at both breakpoints, plus the per-role
 /// landing screens. A layout exception at any point fails the test — the
@@ -27,7 +28,7 @@ void main() {
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
 
-    await tester.pumpWidget(const FufutPosApp());
+    await tester.pumpWidget(const ProviderScope(child: FufutPosApp()));
     await tester.pump(); // boot
     await tester.pump(const Duration(seconds: 1)); // revalidate fails → offline
     await tester.pumpAndSettle();

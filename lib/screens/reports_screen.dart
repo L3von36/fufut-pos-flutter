@@ -10,7 +10,7 @@
 library;
 
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../models/models.dart';
@@ -21,14 +21,14 @@ import '../widgets/backoffice.dart';
 import '../widgets/common.dart';
 import '../widgets/dashboard.dart';
 
-class ReportsScreen extends StatefulWidget {
+class ReportsScreen extends ConsumerStatefulWidget {
   const ReportsScreen({super.key});
 
   @override
-  State<ReportsScreen> createState() => _ReportsScreenState();
+  ConsumerState<ReportsScreen> createState() => _ReportsScreenState();
 }
 
-class _ReportsScreenState extends State<ReportsScreen> {
+class _ReportsScreenState extends ConsumerState<ReportsScreen> {
   DashboardStats? _stats;
   bool _loading = true;
   String _period = 'day';
@@ -44,7 +44,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
   }
 
   Future<void> _load({bool quiet = false}) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
       final s = await app.api.reportsDashboard(period: _period);
@@ -71,7 +71,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
     }
   }
 
-  bool get _isManager => context.read<AppState>().roleKey == 'manager';
+  bool get _isManager => ref.read(appStateProvider).roleKey == 'manager';
 
   Future<void> _exportCsv(String kind) async {
     final messenger = ScaffoldMessenger.of(context);

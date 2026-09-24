@@ -5,7 +5,7 @@
 library;
 
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../models/models.dart';
@@ -21,14 +21,14 @@ const kWasteCategories = [
   'Beverages', 'Packaging', 'Other',
 ];
 
-class WasteScreen extends StatefulWidget {
+class WasteScreen extends ConsumerStatefulWidget {
   const WasteScreen({super.key});
 
   @override
-  State<WasteScreen> createState() => _WasteScreenState();
+  ConsumerState<WasteScreen> createState() => _WasteScreenState();
 }
 
-class _WasteScreenState extends State<WasteScreen> {
+class _WasteScreenState extends ConsumerState<WasteScreen> {
   List<WasteEntry> _entries = [];
   List<InventoryItem> _stock = [];
   bool _loading = true;
@@ -41,11 +41,11 @@ class _WasteScreenState extends State<WasteScreen> {
     _load();
   }
 
-  String get _role => context.read<AppState>().roleKey ?? '';
+  String get _role => ref.read(appStateProvider).roleKey ?? '';
   bool get _canDelete => _role == 'manager';
 
   Future<void> _load({bool quiet = false}) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
       // Future.wait: every request keeps a listener even when a sibling
@@ -98,7 +98,7 @@ class _WasteScreenState extends State<WasteScreen> {
 
   Future<void> _logForm() async {
     final messenger = ScaffoldMessenger.of(context);
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     String? inventoryId; // null = free-text path
     final nameC = TextEditingController();
     final qtyC = TextEditingController(text: '1');
@@ -194,7 +194,7 @@ class _WasteScreenState extends State<WasteScreen> {
 
   Future<void> _delete(WasteEntry w) async {
     final messenger = ScaffoldMessenger.of(context);
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(

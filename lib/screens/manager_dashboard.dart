@@ -8,7 +8,7 @@ library;
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../models/models.dart';
@@ -18,17 +18,17 @@ import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/dashboard.dart';
 
-class ManagerDashboard extends StatefulWidget {
+class ManagerDashboard extends ConsumerStatefulWidget {
   /// Lets quick actions jump to other screens of the shell.
   final ValueChanged<NavKey>? onNavigate;
 
   const ManagerDashboard({super.key, this.onNavigate});
 
   @override
-  State<ManagerDashboard> createState() => _ManagerDashboardState();
+  ConsumerState<ManagerDashboard> createState() => _ManagerDashboardState();
 }
 
-class _ManagerDashboardState extends State<ManagerDashboard> {
+class _ManagerDashboardState extends ConsumerState<ManagerDashboard> {
   DashboardStats? _stats;
   List<FufutOrder> _recent = [];
   int _openChecks = 0;
@@ -53,7 +53,7 @@ class _ManagerDashboardState extends State<ManagerDashboard> {
   }
 
   Future<void> _load({bool quiet = false}) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
       final results = await Future.wait([

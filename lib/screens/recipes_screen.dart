@@ -5,7 +5,7 @@
 library;
 
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../models/models.dart';
@@ -16,14 +16,14 @@ import '../widgets/backoffice.dart';
 import '../widgets/common.dart';
 import '../widgets/dashboard.dart';
 
-class RecipesScreen extends StatefulWidget {
+class RecipesScreen extends ConsumerStatefulWidget {
   const RecipesScreen({super.key});
 
   @override
-  State<RecipesScreen> createState() => _RecipesScreenState();
+  ConsumerState<RecipesScreen> createState() => _RecipesScreenState();
 }
 
-class _RecipesScreenState extends State<RecipesScreen> {
+class _RecipesScreenState extends ConsumerState<RecipesScreen> {
   List<RecipeRow> _rows = [];
   List<MenuItem> _menu = [];
   List<InventoryItem> _stock = [];
@@ -38,7 +38,7 @@ class _RecipesScreenState extends State<RecipesScreen> {
     _load();
   }
 
-  String get _role => context.read<AppState>().roleKey ?? '';
+  String get _role => ref.read(appStateProvider).roleKey ?? '';
   bool get _isBarista => _role == 'barista';
   bool get _canWrite => _role == 'manager' || _role == 'head-chef';
 
@@ -52,7 +52,7 @@ class _RecipesScreenState extends State<RecipesScreen> {
   }
 
   Future<void> _load({bool quiet = false}) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
       final results = await Future.wait<dynamic>(
@@ -107,7 +107,7 @@ class _RecipesScreenState extends State<RecipesScreen> {
   }
 
   Future<void> _capacity(RecipeRow r) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final pal = Pal.of(context);
     try {
       final cap = await app.api.recipeCapacity(r.id);
@@ -159,7 +159,7 @@ class _RecipesScreenState extends State<RecipesScreen> {
   }
 
   Future<void> _history(RecipeRow r) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final pal = Pal.of(context);
     try {
       final versions = await app.api.recipeVersions(r.id);
@@ -209,7 +209,7 @@ class _RecipesScreenState extends State<RecipesScreen> {
 
   Future<void> _editor({RecipeRow? edit}) async {
     final messenger = ScaffoldMessenger.of(context);
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final items = _isBarista
         ? _menu.where((m) => nameIsDrink(m.category, m.name)).toList()
         : _menu;

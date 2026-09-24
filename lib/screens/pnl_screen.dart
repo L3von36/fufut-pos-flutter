@@ -4,7 +4,7 @@
 library;
 
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../models/models.dart';
@@ -15,14 +15,14 @@ import '../widgets/charts.dart';
 import '../widgets/common.dart';
 import '../widgets/dashboard.dart';
 
-class PnlScreen extends StatefulWidget {
+class PnlScreen extends ConsumerStatefulWidget {
   const PnlScreen({super.key});
 
   @override
-  State<PnlScreen> createState() => _PnlScreenState();
+  ConsumerState<PnlScreen> createState() => _PnlScreenState();
 }
 
-class _PnlScreenState extends State<PnlScreen> {
+class _PnlScreenState extends ConsumerState<PnlScreen> {
   List<FufutOrder> _orders = [];
   List<Expense> _expenses = [];
   bool _loading = true;
@@ -40,7 +40,7 @@ class _PnlScreenState extends State<PnlScreen> {
   }
 
   Future<void> _load({bool quiet = false}) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
       final results = await Future.wait<dynamic>(

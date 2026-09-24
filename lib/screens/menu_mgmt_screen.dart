@@ -5,7 +5,7 @@
 library;
 
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../models/models.dart';
@@ -20,14 +20,14 @@ const kMenuCategories = [
   'Starters', 'Mains', 'Desserts', 'Sandwiches & Burgers', 'Other',
 ];
 
-class MenuMgmtScreen extends StatefulWidget {
+class MenuMgmtScreen extends ConsumerStatefulWidget {
   const MenuMgmtScreen({super.key});
 
   @override
-  State<MenuMgmtScreen> createState() => _MenuMgmtScreenState();
+  ConsumerState<MenuMgmtScreen> createState() => _MenuMgmtScreenState();
 }
 
-class _MenuMgmtScreenState extends State<MenuMgmtScreen> {
+class _MenuMgmtScreenState extends ConsumerState<MenuMgmtScreen> {
   List<MenuItem> _rows = [];
   bool _loading = true;
   Object? _error;
@@ -46,7 +46,7 @@ class _MenuMgmtScreenState extends State<MenuMgmtScreen> {
     super.dispose();
   }
 
-  String get _role => context.read<AppState>().roleKey ?? '';
+  String get _role => ref.read(appStateProvider).roleKey ?? '';
   bool get _canCrud => _role == 'manager';
 
   /// Categories actually on the menu + the defaults, merged per the web.
@@ -59,7 +59,7 @@ class _MenuMgmtScreenState extends State<MenuMgmtScreen> {
   }
 
   Future<void> _load({bool quiet = false}) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
       final rows = await app.api.menu();
@@ -87,7 +87,7 @@ class _MenuMgmtScreenState extends State<MenuMgmtScreen> {
 
   Future<void> _toggle(MenuItem m) async {
     final messenger = ScaffoldMessenger.of(context);
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     try {
       await app.api.setAvailability(m.id, !m.available);
       showInfoOn(messenger,
@@ -109,7 +109,7 @@ class _MenuMgmtScreenState extends State<MenuMgmtScreen> {
         text: edit?.modifiers.map((m) => m.name).join(', ') ?? '');
     bool available = edit?.available ?? true;
     final messenger = ScaffoldMessenger.of(context);
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     await showFormSheet(
       context,
       title: edit == null ? 'Add menu item' : 'Edit ${edit.name}',
@@ -182,7 +182,7 @@ class _MenuMgmtScreenState extends State<MenuMgmtScreen> {
 
   Future<void> _delete(MenuItem m) async {
     final messenger = ScaffoldMessenger.of(context);
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(

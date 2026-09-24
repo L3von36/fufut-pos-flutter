@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../state/app_state.dart';
 import '../state/roles.dart';
@@ -55,14 +55,14 @@ import 'waste_screen.dart';
 ///    carrying the role's hottest screens; "More" opens the drawer.
 ///  * ≥ 900px wide — fixed teal-gradient sidebar (brand row, sectioned nav
 ///    with gold active edge, red-tinted sign out) beside a 52px topbar.
-class HomeShell extends StatefulWidget {
+class HomeShell extends ConsumerStatefulWidget {
   const HomeShell({super.key});
 
   @override
-  State<HomeShell> createState() => _HomeShellState();
+  ConsumerState<HomeShell> createState() => _HomeShellState();
 }
 
-class _HomeShellState extends State<HomeShell> {
+class _HomeShellState extends ConsumerState<HomeShell> {
   late List<NavEntry> _nav;
   late NavKey _tab;
   String? _roleSeen;
@@ -83,7 +83,7 @@ class _HomeShellState extends State<HomeShell> {
   @override
   void initState() {
     super.initState();
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     _roleSeen = app.roleKey;
     _nav = navForRole(app.roleKey);
     _tab = defaultViewFor(app.roleKey);
@@ -197,7 +197,7 @@ class _HomeShellState extends State<HomeShell> {
 
   @override
   Widget build(BuildContext context) {
-    final app = context.watch<AppState>();
+    final app = ref.watch(appStateProvider);
     _syncRole(app);
     _guardTab(app);
 
@@ -299,7 +299,7 @@ class _HomeShellState extends State<HomeShell> {
 // SafeArea so the edge-to-edge status bar never overlaps it.
 // ─────────────────────────────────────────────────────────────────────────────
 
-class _TopBar extends StatefulWidget {
+class _TopBar extends ConsumerStatefulWidget {
   final String title;
   final bool showMenuButton;
   final VoidCallback? onMenu;
@@ -307,10 +307,10 @@ class _TopBar extends StatefulWidget {
   const _TopBar({required this.title, this.showMenuButton = false, this.onMenu});
 
   @override
-  State<_TopBar> createState() => _TopBarState();
+  ConsumerState<_TopBar> createState() => _TopBarState();
 }
 
-class _TopBarState extends State<_TopBar> {
+class _TopBarState extends ConsumerState<_TopBar> {
   late String _date;
 
   @override
@@ -366,7 +366,7 @@ class _TopBarState extends State<_TopBar> {
                 style: T.screenTitle.copyWith(color: pal.heading)),
           ),
           IconButton(
-            onPressed: () => context.read<ThemeController>().toggle(),
+            onPressed: () => ref.read(themeModeProvider.notifier).toggle(),
             icon: Icon(dark ? Icons.light_mode_outlined : Icons.dark_mode_outlined,
                 size: 18),
             color: pal.muted,
@@ -388,7 +388,7 @@ class _TopBarState extends State<_TopBar> {
 // sectioned by the entries' own section labels.
 // ─────────────────────────────────────────────────────────────────────────────
 
-class _Sidebar extends StatelessWidget {
+class _Sidebar extends ConsumerWidget {
   final NavKey selected;
   final List<NavEntry> nav;
   final ValueChanged<NavKey> onSelect;
@@ -396,8 +396,8 @@ class _Sidebar extends StatelessWidget {
   const _Sidebar({required this.selected, required this.nav, required this.onSelect});
 
   @override
-  Widget build(BuildContext context) {
-    final app = context.watch<AppState>();
+  Widget build(BuildContext context, WidgetRef ref) {
+    final app = ref.watch(appStateProvider);
     final pal = Pal.of(context);
     return Container(
       width: 232,
@@ -433,7 +433,7 @@ class _Sidebar extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.all(10),
               child: TextButton.icon(
-                onPressed: () => _confirmSignOut(context),
+                onPressed: () => _confirmSignOut(context, ref),
                 icon: const Icon(Icons.logout, size: 15),
                 label: const Text('Sign Out'),
                 style: TextButton.styleFrom(
@@ -621,7 +621,7 @@ class _SideItem extends StatelessWidget {
 // or the bottom-bar "More".
 // ─────────────────────────────────────────────────────────────────────────────
 
-class AppDrawer extends StatelessWidget {
+class AppDrawer extends ConsumerWidget {
   final NavKey selected;
   final List<NavEntry> nav;
   final ValueChanged<NavKey> onSelect;
@@ -634,8 +634,8 @@ class AppDrawer extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
-    final app = context.watch<AppState>();
+  Widget build(BuildContext context, WidgetRef ref) {
+    final app = ref.watch(appStateProvider);
     final dark = Theme.of(context).brightness == Brightness.dark;
     return Drawer(
       backgroundColor: Colors.transparent,
@@ -674,12 +674,12 @@ class AppDrawer extends StatelessWidget {
                     Icons.light_mode_outlined,
                     dark ? 'Light theme' : 'Dark theme'),
                 active: false,
-                onTap: () => context.read<ThemeController>().toggle(),
+                onTap: () => ref.read(themeModeProvider.notifier).toggle(),
               ),
               Padding(
                 padding: const EdgeInsets.all(10),
                 child: TextButton.icon(
-                  onPressed: () => _confirmSignOut(context),
+                  onPressed: () => _confirmSignOut(context, ref),
                   icon: const Icon(Icons.logout, size: 15),
                   label: const Text('Sign Out'),
                   style: TextButton.styleFrom(
@@ -810,7 +810,7 @@ class _BottomNav extends StatelessWidget {
   }
 }
 
-Future<void> _confirmSignOut(BuildContext context) async {
+Future<void> _confirmSignOut(BuildContext context, WidgetRef ref) async {
   final ok = await showDialog<bool>(
     context: context,
     builder: (ctx) => AlertDialog(
@@ -828,6 +828,6 @@ Future<void> _confirmSignOut(BuildContext context) async {
     ),
   );
   if (ok == true && context.mounted) {
-    await context.read<AppState>().logout();
+    await ref.read(appStateProvider).logout();
   }
 }

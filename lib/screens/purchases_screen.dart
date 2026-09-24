@@ -6,7 +6,7 @@ library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../models/models.dart';
@@ -17,14 +17,14 @@ import '../widgets/backoffice.dart';
 import '../widgets/common.dart';
 import '../widgets/dashboard.dart';
 
-class PurchasesScreen extends StatefulWidget {
+class PurchasesScreen extends ConsumerStatefulWidget {
   const PurchasesScreen({super.key});
 
   @override
-  State<PurchasesScreen> createState() => _PurchasesScreenState();
+  ConsumerState<PurchasesScreen> createState() => _PurchasesScreenState();
 }
 
-class _PurchasesScreenState extends State<PurchasesScreen> {
+class _PurchasesScreenState extends ConsumerState<PurchasesScreen> {
   List<Purchase> _rows = [];
   List<Supplier> _suppliers = [];
   List<InventoryItem> _stock = [];
@@ -38,11 +38,11 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
     _load();
   }
 
-  String get _role => context.read<AppState>().roleKey ?? '';
+  String get _role => ref.read(appStateProvider).roleKey ?? '';
   bool get _canWrite => _role == 'manager';
 
   Future<void> _load({bool quiet = false}) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
       final results = await Future.wait<dynamic>(
@@ -75,7 +75,7 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
     }
     if (!mounted) return;
     final messenger = ScaffoldMessenger.of(context);
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     String supplierId = _suppliers.first.id;
     final dateC = TextEditingController(text: DateRangeRow.fmt(DateTime.now()));
     final totalC = TextEditingController();
@@ -167,7 +167,7 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
     final owingC = TextEditingController(text: p.owing.toStringAsFixed(2));
     String method = 'cash';
     final messenger = ScaffoldMessenger.of(context);
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     await showFormSheet(
       context,
       title: 'Pay ${p.supplierName}',
@@ -210,7 +210,7 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
       await _showLines(p);
       return;
     }
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     try {
       final detail = await app.api.purchaseDetail(p.id);
       if (!mounted) return;

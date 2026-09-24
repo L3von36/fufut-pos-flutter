@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:fufut_pos/main.dart';
 import 'package:fufut_pos/state/roles.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 /// UI/UX sweep: every screen, for every role, must BOOT and RENDER without
 /// an exception or layout overflow.
@@ -47,7 +48,7 @@ void main() {
         top: 0, bottom: 0, left: 0, right: 0);
     addTearDown(tester.view.reset);
 
-    await tester.pumpWidget(const FufutPosApp());
+    await tester.pumpWidget(const ProviderScope(child: FufutPosApp()));
     await tester.pump(); // boot
     await tester.pump(const Duration(seconds: 1)); // revalidate fails
     await settle(tester);

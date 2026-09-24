@@ -4,7 +4,7 @@
 library;
 
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../models/models.dart';
@@ -19,14 +19,14 @@ const kSupplierCategories = [
   'Packaging', 'Equipment', 'Cleaning', 'Other',
 ];
 
-class SuppliersScreen extends StatefulWidget {
+class SuppliersScreen extends ConsumerStatefulWidget {
   const SuppliersScreen({super.key});
 
   @override
-  State<SuppliersScreen> createState() => _SuppliersScreenState();
+  ConsumerState<SuppliersScreen> createState() => _SuppliersScreenState();
 }
 
-class _SuppliersScreenState extends State<SuppliersScreen> {
+class _SuppliersScreenState extends ConsumerState<SuppliersScreen> {
   List<Supplier> _rows = [];
   bool _loading = true;
   Object? _error;
@@ -38,11 +38,11 @@ class _SuppliersScreenState extends State<SuppliersScreen> {
     _load();
   }
 
-  String get _role => context.read<AppState>().roleKey ?? '';
+  String get _role => ref.read(appStateProvider).roleKey ?? '';
   bool get _canWrite => _role == 'manager';
 
   Future<void> _load({bool quiet = false}) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
       final rows = await app.api.suppliers();
@@ -80,7 +80,7 @@ class _SuppliersScreenState extends State<SuppliersScreen> {
     final addressC = TextEditingController(text: edit?.address ?? '');
     final suppliesC = TextEditingController(text: edit?.supplies ?? '');
     final messenger = ScaffoldMessenger.of(context);
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     await showFormSheet(
       context,
       title: edit == null ? 'Add supplier' : 'Edit ${edit.name}',
@@ -131,7 +131,7 @@ class _SuppliersScreenState extends State<SuppliersScreen> {
   }
 
   Future<void> _statement(Supplier s) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final pal = Pal.of(context);
     try {
       final data = await app.api.supplierStatement(s.id);

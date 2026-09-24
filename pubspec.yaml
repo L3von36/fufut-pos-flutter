@@ -1,7 +1,7 @@
 name: fufut_pos
 description: "Fufut Coffee POS — Android & desktop point of sale for the Fufut floor."
 publish_to: "none"
-version: 1.1.14+25
+version: 1.2.0+26
 
 environment:
   sdk: ">=3.5.0 <4.0.0"
@@ -14,7 +14,6 @@ dependencies:
   # primitive, same as the PWA's useSSE.js). Native platforms stream the
   # same wire format through package:http instead.
   web: ^1.1.1
-  provider: ^6.1.2
   shared_preferences: ^2.3.3
   intl: ^0.20.1
   audioplayers: ^6.1.0
@@ -27,6 +26,7 @@ dependencies:
   # the native launch screen until the Flutter splash has painted its first
   # frame, so there is no white flash between engine start and the brand boot.
   flutter_native_splash: ^2.4.8
+  flutter_riverpod: ^3.4.3
 
 dev_dependencies:
   flutter_test:

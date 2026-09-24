@@ -5,7 +5,7 @@
 library;
 
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../models/models.dart';
@@ -21,14 +21,14 @@ const kExpenseCategories = [
   'Transport', 'Taxes & Fees', 'Misc',
 ];
 
-class ExpensesScreen extends StatefulWidget {
+class ExpensesScreen extends ConsumerStatefulWidget {
   const ExpensesScreen({super.key});
 
   @override
-  State<ExpensesScreen> createState() => _ExpensesScreenState();
+  ConsumerState<ExpensesScreen> createState() => _ExpensesScreenState();
 }
 
-class _ExpensesScreenState extends State<ExpensesScreen> {
+class _ExpensesScreenState extends ConsumerState<ExpensesScreen> {
   List<Expense> _rows = [];
   bool _loading = true;
   Object? _error;
@@ -54,10 +54,10 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
 
   bool get _canWrite =>
       const {'manager', 'accountant'}.contains(
-          context.read<AppState>().roleKey);
+          ref.read(appStateProvider).roleKey);
 
   Future<void> _load({bool quiet = false}) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
       final rows = await app.api.expenses();
@@ -109,7 +109,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
         ? DateRangeRow.fmt(DateTime.now())
         : dayKey(edit?.date));
     final messenger = ScaffoldMessenger.of(context);
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     await showFormSheet(
       context,
       title: edit == null ? 'Add expense' : 'Edit expense',
@@ -158,7 +158,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
 
   Future<void> _delete(Expense e) async {
     final messenger = ScaffoldMessenger.of(context);
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(

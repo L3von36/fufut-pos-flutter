@@ -28,7 +28,7 @@ library;
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../api/sse/sse_channel.dart';
@@ -66,14 +66,14 @@ const Set<String> kAlertAckRoles = {
 /// the web shipped a 403 toast factory).
 const Set<String> kAlertAckAllRoles = {'manager'};
 
-class OpsAlertsBanner extends StatefulWidget {
+class OpsAlertsBanner extends ConsumerStatefulWidget {
   const OpsAlertsBanner({super.key});
 
   @override
-  State<OpsAlertsBanner> createState() => _OpsAlertsBannerState();
+  ConsumerState<OpsAlertsBanner> createState() => _OpsAlertsBannerState();
 }
 
-class _OpsAlertsBannerState extends State<OpsAlertsBanner>
+class _OpsAlertsBannerState extends ConsumerState<OpsAlertsBanner>
     with WidgetsBindingObserver {
   List<OpsAlert> _alerts = [];
   bool _expanded = false;
@@ -97,7 +97,7 @@ class _OpsAlertsBannerState extends State<OpsAlertsBanner>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _app = context.read<AppState>();
+    _app = ref.read(appStateProvider);
     final role = _app?.roleKey ?? '';
     _canRead = kAlertReadRoles.contains(role);
     _canAck = kAlertAckRoles.contains(role);

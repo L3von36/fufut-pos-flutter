@@ -4,7 +4,7 @@
 library;
 
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../models/models.dart';
@@ -25,14 +25,14 @@ const kAuditActions = [
   'void', 'verify', 'open', 'close', 'pay', 'count', 'accept', 'release',
 ];
 
-class AuditLogScreen extends StatefulWidget {
+class AuditLogScreen extends ConsumerStatefulWidget {
   const AuditLogScreen({super.key});
 
   @override
-  State<AuditLogScreen> createState() => _AuditLogScreenState();
+  ConsumerState<AuditLogScreen> createState() => _AuditLogScreenState();
 }
 
-class _AuditLogScreenState extends State<AuditLogScreen> {
+class _AuditLogScreenState extends ConsumerState<AuditLogScreen> {
   List<AuditEntry> _rows = [];
   bool _loading = true;
   Object? _error;
@@ -58,7 +58,7 @@ class _AuditLogScreenState extends State<AuditLogScreen> {
   }
 
   Future<void> _load({bool quiet = false}) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
       final rows = await app.api.auditFiltered(

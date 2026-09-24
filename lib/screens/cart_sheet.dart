@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../models/models.dart';
@@ -22,13 +22,13 @@ import 'checkout_sheet.dart';
 /// Lines have the circular −/+ steppers and ✕-with-undo of the web cart;
 /// the action pair is "Send to Kitchen" + "Checkout" for dine-in and
 /// flips to "Take Payment" first for takeaway/delivery.
-class CartPill extends StatelessWidget {
+class CartPill extends ConsumerWidget {
   final VoidCallback onOpenCart;
   const CartPill({super.key, required this.onOpenCart});
 
   @override
-  Widget build(BuildContext context) {
-    final cart = context.watch<CartState>();
+  Widget build(BuildContext context, WidgetRef ref) {
+    final cart = ref.watch(cartProvider);
     return SafeArea(
       top: false,
       child: Container(
@@ -113,15 +113,15 @@ class CartPill extends StatelessWidget {
 }
 
 /// The check body — lines, details, totals, actions.
-class CartPanel extends StatefulWidget {
+class CartPanel extends ConsumerStatefulWidget {
   final bool docked;
   const CartPanel({super.key, this.docked = false});
 
   @override
-  State<CartPanel> createState() => _CartPanelState();
+  ConsumerState<CartPanel> createState() => _CartPanelState();
 }
 
-class _CartPanelState extends State<CartPanel> {
+class _CartPanelState extends ConsumerState<CartPanel> {
   List<CafeTable> _tables = [];
   bool _sending = false;
   bool _detailsOpen = false;
@@ -133,7 +133,7 @@ class _CartPanelState extends State<CartPanel> {
   }
 
   Future<void> _loadTables() async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     try {
       final t = await app.api.tables();
       if (!mounted) return;
@@ -148,8 +148,8 @@ class _CartPanelState extends State<CartPanel> {
 
   @override
   Widget build(BuildContext context) {
-    final cart = context.watch<CartState>();
-    final app = context.watch<AppState>();
+    final cart = ref.watch(cartProvider);
+    final app = ref.watch(appStateProvider);
     final pal = Pal.of(context);
     final dineIn = cart.orderType == 'dine-in';
     // The checkout grant — manager and cashier, deliberately nobody else.
@@ -503,8 +503,8 @@ class _CartPanelState extends State<CartPanel> {
   /// web POS, so a waiter cannot fire a round to a table that is reserved or
   /// already seated.
   Future<bool> _claimTableIfDineIn(ScaffoldMessengerState messenger) async {
-    final cart = context.read<CartState>();
-    final app = context.read<AppState>();
+    final cart = ref.read(cartProvider);
+    final app = ref.read(appStateProvider);
     if (cart.orderType != 'dine-in' || cart.tableNum.isEmpty) return true;
     CafeTable? match;
     try {
@@ -549,8 +549,8 @@ class _CartPanelState extends State<CartPanel> {
   }
 
   Future<void> _sendToKitchen() async {
-    final cart = context.read<CartState>();
-    final app = context.read<AppState>();
+    final cart = ref.read(cartProvider);
+    final app = ref.read(appStateProvider);
     final messenger = ScaffoldMessenger.of(context);
     final navigator = Navigator.of(context);
     setState(() => _sending = true);
@@ -600,7 +600,6 @@ class _CartPanelState extends State<CartPanel> {
 
   /// Checkout → the web's review step, then payment, then the success state.
   Future<void> _openReview() async {
-    final cart = context.read<CartState>();
     await showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -610,10 +609,7 @@ class _CartPanelState extends State<CartPanel> {
       constraints: BoxConstraints(
           maxWidth: 680,
           maxHeight: MediaQuery.sizeOf(context).height * 0.9),
-      builder: (_) => ChangeNotifierProvider.value(
-        value: cart,
-        child: const ReviewSheet(),
-      ),
+      builder: (_) => const ReviewSheet(),
     );
   }
 }
@@ -622,7 +618,7 @@ class _CartPanelState extends State<CartPanel> {
 // One cart line — neutral-50 card, circular steppers, ✕ with undo.
 // ─────────────────────────────────────────────────────────────────────────────
 
-class _CartLineTile extends StatelessWidget {
+class _CartLineTile extends ConsumerWidget {
   final CartLine line;
   final bool showCourse;
   final VoidCallback onRemove;
@@ -634,8 +630,8 @@ class _CartLineTile extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
-    final cart = context.read<CartState>();
+  Widget build(BuildContext context, WidgetRef ref) {
+    final cart = ref.read(cartProvider);
     final pal = Pal.of(context);
     return Container(
       margin: const EdgeInsets.only(bottom: 6),

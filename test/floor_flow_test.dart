@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:fufut_pos/api/api_client.dart';
@@ -125,8 +125,10 @@ void main() {
         const FakeViewPadding(top: 0, bottom: 0, left: 0, right: 0);
     addTearDown(tester.view.reset);
     await tester.pumpWidget(
-      ChangeNotifierProvider<AppState>.value(
-        value: app,
+      ProviderScope(
+        overrides: [
+          appStateProvider.overrideWith(() => AppStateNotifier(seed: app)),
+        ],
         child: MaterialApp(
           home: Scaffold(
             body: OrderDetailSheet(order: order),
@@ -145,8 +147,10 @@ void main() {
         const FakeViewPadding(top: 0, bottom: 0, left: 0, right: 0);
     addTearDown(tester.view.reset);
     await tester.pumpWidget(
-      ChangeNotifierProvider<AppState>.value(
-        value: app,
+      ProviderScope(
+        overrides: [
+          appStateProvider.overrideWith(() => AppStateNotifier(seed: app)),
+        ],
         child: const MaterialApp(
           home: Scaffold(body: KitchenBoard()),
         ),
@@ -284,8 +288,10 @@ void main() {
           const FakeViewPadding(top: 0, bottom: 0, left: 0, right: 0);
       addTearDown(tester.view.reset);
       await tester.pumpWidget(
-        ChangeNotifierProvider<AppState>.value(
-          value: app,
+        ProviderScope(
+          overrides: [
+            appStateProvider.overrideWith(() => AppStateNotifier(seed: app)),
+          ],
           child: const MaterialApp(
             home: Scaffold(body: KitchenBoard()),
           ),
@@ -316,8 +322,10 @@ void main() {
       tester.view.devicePixelRatio = 1.0;
       addTearDown(tester.view.reset);
       await tester.pumpWidget(
-        ChangeNotifierProvider<AppState>.value(
-          value: app,
+        ProviderScope(
+          overrides: [
+            appStateProvider.overrideWith(() => AppStateNotifier(seed: app)),
+          ],
           child: const MaterialApp(
             home: Scaffold(body: KitchenBoard()),
           ),
@@ -401,8 +409,10 @@ void main() {
       tester.view.devicePixelRatio = 1.0;
       addTearDown(tester.view.reset);
       await tester.pumpWidget(
-        ChangeNotifierProvider<AppState>.value(
-          value: app,
+        ProviderScope(
+          overrides: [
+            appStateProvider.overrideWith(() => AppStateNotifier(seed: app)),
+          ],
           child: const MaterialApp(
             home: Scaffold(body: KitchenBoard(baristaMode: true)),
           ),

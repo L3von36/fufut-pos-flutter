@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../api/sse/sse_channel.dart';
@@ -25,7 +25,7 @@ import 'order_history_screen.dart';
 /// Android-native layout: a KPI strip (open / ready / unpaid / on-tabs),
 /// a sticky search field with a horizontally-scrolling status filter row,
 /// then ticket cards whose left accent bar carries the status color.
-class OrdersScreen extends StatefulWidget {
+class OrdersScreen extends ConsumerStatefulWidget {
   final bool openOnlyDefault;
 
   /// Shell keep-alive wiring (same contract as the boards): when the screen
@@ -36,10 +36,10 @@ class OrdersScreen extends StatefulWidget {
   const OrdersScreen({super.key, this.openOnlyDefault = false, this.activeTab, this.self});
 
   @override
-  State<OrdersScreen> createState() => _OrdersScreenState();
+  ConsumerState<OrdersScreen> createState() => _OrdersScreenState();
 }
 
-class _OrdersScreenState extends State<OrdersScreen>
+class _OrdersScreenState extends ConsumerState<OrdersScreen>
     with WidgetsBindingObserver {
   List<FufutOrder> _orders = [];
   bool _loading = true;
@@ -118,7 +118,7 @@ class _OrdersScreenState extends State<OrdersScreen>
   }
 
   void _connectSse() {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     _sseSub?.cancel();
     _sse?.disconnect();
     final sse = SseChannel(
@@ -168,7 +168,7 @@ class _OrdersScreenState extends State<OrdersScreen>
   }
 
   Future<void> _load({bool quiet = false}) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     if (!quiet) {
       setState(() {
         _loading = true;
@@ -288,7 +288,7 @@ class _OrdersScreenState extends State<OrdersScreen>
   @override
   Widget build(BuildContext context) {
     final pal = Pal.of(context);
-    final app = context.watch<AppState>();
+    final app = ref.watch(appStateProvider);
     final roleKey = app.roleKey;
     final rows = _filtered;
     // Previous-day open checks surface only in Open Checks mode; in Orders
@@ -568,7 +568,7 @@ class _OrdersScreenState extends State<OrdersScreen>
       builder: (_) => _SplitSheet(order: order),
     );
     if (seats == null || !mounted) return;
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final messenger = ScaffoldMessenger.of(context);
     try {
       final legs = await app.api.splitCheck(order.id, seats);
@@ -586,7 +586,7 @@ class _OrdersScreenState extends State<OrdersScreen>
   }
 
   Future<void> _moveFlow(FufutOrder order) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     List<CafeTable> tables = const [];
     try {
       tables = await app.api.tables();
@@ -647,7 +647,7 @@ class _OrdersScreenState extends State<OrdersScreen>
       builder: (_) => _MergeSheet(source: order, others: others),
     );
     if (target == null || !mounted) return;
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final messenger = ScaffoldMessenger.of(context);
     try {
       await app.api.mergeChecks(order.id, target.id);
@@ -1010,7 +1010,7 @@ class _OlderGroupHeader extends StatelessWidget {
   }
 }
 
-class _OrderTile extends StatelessWidget {
+class _OrderTile extends ConsumerWidget {
   final FufutOrder order;
   final Color accent;
   final bool showCheckActions;
@@ -1039,7 +1039,7 @@ class _OrderTile extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final pal = Pal.of(context);
     final type = order.type ?? '';
     final table = order.tableNum != null && order.tableNum!.isNotEmpty
@@ -1240,10 +1240,8 @@ class _OrderTile extends StatelessWidget {
       constraints: BoxConstraints(
           maxWidth: 680,
           maxHeight: MediaQuery.sizeOf(context).height * 0.85),
-      builder: (_) => ChangeNotifierProvider.value(
-        value: context.read<AppState>(),
-        child: OrderDetailSheet(order: order, onChanged: onChanged),
-      ),
+      builder: (_) =>
+          OrderDetailSheet(order: order, onChanged: onChanged),
     );
   }
 }
@@ -1274,7 +1272,7 @@ class _Tag extends StatelessWidget {
 // Detail sheet — lines, money rows, and the stage's action buttons.
 // ─────────────────────────────────────────────────────────────────────────────
 
-class OrderDetailSheet extends StatelessWidget {
+class OrderDetailSheet extends ConsumerWidget {
   final FufutOrder order;
 
   /// Parent refresh hook — fired after every successful mutation so the
@@ -1292,9 +1290,9 @@ class OrderDetailSheet extends StatelessWidget {
   };
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final pal = Pal.of(context);
-    final app = context.watch<AppState>();
+    final app = ref.watch(appStateProvider);
     final status = order.status.toLowerCase();
     // Chef work sits behind the chef grant — the waiter reads the ticket,
     // the kitchen moves it: "Start Prep" (new → preparing) and "Ready"
@@ -1323,7 +1321,7 @@ class OrderDetailSheet extends StatelessWidget {
     // Station roles read only their own lines — barista the drinks, chefs
     // the food; null shows the ticket unchanged.
     final scoped = orderLinesForRole(order, app.roleKey,
-        catByName: context.read<AppState>().catByName);
+        catByName: ref.read(appStateProvider).catByName);
     final visibleLines = scoped ?? order.items;
     return SafeArea(
       child: Padding(
@@ -1475,14 +1473,14 @@ class OrderDetailSheet extends StatelessWidget {
             const SizedBox(height: 18),
             if (maySettle)
               AsyncButton(
-                onPressed: () => _settle(context),
+                onPressed: () => _settle(context, ref),
                 icon: Icons.payments_outlined,
                 label: 'Settle — take payment',
               ),
             if (prep != null) ...[
               const SizedBox(height: 9),
               AsyncButton(
-                onPressed: () => _advance(context, prep),
+                onPressed: () => _advance(context, ref, prep),
                 icon: Icons.arrow_forward_rounded,
                 label: 'Mark ${_title(prep)}',
                 outlined: true,
@@ -1491,7 +1489,7 @@ class OrderDetailSheet extends StatelessWidget {
             if (pickup != null) ...[
               const SizedBox(height: 9),
               AsyncButton(
-                onPressed: () => _advance(context, pickup),
+                onPressed: () => _advance(context, ref, pickup),
                 icon: Icons.outbox_rounded,
                 label: 'Picked up by waiter',
                 outlined: true,
@@ -1500,7 +1498,7 @@ class OrderDetailSheet extends StatelessWidget {
             if (serve != null) ...[
               const SizedBox(height: 9),
               AsyncButton(
-                onPressed: () => _advance(context, serve),
+                onPressed: () => _advance(context, ref, serve),
                 icon: Icons.room_service_rounded,
                 label: 'Mark served',
               ),
@@ -1570,8 +1568,9 @@ class OrderDetailSheet extends StatelessWidget {
     );
   }
 
-  Future<void> _advance(BuildContext context, String status) async {
-    final app = context.read<AppState>();
+  Future<void> _advance(
+      BuildContext context, WidgetRef ref, String status) async {
+    final app = ref.read(appStateProvider);
     final navigator = Navigator.of(context);
     final messenger = ScaffoldMessenger.of(context);
     try {
@@ -1594,8 +1593,8 @@ class OrderDetailSheet extends StatelessWidget {
     }
   }
 
-  Future<void> _settle(BuildContext context) async {
-    final app = context.read<AppState>();
+  Future<void> _settle(BuildContext context, WidgetRef ref) async {
+    final app = ref.read(appStateProvider);
     // fixedTotal: the bill is already on the server — the sheet must not
     // read the cart (there is none in this flow). Tip stays available, and
     // the split-bill legs ride the same breakdown.

@@ -4,7 +4,7 @@
 library;
 
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../models/models.dart';
@@ -14,14 +14,14 @@ import '../widgets/backoffice.dart';
 import '../widgets/charts.dart';
 import '../widgets/dashboard.dart';
 
-class RevenueScreen extends StatefulWidget {
+class RevenueScreen extends ConsumerStatefulWidget {
   const RevenueScreen({super.key});
 
   @override
-  State<RevenueScreen> createState() => _RevenueScreenState();
+  ConsumerState<RevenueScreen> createState() => _RevenueScreenState();
 }
 
-class _RevenueScreenState extends State<RevenueScreen> {
+class _RevenueScreenState extends ConsumerState<RevenueScreen> {
   List<FufutOrder> _orders = [];
   bool _loading = true;
   Object? _error;
@@ -38,7 +38,7 @@ class _RevenueScreenState extends State<RevenueScreen> {
   }
 
   Future<void> _load({bool quiet = false}) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
       final rows = await app.api.orders();

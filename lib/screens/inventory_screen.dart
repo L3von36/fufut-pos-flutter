@@ -8,7 +8,7 @@
 library;
 
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../models/models.dart';
@@ -24,14 +24,14 @@ const kInventoryCategories = [
   'Beverages', 'Packaging', 'Cleaning', 'Other',
 ];
 
-class InventoryScreen extends StatefulWidget {
+class InventoryScreen extends ConsumerStatefulWidget {
   const InventoryScreen({super.key});
 
   @override
-  State<InventoryScreen> createState() => _InventoryScreenState();
+  ConsumerState<InventoryScreen> createState() => _InventoryScreenState();
 }
 
-class _InventoryScreenState extends State<InventoryScreen> {
+class _InventoryScreenState extends ConsumerState<InventoryScreen> {
   List<InventoryItem> _rows = [];
   bool _loading = true;
   Object? _error;
@@ -50,12 +50,12 @@ class _InventoryScreenState extends State<InventoryScreen> {
     super.dispose();
   }
 
-  String get _role => context.read<AppState>().roleKey ?? '';
+  String get _role => ref.read(appStateProvider).roleKey ?? '';
   bool get _canWrite => _role == 'manager' || _role == 'head-chef';
   bool get _canDelete => _role == 'manager';
 
   Future<void> _load({bool quiet = false}) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
       final rows = await app.api.inventory();
@@ -95,7 +95,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
     final costC = TextEditingController(
         text: edit != null && edit.cost > 0 ? edit.cost.toStringAsFixed(2) : '');
     final messenger = ScaffoldMessenger.of(context);
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     await showFormSheet(
       context,
       title: edit == null ? 'Add stock item' : 'Edit ${edit.name}',
@@ -155,7 +155,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
     final targetC = TextEditingController(text: item.stock.toStringAsFixed(0));
     final reasonC = TextEditingController();
     final messenger = ScaffoldMessenger.of(context);
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     await showFormSheet(
       context,
       title: 'Adjust ${item.name}',
@@ -193,7 +193,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
 
   Future<void> _delete(InventoryItem item) async {
     final messenger = ScaffoldMessenger.of(context);
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(

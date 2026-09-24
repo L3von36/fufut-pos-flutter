@@ -4,7 +4,7 @@
 library;
 
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../state/app_state.dart';
 import '../state/roles.dart';
@@ -12,7 +12,7 @@ import '../theme.dart';
 
 /// Greeting banner — "Good evening, Yonas" + role + date, the web
 /// dashboard's `.dash-greeting`. Hour windows follow the web's split.
-class GreetingHeader extends StatelessWidget {
+class GreetingHeader extends ConsumerWidget {
   const GreetingHeader({super.key});
 
   static String _greeting(DateTime now) {
@@ -23,8 +23,8 @@ class GreetingHeader extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) {
-    final app = context.watch<AppState>();
+  Widget build(BuildContext context, WidgetRef ref) {
+    final app = ref.watch(appStateProvider);
     final pal = Pal.of(context);
     final now = DateTime.now();
     final name = app.user?.firstName ?? app.user?.displayName ?? 'there';

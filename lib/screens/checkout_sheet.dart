@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../models/models.dart';
@@ -19,14 +19,14 @@ import 'cart_sheet.dart' show DecimalTextInputFormatter, OrderContextEditor;
 ///    *Change Due* / gold *Still Need* panel. Also used standalone with
 ///    `fixedTotal` when settling an open tab from Orders.
 ///  * [SuccessSheet] — green check circle, "Order Confirmed!", mono id.
-class ReviewSheet extends StatefulWidget {
+class ReviewSheet extends ConsumerStatefulWidget {
   const ReviewSheet({super.key});
 
   @override
-  State<ReviewSheet> createState() => _ReviewSheetState();
+  ConsumerState<ReviewSheet> createState() => _ReviewSheetState();
 }
 
-class _ReviewSheetState extends State<ReviewSheet> {
+class _ReviewSheetState extends ConsumerState<ReviewSheet> {
   List<CafeTable> _tables = [];
   bool _sending = false;
 
@@ -37,7 +37,7 @@ class _ReviewSheetState extends State<ReviewSheet> {
   }
 
   Future<void> _loadTables() async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     try {
       final t = await app.api.tables();
       if (!mounted) return;
@@ -49,7 +49,7 @@ class _ReviewSheetState extends State<ReviewSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final cart = context.watch<CartState>();
+    final cart = ref.watch(cartProvider);
     final pal = Pal.of(context);
     return SafeArea(
       child: Padding(
@@ -143,7 +143,7 @@ class _ReviewSheetState extends State<ReviewSheet> {
   }
 
   Future<void> _pay() async {
-    final cart = context.read<CartState>();
+    final cart = ref.read(cartProvider);
     final result = await showModalBottomSheet<PaymentResult>(
       context: context,
       isScrollControlled: true,
@@ -153,15 +153,12 @@ class _ReviewSheetState extends State<ReviewSheet> {
       constraints: BoxConstraints(
           maxWidth: 680,
           maxHeight: MediaQuery.sizeOf(context).height * 0.9),
-      builder: (_) => ChangeNotifierProvider.value(
-        value: cart,
-        child: const PaymentSheet(),
-      ),
+      builder: (_) => const PaymentSheet(),
     );
     if (result == null || !mounted) return;
     final line = result.primary;
 
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     final messenger = ScaffoldMessenger.of(context);
     final navigator = Navigator.of(context);
     final overlay = Pal.of(context).overlay;
@@ -215,8 +212,8 @@ class _ReviewSheetState extends State<ReviewSheet> {
 
   /// Dine-in: claim the table first, same rule as the cart panel.
   Future<void> _claimTableIfDineIn(ScaffoldMessengerState messenger) async {
-    final cart = context.read<CartState>();
-    final app = context.read<AppState>();
+    final cart = ref.read(cartProvider);
+    final app = ref.read(appStateProvider);
     if (cart.orderType != 'dine-in' || cart.tableNum.isEmpty) return;
     CafeTable? match;
     try {
@@ -245,13 +242,13 @@ class _ReviewSheetState extends State<ReviewSheet> {
 // Review line — bordered row with steppers, like the web step 1.
 // ─────────────────────────────────────────────────────────────────────────────
 
-class _ReviewLine extends StatelessWidget {
+class _ReviewLine extends ConsumerWidget {
   final CartLine line;
   const _ReviewLine({required this.line});
 
   @override
-  Widget build(BuildContext context) {
-    final cart = context.read<CartState>();
+  Widget build(BuildContext context, WidgetRef ref) {
+    final cart = ref.read(cartProvider);
     final pal = Pal.of(context);
     return Container(
       margin: const EdgeInsets.only(bottom: 5),
@@ -308,7 +305,7 @@ class _ReviewLine extends StatelessWidget {
               showUndoOn(
                 ScaffoldMessenger.of(context),
                 '${line.name} removed',
-                () => context.read<CartState>().addItem(
+                () => ref.read(cartProvider).addItem(
                       MenuItem(
                           id: line.menuItemId ?? '',
                           name: line.name,
@@ -365,7 +362,7 @@ class _MiniStepper extends StatelessWidget {
 // Payment — method grid, quick tender, change panel.
 // ─────────────────────────────────────────────────────────────────────────────
 
-class PaymentSheet extends StatefulWidget {
+class PaymentSheet extends ConsumerStatefulWidget {
   /// When non-null, the sheet charges exactly this amount and does not
   /// touch the cart state (discount editing hides — the check's totals are
   /// already on the server; tip stays available, like the web settle flow).
@@ -374,7 +371,7 @@ class PaymentSheet extends StatefulWidget {
   const PaymentSheet({super.key, this.fixedTotal});
 
   @override
-  State<PaymentSheet> createState() => _PaymentSheetState();
+  ConsumerState<PaymentSheet> createState() => _PaymentSheetState();
 }
 
 /// What the payment sheet hands back — one primary leg (or a full split set)
@@ -396,7 +393,7 @@ class PaymentResult {
       splits.isNotEmpty ? splits : [primary];
 }
 
-class _PaymentSheetState extends State<PaymentSheet> {
+class _PaymentSheetState extends ConsumerState<PaymentSheet> {
   static const _methods = [
     ('cash', 'Cash', Icons.payments_outlined),
     ('card', 'Card', Icons.credit_card),
@@ -419,13 +416,13 @@ class _PaymentSheetState extends State<PaymentSheet> {
   final List<(String, TextEditingController)> _splitLegs = [];
 
   bool get _isManager =>
-      context.read<AppState>().roleKey == 'manager';
+      ref.read(appStateProvider).roleKey == 'manager';
 
   @override
   void initState() {
     super.initState();
     if (widget.fixedTotal == null) {
-      final cart = context.read<CartState>();
+      final cart = ref.read(cartProvider);
       _method = cart.paymentMethod;
       _tender.text =
           cart.tendered > 0 ? cart.tendered.toStringAsFixed(0) : '';
@@ -445,7 +442,7 @@ class _PaymentSheetState extends State<PaymentSheet> {
   }
 
   /// The base the tip/discount arithmetic works on: the bill itself.
-  double get _base => widget.fixedTotal ?? context.read<CartState>().grandTotal();
+  double get _base => widget.fixedTotal ?? ref.read(cartProvider).grandTotal();
 
   double get _tipValue {
     switch (_tipMode) {
@@ -1169,7 +1166,7 @@ class _PaymentSheetState extends State<PaymentSheet> {
           : null,
     );
     if (widget.fixedTotal == null && context.mounted) {
-      final cart = context.read<CartState>();
+      final cart = ref.read(cartProvider);
       cart.setPaymentMethod(_method);
       if (_method == 'cash') cart.setTendered(_tenderedValue);
     }

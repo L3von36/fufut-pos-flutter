@@ -8,7 +8,7 @@
 library;
 
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../models/models.dart';
@@ -16,14 +16,14 @@ import '../state/app_state.dart';
 import '../theme.dart';
 import '../widgets/dashboard.dart';
 
-class MyPayslipsScreen extends StatefulWidget {
+class MyPayslipsScreen extends ConsumerStatefulWidget {
   const MyPayslipsScreen({super.key});
 
   @override
-  State<MyPayslipsScreen> createState() => _MyPayslipsScreenState();
+  ConsumerState<MyPayslipsScreen> createState() => _MyPayslipsScreenState();
 }
 
-class _MyPayslipsScreenState extends State<MyPayslipsScreen> {
+class _MyPayslipsScreenState extends ConsumerState<MyPayslipsScreen> {
   PayrollMe? _payroll;
   bool _loading = true;
   Object? _error;
@@ -35,7 +35,7 @@ class _MyPayslipsScreenState extends State<MyPayslipsScreen> {
   }
 
   Future<void> _load({bool quiet = false}) async {
-    final app = context.read<AppState>();
+    final app = ref.read(appStateProvider);
     if (!quiet) setState(() { _loading = true; _error = null; });
     try {
       final p = await app.api.payrollMe();

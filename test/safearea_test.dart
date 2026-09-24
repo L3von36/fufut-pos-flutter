@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:fufut_pos/main.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 /// SafeArea regression tests — the app runs edge-to-edge
 /// (SystemUiMode.edgeToEdge in theme.dart), so every surface must clear the
@@ -27,7 +28,7 @@ void main() {
         top: 40.0, bottom: 48.0, left: 0.0, right: 0.0); // gesture-bar phone
     addTearDown(tester.view.reset);
 
-    await tester.pumpWidget(const FufutPosApp());
+    await tester.pumpWidget(const ProviderScope(child: FufutPosApp()));
     await tester.pump(); // boot
     await tester.pump(const Duration(seconds: 1)); // revalidate fails → offline
     await tester.pumpAndSettle();
