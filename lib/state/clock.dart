@@ -12,6 +12,12 @@
 ///   * [minuteClockProvider]— fires only when the minute turns; occupancy
 ///     buckets, the topbar date, and any "refresh every minute" poll that
 ///     a back-office screen used to run with `Timer.periodic`.
+///
+/// Implementation note: the streams are controller-based, with the timer
+/// cancelled synchronously in `onCancel`. An `async*` + `Stream.periodic`
+/// generator delays its teardown past flutter_test's no-pending-timers
+/// invariant (Riverpod defers provider disposal); a controller cancels the
+/// timer the moment the subscription dies — tree disposal is clean.
 library;
 
 import 'dart:async';
@@ -19,13 +25,20 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 /// A `DateTime.now()` snapshot [every] interval, with the first sample
-/// emitted immediately — a screen never spends its first second in a
-/// loading state just to learn what time it is.
-Stream<DateTime> _ticks(Duration every) async* {
-  yield DateTime.now();
-  await for (final _ in Stream<void>.periodic(every)) {
-    yield DateTime.now();
-  }
+/// emitted on listen — a screen never spends its first second in a loading
+/// state just to learn what time it is.
+Stream<DateTime> _ticks(Duration every) {
+  Timer? timer;
+  late final StreamController<DateTime> ctrl;
+  ctrl = StreamController<DateTime>(
+    onListen: () => ctrl.add(DateTime.now()),
+    onCancel: () {
+      timer?.cancel();
+      timer = null;
+    },
+  );
+  timer = Timer.periodic(every, (_) => ctrl.add(DateTime.now()));
+  return ctrl.stream;
 }
 
 /// Every second, starting now. Consumers that only need coarse time

@@ -1,13 +1,12 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
-import '../api/sse/sse_channel.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
+import '../state/live_feeds.dart';
 import '../state/order_scope.dart';
 import '../state/roles.dart';
 import '../theme.dart';
@@ -28,38 +27,92 @@ import 'order_history_screen.dart';
 class OrdersScreen extends ConsumerStatefulWidget {
   final bool openOnlyDefault;
 
-  /// Shell keep-alive wiring (same contract as the boards): when the screen
-  /// is built under [Offstage], SSE suspends offstage and resumes on stage.
-  final ValueListenable? activeTab;
-  final Object? self;
-
-  const OrdersScreen({super.key, this.openOnlyDefault = false, this.activeTab, this.self});
+  const OrdersScreen({super.key, this.openOnlyDefault = false});
 
   @override
   ConsumerState<OrdersScreen> createState() => _OrdersScreenState();
 }
 
-class _OrdersScreenState extends ConsumerState<OrdersScreen>
-    with WidgetsBindingObserver {
-  List<FufutOrder> _orders = [];
-  bool _loading = true;
+/// The screen's scoped order list — one FutureProvider per mode (`true` =
+/// Open Checks, `false` = today's Orders). All the scoping rules live here:
+/// role scoping runs before the status/search filters, exactly like the web
+/// OrdersView (a barista filtering "new" must not conjure the kitchen's
+/// tickets back into their list); the head-waiter's table context comes
+/// from /api/tables; station roles classify lines by category via the
+/// shared menu; and the Orders mode reads the live service day while Open
+/// Checks stays un-windowed (an unpaid tab is money owed whatever day it
+/// was run up). The kitchen feed's push debounces an invalidate — a settle
+/// on the till or a serve on the floor repaints this list within seconds.
+final ordersFeedProvider = FutureProvider.family<List<FufutOrder>, bool>(
+    (ref, openOnly) async {
+  // READ, never watch: AppState is one mutable object with a single
+  // notify bell, and this fetch itself pings it (refreshTill) — watching
+  // here would rebuild the provider on its own echo (infinite loop).
+  final app = ref.read(appStateProvider);
+  // The till gate renders from live state — refresh it alongside the list
+  // (cheap public read) so an open/close elsewhere flips this screen too.
+  app.refreshTill();
+  final needsTables = app.roleKey == 'head-waiter';
+  final stationRole = const {
+    'barista',
+    'head-chef',
+    'assistant-chef'
+  }.contains(app.roleKey);
+  if (stationRole) await app.ensureCategories();
+  final todayKey = localTodayKey();
+  final results = await Future.wait([
+    app.api.orders(
+      openOnly: openOnly,
+      from: openOnly ? null : todayKey,
+      to: openOnly ? null : todayKey,
+    ),
+    if (needsTables) app.api.tables(),
+  ]);
+  final rows = results[0] as List<FufutOrder>;
+  final tables =
+      needsTables ? results[1] as List<CafeTable> : const <CafeTable>[];
+  final myTables = {for (final t in tables) t.number.toString()};
+  return rows
+      .where((o) => orderVisibleToRole(o, app.roleKey,
+          myId: app.user?.id, myTables: myTables, catByName: app.catByName))
+      .where((o) => openOnly || orderIsToday(o))
+      .toList();
+});
+
+class _OrdersScreenState extends ConsumerState<OrdersScreen> {
   late bool _openOnly = widget.openOnlyDefault;
   String _query = '';
   String _statusFilter = 'all';
-  String? _error;
   bool _showOlder = false;
   final _search = TextEditingController();
 
-  // Live push — the owner's "state management on every screen" rule: a
-  // settle on the till, a serve on the floor or a new ticket from a menu
-  // view repaints this list within seconds, no manual refresh. The board
-  // payload covers every active order, so the kitchen channel is the
-  // cheapest honest feed.
-  SseChannel? _sse;
-  StreamSubscription? _sseSub;
+  /// Live push — a settle on the till, a serve on the floor or a new ticket
+  /// from a menu view repaints this list within seconds. The shared kitchen
+  /// feed carries every active order, so a change there debounces (400ms)
+  /// an invalidate of this screen's scoped GET — role scoping, day window
+  /// and search stay in one place, and the screen owns no socket.
   Timer? _debounce;
-  bool _lifecycleUp = true;
-  bool _tabUp = true;
+
+  Future<void> _reload() async => ref.invalidate(ordersFeedProvider(_openOnly));
+
+  void _debouncedReload() {
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 400), () {
+      if (mounted) _reload();
+    });
+  }
+
+  @override
+  void dispose() {
+    _debounce?.cancel();
+    _search.dispose();
+    super.dispose();
+  }
+
+  /// build() watches the provider for the current mode — this getter reads
+  /// the same snapshot in the KPI math and filters below.
+  List<FufutOrder> get _orders =>
+      ref.read(ordersFeedProvider(_openOnly)).value ?? const <FufutOrder>[];
 
   static const _statuses = [
     'all', 'new', 'preparing', 'ready', 'served', 'fulfilled', 'cancelled'
@@ -85,164 +138,6 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
         return pal.danger;
       default:
         return pal.borderStrong;
-    }
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addObserver(this);
-    _tabUp = widget.activeTab?.value == widget.self;
-    widget.activeTab?.addListener(_onTabChanged);
-    _load();
-    _connectSse();
-  }
-
-  void _onTabChanged() {
-    if (!mounted) return;
-    final up = widget.activeTab?.value == widget.self;
-    if (up == _tabUp) return;
-    _tabUp = up;
-    _syncSse();
-    if (up) _load(quiet: true); // server truth may have moved while dark
-  }
-
-  void _syncSse() {
-    final sse = _sse;
-    if (sse == null) return;
-    if (_lifecycleUp && _tabUp) {
-      sse.resume();
-    } else {
-      sse.suspend();
-    }
-  }
-
-  void _connectSse() {
-    final app = ref.read(appStateProvider);
-    _sseSub?.cancel();
-    _sse?.disconnect();
-    final sse = SseChannel(
-      baseUrl: app.baseUrl,
-      channel: 'kitchen',
-      sessionToken: app.client.sessionToken,
-    );
-    _sse = sse;
-    _sseSub = sse.stream.listen(_onSseEvent);
-    sse.connect();
-  }
-
-  void _onSseEvent(SseEvent event) {
-    if (!mounted || !_tabUp || !_lifecycleUp) return;
-    if (event.event != 'new_order' && event.event != 'order_update') return;
-    // Debounced quiet reload — the payload refreshes the boards directly;
-    // this screen rebuilds from its own scoped GET (role scoping, day
-    // window and search stay in one place).
-    _debounce?.cancel();
-    _debounce = Timer(const Duration(milliseconds: 400), () {
-      if (mounted) _load(quiet: true);
-    });
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    super.didChangeAppLifecycleState(state);
-    if (state == AppLifecycleState.hidden ||
-        state == AppLifecycleState.paused) {
-      _lifecycleUp = false;
-    } else if (state == AppLifecycleState.resumed) {
-      _lifecycleUp = true;
-    } else {
-      return;
-    }
-    _syncSse();
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    widget.activeTab?.removeListener(_onTabChanged);
-    _debounce?.cancel();
-    _sseSub?.cancel();
-    _sse?.disconnect();
-    super.dispose();
-  }
-
-  Future<void> _load({bool quiet = false}) async {
-    final app = ref.read(appStateProvider);
-    if (!quiet) {
-      setState(() {
-        _loading = true;
-        _error = null;
-      });
-    }
-    // The till gate renders from live state — refresh it alongside the list
-    // (cheap public read) so an open/close elsewhere flips this screen too.
-    app.refreshTill();
-    try {
-      // Role scoping runs before the status/search filters, exactly like the
-      // web OrdersView: a barista filtering "new" must not conjure the
-      // kitchen's tickets back into their list. The head-waiter's ctx comes
-      // from /api/tables — the server already narrows it to the tables
-      // assigned to them, so that set IS "my section".
-      //
-      // Day scoping: the Orders view reads the live service day — the server
-      // gets from/to = today (Addis wall-clock day keys, the same semantics
-      // the reports use) and a client-side guard keeps a stale cache from
-      // resurrecting yesterday. Open Checks stays un-windowed on the server
-      // (an unpaid tab is money owed whatever day it was run up) and the
-      // screen splits it: today's checks lead, older tabs group below.
-      final needsTables = app.roleKey == 'head-waiter';
-      // Station roles classify lines by category when the name regex is not
-      // enough ("Ginger with Honey") — one menu fetch per session, shared
-      // with the boards via AppState.
-      final stationRole = const {
-        'barista',
-        'head-chef',
-        'assistant-chef'
-      }.contains(app.roleKey);
-      if (stationRole) await app.ensureCategories();
-      final todayKey = localTodayKey();
-      final results = await Future.wait([
-        app.api.orders(
-          openOnly: _openOnly,
-          from: _openOnly ? null : todayKey,
-          to: _openOnly ? null : todayKey,
-        ),
-        if (needsTables) app.api.tables(),
-      ]);
-      final rows = results[0] as List<FufutOrder>;
-      final tables = needsTables
-          ? results[1] as List<CafeTable>
-          : const <CafeTable>[];
-      if (!mounted) return;
-      final myTables = {for (final t in tables) t.number.toString()};
-      final scoped = rows
-          .where((o) => orderVisibleToRole(o, app.roleKey,
-              myId: app.user?.id,
-              myTables: myTables,
-              catByName: app.catByName))
-          .where((o) => _openOnly || orderIsToday(o))
-          .toList();
-      setState(() {
-        _orders = scoped;
-        _loading = false;
-      });
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) {
-        await app.sessionExpired();
-        return;
-      }
-      setState(() {
-        _loading = false;
-        _error = e.message;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _loading = false;
-        _error = '$e';
-      });
     }
   }
 
@@ -290,6 +185,12 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
     final pal = Pal.of(context);
     final app = ref.watch(appStateProvider);
     final roleKey = app.roleKey;
+    // The scoped list for the current mode; kitchen-feed pushes debounce an
+    // invalidate so the list stays honest without owning a socket.
+    final ordersAsync = ref.watch(ordersFeedProvider(_openOnly));
+    ref.listen(kitchenFeedProvider, (_, __) => _debouncedReload());
+    final loading = ordersAsync.isLoading;
+    final error = ordersAsync.hasError ? '' : null;
     final rows = _filtered;
     // Previous-day open checks surface only in Open Checks mode; in Orders
     // mode the day window already cut everything older.
@@ -330,7 +231,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
                 const Spacer(),
                 // Everything older than today — the day screens stay lean.
                 _IconAction(icon: Icons.history_rounded, onTap: _openHistory),
-                _IconAction(icon: Icons.refresh_rounded, onTap: _load),
+                _IconAction(icon: Icons.refresh_rounded, onTap: _reload),
               ],
             ),
           ),
@@ -346,7 +247,6 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
                     active: _openOnly,
                     onTap: () {
                       setState(() => _openOnly = true);
-                      _load();
                     },
                   ),
                   const SizedBox(width: 6),
@@ -356,7 +256,6 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
                     active: !_openOnly,
                     onTap: () {
                       setState(() => _openOnly = false);
-                      _load();
                     },
                   ),
                 ],
@@ -394,7 +293,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
             ),
           ),
           // ── KPI strip ────────────────────────────────────────────────────
-          if (!_loading && _error == null && _orders.isNotEmpty)
+          if (!loading && error == null && _orders.isNotEmpty)
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
               child: _KpiStrip(
@@ -448,14 +347,14 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
                               onSplit: () => _splitFlow(o),
                               onMove: () => _moveFlow(o),
                               onMerge: () => _mergeFlow(o),
-                              onChanged: _load,
+                              onChanged: _reload,
                             ),
                           ),
                       ])
-                    : _loading
+                    : loading
                         ? const Center(child: CircularProgressIndicator())
-                        : _error != null
-                            ? _ErrorPane(message: _error!, onRetry: _load)
+                        : error != null
+                            ? _ErrorPane(message: error, onRetry: _reload)
                             : (rows.isEmpty && older.isEmpty)
                                 ? EmptyState(
                                     icon: Icons.receipt_long,
@@ -463,7 +362,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
                                     hint: emptyOrdersHint(roleKey),
                                   )
                                 : RefreshIndicator(
-                                    onRefresh: _load,
+                                    onRefresh: _reload,
                                     child: ListView(
                                       physics:
                                           const AlwaysScrollableScrollPhysics(),
@@ -495,7 +394,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
                                               onSplit: () => _splitFlow(o),
                                               onMove: () => _moveFlow(o),
                                               onMerge: () => _mergeFlow(o),
-                                              onChanged: _load,
+                                              onChanged: _reload,
                                             ),
                                           ),
                                         // ── Previous-day open checks (Open
@@ -530,7 +429,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
                                                 onMove: () => _moveFlow(o),
                                                 onMerge: () => _mergeFlow(o),
                                                 olderThanToday: true,
-                                                onChanged: _load,
+                                                onChanged: _reload,
                                               ),
                                             ),
                                       ],
@@ -573,7 +472,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
     try {
       final legs = await app.api.splitCheck(order.id, seats);
       showInfoOn(messenger, 'Check split into $legs — reload to see the legs');
-      await _load();
+      _reload();
     } on ApiError catch (e) {
       if (e.isAuthError && mounted) {
         await app.sessionExpired();
@@ -611,7 +510,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
     try {
       await app.api.transferCheck(order.id, target);
       showInfoOn(messenger, 'Check moved to Table $target');
-      await _load();
+      _reload();
     } on ApiError catch (e) {
       if (e.isAuthError && mounted) {
         await app.sessionExpired();
@@ -653,7 +552,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
       await app.api.mergeChecks(order.id, target.id);
       showInfoOn(
           messenger, 'Check ${shortId(order.id)} merged into ${shortId(target.id)}');
-      await _load();
+      _reload();
     } on ApiError catch (e) {
       if (e.isAuthError && mounted) {
         await app.sessionExpired();

@@ -1,18 +1,15 @@
 /// SLA Alerts dashboard — the web `AlertsDashboardView.vue`: what the rules
 /// engine watches (the 9-rule grid), open / acknowledged / resolved-today
-/// lists, per-alert ack + acknowledge-all, 60s poll + SSE alerts channel.
+/// lists, per-alert ack + acknowledge-all. Data lives in the shared ops
+/// alerts feed (one SSE channel + 60s safety poll for banner AND dashboard).
 library;
-
-import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../api/api_client.dart';
-import '../api/sse/sse_channel.dart';
 import '../models/models.dart';
-import '../state/app_state.dart';
-import '../state/roles.dart';
+import '../state/live_feeds.dart';
+import '../state/session_providers.dart';
 import '../theme.dart';
 import '../widgets/alerts_banner.dart' show kAlertAckRoles;
 import '../widgets/backoffice.dart';
@@ -20,108 +17,26 @@ import '../widgets/common.dart';
 import '../widgets/dashboard.dart';
 
 class AlertsDashboardScreen extends ConsumerStatefulWidget {
-  final ValueNotifier<NavKey>? activeTab;
-  final NavKey? self;
-
-  const AlertsDashboardScreen({super.key, this.activeTab, this.self});
+  const AlertsDashboardScreen({super.key});
 
   @override
   ConsumerState<AlertsDashboardScreen> createState() => _AlertsDashboardScreenState();
 }
 
 class _AlertsDashboardScreenState extends ConsumerState<AlertsDashboardScreen> {
-  List<OpsAlert> _open = [];
-  List<OpsAlert> _acked = [];
-  List<OpsAlert> _resolved = [];
-  bool _loading = true;
-  Object? _error;
-  SseChannel? _channel;
-  Timer? _poll;
+  /// build() watches the shared feed — these read the same snapshot.
+  List<OpsAlert> get _open => ref.read(opsAlertsFeedProvider).open;
+  List<OpsAlert> get _acked => ref.read(opsAlertsFeedProvider).acknowledged;
+  List<OpsAlert> get _resolved => ref.read(opsAlertsFeedProvider).resolved;
 
-  @override
-  void initState() {
-    super.initState();
-    _load();
-    _connect();
-    _poll = Timer.periodic(const Duration(seconds: 60), (_) {
-      if (mounted) _load(quiet: true);
-    });
-    widget.activeTab?.addListener(_lifecycle);
-  }
-
-  @override
-  void dispose() {
-    widget.activeTab?.removeListener(_lifecycle);
-    _channel?.suspend();
-    _poll?.cancel();
-    super.dispose();
-  }
-
-  void _lifecycle() {
-    final onStage = widget.activeTab?.value == widget.self;
-    if (onStage) {
-      _channel?.resume();
-      _load(quiet: true);
-    } else {
-      _channel?.suspend();
-    }
-  }
-
-  void _connect() {
-    final app = ref.read(appStateProvider);
-    final ch = SseChannel(
-        baseUrl: app.baseUrl,
-        channel: 'alerts',
-        sessionToken: app.client.sessionToken,
-      );
-    ch.stream.listen((evt) {
-      if (!mounted) return;
-      if (evt.event == 'alerts_update') _load(quiet: true);
-    });
-    _channel = ch;
-    ch.connect();
-  }
-
-  String get _role => ref.read(appStateProvider).roleKey ?? '';
-  bool get _canAck => kAlertAckRoles.contains(_role);
-  bool get _canAckAll => _role == 'manager';
-
-  Future<void> _load({bool quiet = false}) async {
-    final app = ref.read(appStateProvider);
-    if (!quiet) setState(() { _loading = true; _error = null; });
-    try {
-      final results = await Future.wait<dynamic>([
-        app.api.alertsByStatus('open', limit: 200),
-        app.api.alertsByStatus('acknowledged', limit: 25),
-        app.api.alertsByStatus('resolved', limit: 100),
-      ]);
-      final open = results[0] as List<OpsAlert>;
-      final acked = results[1] as List<OpsAlert>;
-      final resolved = results[2] as List<OpsAlert>;
-      if (!mounted) return;
-      setState(() {
-        _open = open..sort(OpsAlert.rank);
-        _acked = acked;
-        _resolved = resolved;
-        _loading = false;
-      });
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) { await app.sessionExpired(); return; }
-      setState(() { _loading = false; _error = e; });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _error = e; });
-    }
-  }
+  Future<void> _reload() =>
+      ref.read(opsAlertsFeedProvider.notifier).refresh(quiet: false);
 
   Future<void> _ack(OpsAlert a) async {
     final messenger = ScaffoldMessenger.of(context);
-    final app = ref.read(appStateProvider);
     try {
-      await app.api.acknowledgeAlert(a.id);
+      await ref.read(opsAlertsFeedProvider.notifier).ack(a);
       showInfoOn(messenger, 'Acknowledged');
-      await _load(quiet: true);
     } catch (e) {
       showErrorOn(messenger, e);
     }
@@ -129,11 +44,9 @@ class _AlertsDashboardScreenState extends ConsumerState<AlertsDashboardScreen> {
 
   Future<void> _ackAll() async {
     final messenger = ScaffoldMessenger.of(context);
-    final app = ref.read(appStateProvider);
     try {
-      await app.api.acknowledgeAllAlerts();
+      await ref.read(opsAlertsFeedProvider.notifier).ackAll();
       showInfoOn(messenger, 'All open alerts acknowledged');
-      await _load(quiet: true);
     } catch (e) {
       showErrorOn(messenger, e);
     }
@@ -153,13 +66,17 @@ class _AlertsDashboardScreenState extends ConsumerState<AlertsDashboardScreen> {
   Color _severityColor(Pal pal, String s) =>
       s == 'critical' ? pal.danger : pal.warning;
 
+  bool get _canAck => kAlertAckRoles.contains(ref.watch(roleProvider));
+  bool get _canAckAll => ref.watch(roleProvider) == 'manager';
+
   @override
   Widget build(BuildContext context) {
-    if (_loading && _open.isEmpty && _acked.isEmpty && _resolved.isEmpty) {
+    final feed = ref.watch(opsAlertsFeedProvider);
+    if (feed.loading && feed.open.isEmpty && feed.acknowledged.isEmpty && feed.resolved.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (_error != null && _open.isEmpty) {
-      return LoadError(error: _error!, onRetry: () => _load());
+    if (feed.error != null && feed.open.isEmpty) {
+      return LoadError(error: feed.error!, onRetry: () => _reload());
     }
     final pal = Pal.of(context);
     final rules = _rules;
@@ -171,7 +88,7 @@ class _AlertsDashboardScreenState extends ConsumerState<AlertsDashboardScreen> {
         _resolved.where((a) => a.created.startsWith(todayKey)).length;
 
     return RefreshIndicator(
-      onRefresh: () => _load(quiet: true),
+      onRefresh: _reload,
       child: ListView(
         padding: const EdgeInsets.all(14),
         children: [

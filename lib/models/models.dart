@@ -275,6 +275,34 @@ class FufutOrder {
     return pay.isNotEmpty && pay != 'unpaid';
   }
 
+  /// The same order with one status moved — the pipeline's optimistic drag
+  /// (move the card the moment the drag lands; server truth follows).
+  FufutOrder withStatus(String next) => FufutOrder(
+        id: id,
+        status: next,
+        type: type,
+        tableNum: tableNum,
+        customer: customer,
+        customerPhone: customerPhone,
+        notes: notes,
+        total: total,
+        subtotal: subtotal,
+        discount: discount,
+        tip: tip,
+        deliveryFee: deliveryFee,
+        payment: payment,
+        paymentStatus: paymentStatus,
+        created: created,
+        updatedAt: updatedAt,
+        readyAt: readyAt,
+        voidedAt: voidedAt,
+        createdByName: createdByName,
+        createdById: createdById,
+        source: source,
+        items: items,
+        itemsRaw: itemsRaw,
+      );
+
   bool get isClosed {
     final s = status.toLowerCase();
     return s == 'completed' || s == 'served' || s == 'cancelled';

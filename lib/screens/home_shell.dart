@@ -5,6 +5,9 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../state/app_state.dart';
+import '../state/clock.dart';
+import '../state/live_feeds.dart';
+import '../state/nav.dart';
 import '../state/roles.dart';
 import '../state/theme_controller.dart';
 import '../theme.dart';
@@ -62,7 +65,8 @@ class HomeShell extends ConsumerStatefulWidget {
   ConsumerState<HomeShell> createState() => _HomeShellState();
 }
 
-class _HomeShellState extends ConsumerState<HomeShell> {
+class _HomeShellState extends ConsumerState<HomeShell>
+    with WidgetsBindingObserver {
   late List<NavEntry> _nav;
   late NavKey _tab;
   String? _roleSeen;
@@ -73,20 +77,55 @@ class _HomeShellState extends ConsumerState<HomeShell> {
   /// calls) at sign-in; this stays lazy without losing scroll position.
   final Map<NavKey, Widget> _built = {};
 
-  /// Which tab is on stage right now, broadcast for keep-alive screens that
-  /// hold live resources (the kitchen boards' SSE channels): an offstage
-  /// board must release its Worker connection exactly like a hidden web tab
-  /// does, or a chef who visited both boards pins two connections and hears
-  /// every alert twice.
-  final ValueNotifier<NavKey> activeTab = ValueNotifier(NavKey.dashboard);
+  /// The tab broadcast. The shell DECIDES the tab (role defaults, guards,
+  /// taps) with its own setState; [activeTabProvider] is the read-side —
+  /// keep-alive screens watch it to know they are on stage. The mirror
+  /// runs post-frame (never during build — provider writes are illegal
+  /// while the tree builds, the old code's one side effect).
+  /// [_tablesBridge] carries the same value to the one screen not yet on
+  /// the provider; both go away when tables migrates (C4).
+  final ValueNotifier<NavKey> _tablesBridge = ValueNotifier(NavKey.dashboard);
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     final app = ref.read(appStateProvider);
     _roleSeen = app.roleKey;
     _nav = navForRole(app.roleKey);
     _tab = defaultViewFor(app.roleKey);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  /// Web visibilitychange parity, app-wide: a backgrounded tablet must not
+  /// pin Worker connections it cannot read. The live feeds (kitchen, ops
+  /// alerts) all follow the app lifecycle through this one observer —
+  /// before, the boards had their own observers and two screens had none
+  /// at all. `ref.exists` keeps this from *creating* feeds on a shell
+  /// where nobody watches them (login screen, no live tabs visited).
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.paused) {
+      _eachFeed((n) => n.appPaused());
+    } else if (state == AppLifecycleState.resumed) {
+      _eachFeed((n) => n.appResumed());
+    }
+  }
+
+  void _eachFeed(void Function(dynamic notifier) f) {
+    if (ref.exists(kitchenFeedProvider)) {
+      f(ref.read(kitchenFeedProvider.notifier));
+    }
+    if (ref.exists(opsAlertsFeedProvider)) {
+      f(ref.read(opsAlertsFeedProvider.notifier));
+    }
   }
 
   /// Re-point the nav if the role changed underneath us (session revalidated
@@ -127,15 +166,14 @@ class _HomeShellState extends ConsumerState<HomeShell> {
         case NavKey.dashboard:
           return RoleDashboard(onNavigate: _select);
         case NavKey.alertsDash:
-          return AlertsDashboardScreen(activeTab: activeTab, self: NavKey.alertsDash);
+          return const AlertsDashboardScreen();
         case NavKey.kitchen:
-          return KitchenBoard(activeTab: activeTab, self: NavKey.kitchen);
+          return const KitchenBoard(self: NavKey.kitchen);
         case NavKey.barista:
-          return KitchenBoard(
-              baristaMode: true, activeTab: activeTab, self: NavKey.barista);
+          return const KitchenBoard(baristaMode: true, self: NavKey.barista);
         case NavKey.tables:
           return TablesScreen(
-              onNavigate: _select, activeTab: activeTab, self: NavKey.tables);
+              onNavigate: _select, activeTab: _tablesBridge, self: NavKey.tables);
         case NavKey.tableHistory:
           return const TablesHistoryScreen();
         case NavKey.menuView:
@@ -143,12 +181,11 @@ class _HomeShellState extends ConsumerState<HomeShell> {
         case NavKey.menuMgmt:
           return const MenuMgmtScreen();
         case NavKey.orders:
-          return OrdersScreen(activeTab: activeTab, self: NavKey.orders);
+          return const OrdersScreen();
         case NavKey.openChecks:
-          return OrdersScreen(
-              openOnlyDefault: true, activeTab: activeTab, self: NavKey.openChecks);
+          return const OrdersScreen(openOnlyDefault: true);
         case NavKey.pipeline:
-          return PipelineScreen(activeTab: activeTab, self: NavKey.pipeline);
+          return const PipelineScreen();
         case NavKey.reservations:
           return const ReservationsScreen();
         case NavKey.cashdrawer:
@@ -198,15 +235,23 @@ class _HomeShellState extends ConsumerState<HomeShell> {
   @override
   Widget build(BuildContext context) {
     final app = ref.watch(appStateProvider);
+    final tab = _tab;
     _syncRole(app);
     _guardTab(app);
 
     final width = MediaQuery.sizeOf(context).width;
     final wide = width >= 900;
     final dark = Theme.of(context).brightness == Brightness.dark;
-    // Covers every _tab mutation path (init/_sync/_guard/_select); the
-    // notifier itself no-ops on equal values, so this never loops.
-    activeTab.value = _tab;
+    // Mirror the tab to its listeners AFTER the frame — never during
+    // build. Covers every _tab mutation path (init/_sync/_guard/_select);
+    // both notifiers no-op on equal values, so this never loops.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (_tablesBridge.value != _tab) _tablesBridge.value = _tab;
+      if (ref.read(activeTabProvider) != _tab) {
+        ref.read(activeTabProvider.notifier).go(_tab);
+      }
+    });
 
     // Keep-alive stack of visited screens, only the active one painted.
     // The active tab is always built (that is what seeds [_built]); the ones
@@ -215,8 +260,8 @@ class _HomeShellState extends ConsumerState<HomeShell> {
     final body = Stack(
       children: [
         for (final e in _nav)
-          if (_built.containsKey(e.key) || e.key == _tab)
-            Offstage(offstage: e.key != _tab, child: _screenFor(e.key)),
+          if (_built.containsKey(e.key) || e.key == tab)
+            Offstage(offstage: e.key != tab, child: _screenFor(e.key)),
       ],
     );
 
@@ -224,14 +269,14 @@ class _HomeShellState extends ConsumerState<HomeShell> {
         ? Scaffold(
             body: Row(
               children: [
-                _Sidebar(selected: _tab, nav: _nav, onSelect: _select),
+                _Sidebar(selected: tab, nav: _nav, onSelect: _select),
                 Expanded(
                   child: SafeArea(
                     top: true,
                     bottom: true,
                     child: Column(
                       children: [
-                        _TopBar(title: titleFor(_tab)),
+                        _TopBar(title: titleFor(tab)),
                         // The operations alerts banner — above every tab, the
                         // web AppLayout's mount point. One channel for the
                         // whole shell, carried across tab switches.
@@ -246,7 +291,7 @@ class _HomeShellState extends ConsumerState<HomeShell> {
           )
         : Scaffold(
             key: _scaffoldKey,
-            drawer: AppDrawer(selected: _tab, nav: _nav, onSelect: _select),
+            drawer: AppDrawer(selected: tab, nav: _nav, onSelect: _select),
             drawerEdgeDragWidth: 72,
             onDrawerChanged: (open) {
               if (open) HapticFeedback.selectionClick();
@@ -260,7 +305,7 @@ class _HomeShellState extends ConsumerState<HomeShell> {
               child: Column(
                 children: [
                   _TopBar(
-                    title: titleFor(_tab),
+                    title: titleFor(tab),
                     showMenuButton: true,
                     onMenu: () => _scaffoldKey.currentState?.openDrawer(),
                   ),
@@ -274,7 +319,7 @@ class _HomeShellState extends ConsumerState<HomeShell> {
             ),
             bottomNavigationBar: _BottomNav(
               nav: _nav,
-              selected: _tab,
+              selected: tab,
               onSelect: (t) {
                 if (t == NavKey.settings) {
                   _scaffoldKey.currentState?.openDrawer();
@@ -299,7 +344,7 @@ class _HomeShellState extends ConsumerState<HomeShell> {
 // SafeArea so the edge-to-edge status bar never overlaps it.
 // ─────────────────────────────────────────────────────────────────────────────
 
-class _TopBar extends ConsumerStatefulWidget {
+class _TopBar extends ConsumerWidget {
   final String title;
   final bool showMenuButton;
   final VoidCallback? onMenu;
@@ -307,53 +352,23 @@ class _TopBar extends ConsumerStatefulWidget {
   const _TopBar({required this.title, this.showMenuButton = false, this.onMenu});
 
   @override
-  ConsumerState<_TopBar> createState() => _TopBarState();
-}
-
-class _TopBarState extends ConsumerState<_TopBar> {
-  late String _date;
-
-  @override
-  void initState() {
-    super.initState();
-    _date = _fmt(DateTime.now());
-    // The web topbar refreshes its date every 60s; same cadence here so a
-    // tablet left on overnight never shows yesterday.
-    _clock = Timer.periodic(const Duration(minutes: 1), (_) {
-      if (mounted) setState(() => _date = _fmt(DateTime.now()));
-    });
-  }
-
-  late final Timer _clock;
-
-  @override
-  void dispose() {
-    _clock.cancel();
-    super.dispose();
-  }
-
-  static const _wd = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-  static const _mo = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
-  ];
-
-  String _fmt(DateTime d) =>
-      '${_wd[d.weekday - 1]}, ${_mo[d.month - 1]} ${d.day}, ${d.year}';
-
-  @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final pal = Pal.of(context);
     final dark = Theme.of(context).brightness == Brightness.dark;
+    // The web topbar refreshes its date every 60s; the shared minute clock
+    // does the same without a private Timer — and stops the moment the
+    // shell is gone (autoDispose).
+    final now = ref.watch(minuteClockProvider).value ?? DateTime.now();
+    final date = _fmt(now);
     return Container(
       height: 52,
       color: pal.surface,
       padding: const EdgeInsets.symmetric(horizontal: 10),
       child: Row(
         children: [
-          if (widget.showMenuButton) ...[
+          if (showMenuButton) ...[
             IconButton(
-              onPressed: widget.onMenu,
+              onPressed: onMenu,
               icon: const Icon(Icons.menu_rounded, size: 20),
               color: pal.body,
               visualDensity: VisualDensity.compact,
@@ -362,7 +377,7 @@ class _TopBarState extends ConsumerState<_TopBar> {
             const SizedBox(width: 2),
           ],
           Expanded(
-            child: Text(widget.title,
+            child: Text(title,
                 style: T.screenTitle.copyWith(color: pal.heading)),
           ),
           IconButton(
@@ -374,13 +389,22 @@ class _TopBarState extends ConsumerState<_TopBar> {
             tooltip: dark ? 'Light theme' : 'Dark theme',
           ),
           const SizedBox(width: 2),
-          Text(_date,
+          Text(date,
               style: TextStyle(
                   fontFamily: kFontMono, fontSize: 10.0, color: pal.muted)),
         ],
       ),
     );
   }
+
+  static const _wd = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  static const _mo = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+  ];
+
+  String _fmt(DateTime d) =>
+      '${_wd[d.weekday - 1]}, ${_mo[d.month - 1]} ${d.day}, ${d.year}';
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

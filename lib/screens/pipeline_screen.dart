@@ -1,158 +1,42 @@
 /// Pipeline — the web `PipelineView.vue`: every order as a kanban across
-/// New / Preparing / Ready / Served / Cancelled, with the kitchen SSE channel
-/// for push updates, a detail sheet with the status timeline and the legal
-/// transitions, and manager-only cancel. Cards can be moved with the buttons
-/// (drag on a kanban is a mouse luxury; taps are universal).
+/// New / Preparing / Ready / Served / Cancelled, with the shared kitchen
+/// feed for push updates, a detail sheet with the status timeline and the
+/// legal transitions, and manager-only cancel. Cards can be moved with the
+/// buttons (drag on a kanban is a mouse luxury; taps are universal).
 library;
-
-import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../api/api_client.dart';
-import '../api/sse/sse_channel.dart';
 import '../models/models.dart';
-import '../state/app_state.dart';
+import '../state/clock.dart';
+import '../state/live_feeds.dart';
 import '../state/order_scope.dart';
-import '../state/roles.dart';
+import '../state/session_providers.dart';
 import '../theme.dart';
 import '../widgets/backoffice.dart';
 import '../widgets/common.dart';
 import '../widgets/dashboard.dart';
 
 class PipelineScreen extends ConsumerStatefulWidget {
-  final ValueNotifier<NavKey>? activeTab;
-  final NavKey? self;
-
-  const PipelineScreen({super.key, this.activeTab, this.self});
+  const PipelineScreen({super.key});
 
   @override
   ConsumerState<PipelineScreen> createState() => _PipelineScreenState();
 }
 
 class _PipelineScreenState extends ConsumerState<PipelineScreen> {
-  List<FufutOrder> _orders = [];
-  bool _loading = true;
-  Object? _error;
-  SseChannel? _channel;
-  Timer? _poll;
-  bool get _sseConnected => _channel?.connected.value ?? false;
-  Timer? _clock;
+  /// build() watches the shared kitchen feed — these getters read the same
+  /// snapshot during that build. No private channel, poll or clock: the
+  /// feed pushes, the poll fallback lives there, and the 1s elapsed
+  /// refresh is the wall clock.
+  List<FufutOrder> get _orders => ref.read(kitchenFeedProvider).orders;
+  bool get _sseConnected => ref.read(kitchenFeedProvider).connected;
 
-  @override
-  void initState() {
-    super.initState();
-    _load();
-    _connect();
-    widget.activeTab?.addListener(_lifecycle);
-    // Elapsed timers tick once a second, like the web's clockTimer.
-    _clock = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted) setState(() {});
-    });
-  }
+  bool get _canCancel => ref.watch(roleProvider) == 'manager';
 
-  @override
-  void dispose() {
-    widget.activeTab?.removeListener(_lifecycle);
-    _channel?.suspend();
-    _poll?.cancel();
-    _clock?.cancel();
-    super.dispose();
-  }
-
-  /// The keep-alive shell keeps this screen built while offstage; suspend the
-  /// SSE connection exactly when the tab is not on stage (the kitchen board's
-  /// connection hygiene).
-  void _lifecycle() {
-    final onStage = widget.activeTab?.value == widget.self;
-    if (onStage) {
-      _channel?.resume();
-      _load(quiet: true);
-    } else {
-      _channel?.suspend();
-      _poll?.cancel();
-      _poll = null;
-    }
-  }
-
-  void _connect() {
-    final app = ref.read(appStateProvider);
-    final ch = SseChannel(
-      baseUrl: app.baseUrl,
-      channel: 'kitchen',
-      sessionToken: app.client.sessionToken,
-    );
-    ch.connected.addListener(_onConnChange);
-    ch.stream.listen((evt) {
-      if (!mounted) return;
-      if (evt.event == 'new_order' || evt.event == 'order_update') {
-        // Both payloads carry the full orders snapshot — apply directly,
-        // then refresh the per-line feed quietly.
-        _applySnapshot(evt.data);
-        _refreshFromApi();
-      }
-    });
-    _channel = ch;
-    ch.connect();
-  }
-
-  void _onConnChange() {
-    if (!mounted) return;
-    final connected = _sseConnected;
-    if (connected) {
-      _poll?.cancel();
-      _poll = null;
-      _load(quiet: true);
-    } else {
-      _poll ??= Timer.periodic(const Duration(seconds: 15), (_) {
-        if (mounted && !_sseConnected) _load(quiet: true);
-      });
-    }
-    setState(() {});
-  }
-
-  void _applySnapshot(dynamic data) {
-    final rows = data is Map ? data['orders'] : data;
-    if (rows is! List) return;
-    final parsed = rows
-        .whereType<Map>()
-        .map((m) => FufutOrder.fromJson(Map<String, dynamic>.from(m)))
-        .toList();
-    if (!mounted) return;
-    setState(() => _orders = parsed);
-  }
-
-  Future<void> _refreshFromApi() async {
-    final app = ref.read(appStateProvider);
-    try {
-      final rows = await app.api.orders();
-      if (!mounted) return;
-      setState(() => _orders = rows);
-    } catch (_) {
-      // Push already updated us; the refetch is best-effort.
-    }
-  }
-
-  Future<void> _load({bool quiet = false}) async {
-    final app = ref.read(appStateProvider);
-    if (!quiet) setState(() { _loading = true; _error = null; });
-    try {
-      final rows = await app.api.orders();
-      if (!mounted) return;
-      setState(() { _orders = rows; _loading = false; });
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) { await app.sessionExpired(); return; }
-      setState(() { _loading = false; _error = e; });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _error = e; });
-    }
-  }
-
-  String get _role => ref.read(appStateProvider).roleKey ?? '';
-  bool get _canCancel => _role == 'manager';
+  Future<void> _reload() =>
+      ref.read(kitchenFeedProvider.notifier).refresh();
 
   static const _lanes = [
     ('new', 'New', Icons.fiber_new_outlined),
@@ -180,33 +64,16 @@ class _PipelineScreenState extends ConsumerState<PipelineScreen> {
 
   Future<void> _advance(FufutOrder o, String status) async {
     final messenger = ScaffoldMessenger.of(context);
-    final app = ref.read(appStateProvider);
+    final feed = ref.read(kitchenFeedProvider.notifier);
     // Optimistic move, revert on refusal — the web drag contract.
-    setState(() {
-      _orders = [
-        for (final x in _orders)
-          if (x.id == o.id)
-            FufutOrder(
-              id: x.id, status: status, type: x.type, tableNum: x.tableNum,
-              customer: x.customer, customerPhone: x.customerPhone,
-              notes: x.notes, total: x.total, subtotal: x.subtotal,
-              discount: x.discount, tip: x.tip, deliveryFee: x.deliveryFee,
-              payment: x.payment, paymentStatus: x.paymentStatus,
-              created: x.created, updatedAt: x.updatedAt,
-              createdByName: x.createdByName, createdById: x.createdById,
-              items: x.items, itemsRaw: x.itemsRaw,
-            )
-          else
-            x,
-      ];
-    });
+    feed.applyOptimistic(o.id, status);
     try {
-      await app.api.updateStatus(o, status);
+      await ref.read(fufutApiProvider).updateStatus(o, status);
       showInfoOn(messenger, '#${shortId(o.id)} → $status');
     } catch (e) {
       if (!mounted) return;
       showErrorOn(messenger, e);
-      await _load(quiet: true);
+      await _reload(); // wholesale revert to server truth
     }
   }
 
@@ -302,11 +169,15 @@ class _PipelineScreenState extends ConsumerState<PipelineScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading && _orders.isEmpty) {
+    final feed = ref.watch(kitchenFeedProvider);
+    // Elapsed timers tick once a second, like the web's clockTimer — the
+    // shared wall clock instead of a private Timer.
+    ref.watch(wallClockProvider);
+    if (feed.loading && feed.orders.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (_error != null && _orders.isEmpty) {
-      return LoadError(error: _error!, onRetry: () => _load());
+    if (feed.error != null && feed.orders.isEmpty) {
+      return LoadError(error: feed.error!, onRetry: () => _reload());
     }
     final pal = Pal.of(context);
 
@@ -357,7 +228,7 @@ class _PipelineScreenState extends ConsumerState<PipelineScreen> {
           ),
         Expanded(
           child: RefreshIndicator(
-            onRefresh: () => _load(quiet: true),
+            onRefresh: _reload,
             child: ListView(
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.all(12),

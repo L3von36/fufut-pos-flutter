@@ -39,19 +39,18 @@
 /// header shows which one is driving the board (Live / Polling).
 library;
 
-import 'dart:async';
-
-import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../api/api_client.dart';
-import '../api/sse/sse_channel.dart';
 import '../models/models.dart';
 import '../services/audio_alerts.dart';
-import '../services/kitchen_live.dart';
 import '../state/app_state.dart';
+import '../state/audio_providers.dart';
+import '../state/catalog_providers.dart';
+import '../state/clock.dart';
+import '../state/live_feeds.dart';
+import '../state/nav.dart';
 import '../state/order_scope.dart';
 import '../state/roles.dart';
 import '../theme.dart';
@@ -61,56 +60,28 @@ import '../widgets/dashboard.dart';
 class KitchenBoard extends ConsumerStatefulWidget {
   final bool baristaMode;
 
-  /// Which tab this board instance lives on, and the shell's active-tab
-  /// broadcast. The shell keeps visited screens alive under `Offstage`, so
-  /// a board that is not on stage must behave like the web's hidden tab:
-  /// SSE suspended (Worker connection released), polls and clock silenced —
-  /// otherwise a chef who visited both boards pins two connections and
-  /// hears every alert twice.
-  final ValueListenable<NavKey>? activeTab;
+  /// Which shell tab this board lives on. The shared kitchen feed never
+  /// sleeps while any consumer watches it — there is no connection left to
+  /// gate — so [self] now decides exactly one thing: whether THIS board
+  /// makes sound (ding, chime, critical beep). An offstage board stays
+  /// silent even though the feed it watches keeps streaming; the board on
+  /// stage is the one that speaks.
   final NavKey self;
 
   const KitchenBoard({
     super.key,
     this.baristaMode = false,
-    this.activeTab,
     this.self = NavKey.kitchen,
   });
 
   @override
   ConsumerState<KitchenBoard> createState() => _KitchenBoardState();
 }
-
-class _KitchenBoardState extends ConsumerState<KitchenBoard>
-    with WidgetsBindingObserver {
-  List<FufutOrder> _orders = [];
-  // orderId → itemId → status, from `GET /api/orders/items/active`.
-  Map<String, Map<String, String>> _lineStatus = {};
-  // orderId → tracked rows in line_no order — the safe line→id mapping
-  // (name first, position second). The positional guess alone was the bug
-  // that let one tap move a line the cook never touched.
-  Map<String, List<ActiveOrderItem>> _activeItems = {};
+class _KitchenBoardState extends ConsumerState<KitchenBoard> {
   // Line keys and ticket ids with an action in flight — the tap guard and
   // the per-row spinner (button state management, owner's 2026-09 rule).
   final Set<String> _busyLines = {};
   String? _busyTicket;
-  bool _loading = true;
-  Object? _error;
-  Timer? _poll;
-  Timer? _clock;
-  bool _muted = false;
-
-  // SSE live channel — one per board instance, web useSSE parity.
-  final KitchenLive _live = KitchenLive();
-  SseChannel? _sse;
-  StreamSubscription<SseEvent>? _sseSub;
-
-  // The channel is up only when BOTH gates are open: the app is
-  // foregrounded (lifecycle, the web's visibilitychange) and this board is
-  // the shell's active tab (Offstage keep-alive — a web route would have
-  // been unmounted instead).
-  bool _lifecycleUp = true;
-  bool _tabUp = true;
 
   // One critical beep per ticket per lifetime on this board — the web's
   // `_criticalAlerted` flag on each order row.
@@ -120,101 +91,100 @@ class _KitchenBoardState extends ConsumerState<KitchenBoard>
   // surfaces show all three columns); NEW is where a shift starts.
   String _lane = 'new';
 
-  // name → category, built from the menu — the station router's lookup.
-  // BOTH boards need it: a kitchen pass without it would cook the bar's
-  // "Ginger with Honey". Refreshed on every load; the session cache in
-  // AppState adopts it so the Orders screen classifies identically.
-  Map<String, String> _catByName = {};
+  ScaffoldMessengerState? _messenger;
 
   @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addObserver(this);
-    _app = ref.read(appStateProvider);
-    _tabUp = widget.activeTab?.value == widget.self;
-    widget.activeTab?.addListener(_onTabChanged);
-    _load();
-    if (_tabUp) _connectSse();
-    // Refresh fallback: only while SSE is NOT connected — when the stream
-    // is alive the server pushes every state change within seconds and a
-    // fixed poll would just add latency and duplicate work (the web's own
-    // gate in KitchenView.onMounted).
-    _poll = Timer.periodic(const Duration(seconds: 15), (_) {
-      if (!_tabUp) return; // offstage board — silent, suspended
-      final sse = _sse;
-      if (sse == null || !sse.connected.value) _load(quiet: true);
-    });
-    // The web's clockTimer: refreshes the elapsed clocks every second and
-    // catches tickets crossing the 15-minute critical threshold — a quiet
-    // board emits no SSE events, so only the clock can hear time pass.
-    _clock = Timer.periodic(const Duration(seconds: 1), (_) => _tick());
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _messenger = ScaffoldMessenger.of(context);
   }
 
-  void _onTabChanged() {
+  // ── Watched data ──────────────────────────────────────────────────────────
+  // build() watches kitchenFeedProvider / kitchenLinesProvider /
+  // catByNameProvider at the top; these getters read the same values during
+  // that same build (and from side-effect listeners via ref.read).
+
+  List<FufutOrder> get _orders => ref.read(kitchenFeedProvider).orders;
+
+  /// orderId → itemId → status, from `GET /api/orders/items/active`
+  /// (via [kitchenLinesProvider] — refreshed with kitchen activity).
+  Map<String, Map<String, String>> get _lineStatus {
+    final items = ref.read(kitchenLinesProvider).value;
+    final lineMap = <String, Map<String, String>>{};
+    for (final it in items ?? const <ActiveOrderItem>[]) {
+      lineMap.putIfAbsent(it.orderId, () => {})[it.id] = it.status;
+    }
+    return lineMap;
+  }
+
+  /// orderId → tracked rows in line_no order — the safe line→id mapping
+  /// (name first, position second). The positional guess alone was the bug
+  /// that let one tap move a line the cook never touched.
+  Map<String, List<ActiveOrderItem>> get _activeItems {
+    final items = ref.read(kitchenLinesProvider).value;
+    final byOrder = <String, List<ActiveOrderItem>>{};
+    for (final it in items ?? const <ActiveOrderItem>[]) {
+      byOrder.putIfAbsent(it.orderId, () => []).add(it);
+    }
+    return byOrder;
+  }
+
+  /// name → category, the station router's lookup (shared menu provider;
+  /// the session cache in AppState adopts the same copy).
+  Map<String, String> get _catByName => ref.read(catByNameProvider);
+
+  /// The header's mute-switch state (watched — the icon flips live).
+  bool get _boardMuted => ref.watch(kitchenMutedProvider);
+
+  /// Open tickets stamped before today, hidden by the board's today-only
+  /// rule — surfaced as a count so nothing silently vanishes. Matches the
+  /// server's open-checks view (listOpenChecks): not cancelled, not
+  /// voided, not paid — whatever the status, an unpaid tab from yesterday
+  /// is money and work nobody closed out.
+  int get _earlier => _orders.where(_isCarriedOver).length;
+
+  static bool _isCarriedOver(FufutOrder o) {
+    final s = o.status.toLowerCase();
+    return s != 'cancelled' &&
+        o.voidedAt == null &&
+        !o.isPaid &&
+        !orderIsToday(o);
+  }
+
+  /// Feed transitions → the pass's sounds. Only the ON-STAGE board speaks
+  /// (the other board across the room speaks on its own tab); the mute
+  /// gate lives in the service, kept in step by [kitchenMutedProvider].
+  void _onFeed(KitchenFeedState? prev, KitchenFeedState next) {
+    if (!mounted || prev == null) return;
+    if (ref.read(activeTabProvider) != widget.self) return;
+    final messenger = _messenger;
+    final newId = next.lastNewOrderId;
+    if (newId != null && newId != prev.lastNewOrderId) {
+      AudioAlerts.instance.play(AlertSound.newOrder);
+      if (messenger != null) {
+        showInfoOn(messenger, 'New order ${shortId(newId)} on the board');
+      }
+    }
+    final readyId = next.lastReadyOrderId;
+    if (readyId != null && readyId != prev.lastReadyOrderId) {
+      AudioAlerts.instance.play(AlertSound.orderReady);
+      if (messenger != null) {
+        showInfoOn(messenger, 'Order ${shortId(readyId)} is ready!');
+      }
+    }
+    // No sound for other transitions — the board just re-renders. (The
+    // web plays a soft generic blip here; this app's three tones are
+    // ding/chime/critical and a silent render is the honest default.)
+  }
+
+  /// 1s heartbeat (wall clock): catches tickets crossing the 15-minute
+  /// critical threshold — a quiet board emits no SSE events, so only the
+  /// clock can hear time pass. The elapsed clocks themselves repaint via
+  /// the wallClock watch in build; this listener decides sound only.
+  void _onTick() {
     if (!mounted) return;
-    final up = widget.activeTab?.value == widget.self;
-    if (up == _tabUp) return;
-    _tabUp = up;
-    _syncSse();
-    if (up) {
-      // Back on stage: server truth may have moved while we were dark.
-      _load(quiet: true);
-    }
-  }
-
-  void _syncSse() {
-    final sse = _sse;
-    if (sse == null) return;
-    if (_lifecycleUp && _tabUp) {
-      sse.resume(); // no-op when already up
-    } else {
-      sse.suspend();
-    }
-  }
-
-  void _connectSse() {
-    _sseSub?.cancel();
-    _sse?.disconnect();
-    final sse = SseChannel(
-      baseUrl: _app.baseUrl,
-      channel: 'kitchen',
-      sessionToken: _app.client.sessionToken,
-    );
-    _sse = sse;
-    _sseSub = sse.stream.listen(_onSseEvent);
-    sse.connect();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    super.didChangeAppLifecycleState(state);
-    // Web visibilitychange parity: hidden tabs pause the stream so a
-    // locked tablet never pins a Worker connection it cannot read.
-    if (state == AppLifecycleState.hidden ||
-        state == AppLifecycleState.paused) {
-      _lifecycleUp = false;
-    } else if (state == AppLifecycleState.resumed) {
-      _lifecycleUp = true;
-    } else {
-      return; // inactive/detached: transient, leave the gates as they are
-    }
-    _syncSse();
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    widget.activeTab?.removeListener(_onTabChanged);
-    _poll?.cancel();
-    _clock?.cancel();
-    _sseSub?.cancel();
-    _sse?.disconnect();
-    super.dispose();
-  }
-
-  /// 1s heartbeat: critical-threshold audio + elapsed clock refresh.
-  void _tick() {
-    if (!mounted || !_tabUp || _orders.isEmpty) return;
+    if (ref.read(activeTabProvider) != widget.self) return; // offstage — silent
+    if (_orders.isEmpty) return;
     for (final t in _tickets) {
       final id = t.order.id;
       if (_Ticket.elapsedOf(t.order).inMinutes >= 15 &&
@@ -223,179 +193,14 @@ class _KitchenBoardState extends ConsumerState<KitchenBoard>
         AudioAlerts.instance.play(AlertSound.critical);
       }
     }
-    setState(() {}); // refresh the elapsed clocks on every ticket card
   }
 
-  void _onSseEvent(SseEvent event) {
-    if (!mounted) return;
-    if (event.event != 'new_order' && event.event != 'order_update') return;
-
-    final data = event.tryDecodeJson();
-    final raw = data?['orders'];
-    if (raw is! List) {
-      // Payload shape unexpected — fetch instead of rendering a stale board
-      // (the web's fallback branch).
-      _load(quiet: true);
-      return;
-    }
-
-    // Parse defensively: one malformed row must never take down the board.
-    final fresh = <FufutOrder>[];
-    for (final row in raw.whereType<Map>()) {
-      try {
-        fresh.add(FufutOrder.fromJson(Map<String, dynamic>.from(row)));
-      } catch (_) {}
-    }
-
-    if (event.event == 'new_order') {
-      // The SSE payload already IS the current orders list — applying it
-      // directly skips a second round-trip after the waiter's POST, the
-      // ticket lands within seconds of "Send to Kitchen" (web parity).
-      setState(() {
-        _orders = fresh;
-        _loading = false;
-        _error = null;
-      });
-      final newId = _live.applyNewOrderSnapshot(fresh);
-      if (newId != null) {
-        AudioAlerts.instance.play(AlertSound.newOrder);
-        if (_messenger != null) {
-          showInfoOn(_messenger!, 'New order ${shortId(newId)} on the board');
-        }
-      }
-    } else {
-      // order_update — snapshot the ready set BEFORE overwriting, so the
-      // chime keys off the transition, not the new state (the event never
-      // carries a status field; the web shipped that bug and fixed it here).
-      final wasReady =
-          _orders.where((o) => o.status.toLowerCase() == 'ready').toList();
-      setState(() {
-        _orders = fresh;
-        _loading = false;
-        _error = null;
-      });
-      final readyId = KitchenLive.newlyReadyIn(wasReady, fresh);
-      if (readyId != null) {
-        AudioAlerts.instance.play(AlertSound.orderReady);
-        if (_messenger != null) {
-          showInfoOn(_messenger!, 'Order ${shortId(readyId)} is ready!');
-        }
-      }
-      // No sound for other transitions — the board just re-renders. (The
-      // web plays a soft generic blip here; this app's three tones are
-      // ding/chime/critical and a silent render is the honest default.)
-    }
-
-    // Per-line state is NOT in the SSE payload — one GET refreshes it.
-    _refreshLines();
-  }
-
-  Future<void> _refreshLines() async {
-    try {
-      final items = await _app.api.orderItemsActive();
-      if (!mounted) return;
-      final lineMap = <String, Map<String, String>>{};
-      final byOrder = <String, List<ActiveOrderItem>>{};
-      for (final it in items) {
-        lineMap.putIfAbsent(it.orderId, () => {})[it.id] = it.status;
-        byOrder.putIfAbsent(it.orderId, () => []).add(it);
-      }
-      setState(() {
-        _lineStatus = lineMap;
-        _activeItems = byOrder;
-      });
-    } catch (_) {
-      // The item feed is allowed to fail on its own: tickets still render.
-    }
-  }
-
-  late AppState _app;
-
-  /// Open tickets stamped before today, hidden by the board's today-only
-  /// rule — surfaced as a count so nothing silently vanishes.
-  int _earlier = 0;
-
-  Future<void> _load({bool quiet = false}) async {
-    final app = _app;
-    if (!quiet) setState(() { _loading = true; _error = null; });
-    try {
-      final results = await Future.wait([
-        app.api.orders(openOnly: true),
-        app.api.orderItemsActive(),
-        // The menu is the station router's lookup table — fetched in BOTH
-        // modes and non-fatal: offline or a parse hiccup falls back to the
-        // name regex, never to a blank board.
-        app.api.menu().catchError((_) => const <MenuItem>[]),
-      ]);
-      if (!mounted) return;
-      final menu = results[2] as List<MenuItem>;
-      final items = results[1] as List<ActiveOrderItem>;
-      final all = results[0] as List<FufutOrder>;
-
-      // Today only: the board is the service day's work surface. Open
-      // tickets from earlier days (a stale split, an abandoned tab) used to
-      // sit on the pass forever — they are countable, not actionable here;
-      // Open Checks and the till own the money side of an old tab.
-      var earlier = 0;
-      final todays = <FufutOrder>[];
-      for (final o in all) {
-        if (orderIsToday(o)) {
-          todays.add(o);
-        } else {
-          earlier++;
-        }
-      }
-
-      // Per-line status map. Lines the server has not yet stamped keep the
-      // ticket's own status.
-      final lineMap = <String, Map<String, String>>{};
-      final byOrder = <String, List<ActiveOrderItem>>{};
-      for (final it in items) {
-        lineMap.putIfAbsent(it.orderId, () => {})[it.id] = it.status;
-        byOrder.putIfAbsent(it.orderId, () => []).add(it);
-      }
-
-      setState(() {
-        _orders = todays;
-        _earlier = earlier;
-        _lineStatus = lineMap;
-        _activeItems = byOrder;
-        app.adoptCategories(menu);
-        _catByName = app.catByName;
-        _loading = false;
-      });
-      // NOTE: no audio diff here — the web's loadOrders never sounds.
-      // Entrances and ready-transitions are the SSE channel's job; this
-      // fetch is data correction only (also after user actions).
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) {
-        await app.sessionExpired();
-        return;
-      }
-      setState(() { _loading = false; _error = e; });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _error = e; });
-    }
-  }
-
-  ScaffoldMessengerState? _messenger;
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    _messenger = ScaffoldMessenger.of(context);
-    // Settings can re-point the API mid-shift; the channel rebuilds so the
-    // stream follows the same base URL the REST calls use.
-    final app = ref.read(appStateProvider);
-    if (_sse != null && _sse!.baseUrl != app.baseUrl) {
-      _app = app;
-      _connectSse();
-    }
-    AudioAlerts.instance.load().then((_) {
-      if (mounted) setState(() => _muted = AudioAlerts.instance.muted);
-    });
+  /// Server-truth refetch — after user actions and pull-to-refresh. The
+  /// feed re-bumps the lines feed too. Never sounds: entrances and
+  /// ready-transitions are the channel's job; this fetch is data
+  /// correction only.
+  Future<void> _reload() async {
+    await ref.read(kitchenFeedProvider.notifier).refresh();
   }
 
   /// The station's lines of one ticket — FOOD only on the kitchen pass,
@@ -494,10 +299,10 @@ class _KitchenBoardState extends ConsumerState<KitchenBoard>
       await app.api.updateStatus(t.order, 'fulfilled', station: _station);
       showInfoOn(
           messenger, 'Ticket ${shortId(t.order.id)} picked up by waiter');
-      await _load(quiet: true);
+      await _reload();
     } catch (e) {
       showErrorOn(messenger, e);
-      await _load(quiet: true); // wholesale revert to server truth
+      await _reload(); // wholesale revert to server truth
     } finally {
       _busyTicket = null;
       if (mounted) setState(() {});
@@ -519,7 +324,7 @@ class _KitchenBoardState extends ConsumerState<KitchenBoard>
     final hasTracked = (_lineStatus[t.order.id] ?? {}).isNotEmpty;
     if (hasTracked && itemId == null) {
       showWarnOn(messenger, 'Could not target that line — refreshing the board');
-      await _load(quiet: true);
+      await _reload();
       return;
     }
     _busyLines.add(lineKey);
@@ -534,7 +339,7 @@ class _KitchenBoardState extends ConsumerState<KitchenBoard>
         await app.api.updateStatus(t.order, to, station: _station);
       }
       showInfoOn(messenger, '${line.name} → $to');
-      await _load(quiet: true);
+      await _reload();
     } catch (e) {
       showErrorOn(messenger, e);
     } finally {
@@ -633,10 +438,10 @@ class _KitchenBoardState extends ConsumerState<KitchenBoard>
         await app.api.updateStatus(t.order, to, station: _station);
         HapticFeedback.mediumImpact();
         showInfoOn(messenger, 'Ticket ${shortId(t.order.id)} → $to');
-        await _load(quiet: true);
+        await _reload();
       } catch (e) {
         showErrorOn(messenger, e);
-        await _load(quiet: true);
+        await _reload();
       } finally {
         _busyTicket = null;
         if (mounted) setState(() {});
@@ -655,29 +460,27 @@ class _KitchenBoardState extends ConsumerState<KitchenBoard>
           try {
             await Future.wait(targets
                 .map((id) => app.api.advanceOrderItem(t.order.id, id, 'new')));
-            await _load(quiet: true);
+            await _reload();
           } catch (e) {
             showErrorOn(_messenger ?? messenger, e);
           }
         });
       }
-      await _load(quiet: true);
+      await _reload();
     } catch (e) {
       showErrorOn(messenger, e);
-      await _load(quiet: true); // wholesale revert to server truth
+      await _reload(); // wholesale revert to server truth
     } finally {
       _busyTicket = null;
       if (mounted) setState(() {});
     }
   }
 
-  Future<void> _toggleMute() async {
-    final audio = AudioAlerts.instance;
-    await audio.setMuted(!audio.muted);
-    if (!mounted) return;
-    setState(() => _muted = audio.muted);
+  void _toggleMute() {
+    final muted = ref.read(kitchenMutedProvider);
+    ref.read(kitchenMutedProvider.notifier).set(!muted);
     showInfoOn(_messenger ?? ScaffoldMessenger.of(context),
-        _muted ? 'Board sounds muted' : 'Board sounds on');
+        !muted ? 'Board sounds muted' : 'Board sounds on');
   }
 
 
@@ -685,11 +488,23 @@ class _KitchenBoardState extends ConsumerState<KitchenBoard>
 
   @override
   Widget build(BuildContext context) {
-    if (_loading && _orders.isEmpty) {
+    // Watched data: the shared kitchen feed, the per-line refresh, the
+    // station router's categories, the mute switch, and the 1s heartbeat
+    // that repaints the elapsed clocks. Listeners: feed transitions make
+    // the sounds, the clock catches the 15-minute critical crossings.
+    final feed = ref.watch(kitchenFeedProvider);
+    ref.watch(kitchenLinesProvider);
+    ref.watch(catByNameProvider);
+    ref.watch(kitchenMutedProvider);
+    ref.watch(wallClockProvider);
+    ref.listen(kitchenFeedProvider, _onFeed);
+    ref.listen(wallClockProvider, (_, __) => _onTick());
+
+    if (feed.loading && feed.orders.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (_error != null && _orders.isEmpty) {
-      return LoadError(error: _error!, onRetry: () => _load());
+    if (feed.error != null && feed.orders.isEmpty) {
+      return LoadError(error: feed.error!, onRetry: () => _reload());
     }
     final pal = Pal.of(context);
     final lanes = _lanes;
@@ -697,7 +512,7 @@ class _KitchenBoardState extends ConsumerState<KitchenBoard>
     final barista = widget.baristaMode;
 
     return RefreshIndicator(
-      onRefresh: () => _load(quiet: true),
+      onRefresh: _reload,
       child: Column(children: [
         _header(pal),
         // ── Earlier-ticket note — today-only hides stale open tickets, but
@@ -852,43 +667,40 @@ class _KitchenBoardState extends ConsumerState<KitchenBoard>
           // What is driving the board right now: the pushed stream or
           // the 15s poll. A wall tablet on flaky Wi-Fi deserves to know
           // why updates feel slow.
-          if (_sse != null)
-            ValueListenableBuilder<bool>(
-              valueListenable: _sse!.connected,
-              builder: (context, live, _) {
-                final c = live ? pal.success : pal.faint;
-                return Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-                  decoration: BoxDecoration(
+          Builder(builder: (context) {
+            final live = ref.watch(kitchenFeedProvider).connected;
+            final c = live ? pal.success : pal.faint;
+            return Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+              decoration: BoxDecoration(
+                color: live
+                    ? pal.success.withValues(alpha: 0.10)
+                    : pal.sunken,
+                borderRadius: BorderRadius.circular(99),
+                border: Border.all(
                     color: live
-                        ? pal.success.withValues(alpha: 0.10)
-                        : pal.sunken,
-                    borderRadius: BorderRadius.circular(99),
-                    border: Border.all(
-                        color: live
-                            ? pal.success.withValues(alpha: 0.35)
-                            : pal.border),
-                  ),
-                  child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    Container(
-                      width: 6,
-                      height: 6,
-                      decoration: BoxDecoration(
-                          shape: BoxShape.circle, color: c),
-                    ),
-                    const SizedBox(width: 4),
-                    Text(live ? 'Live' : 'Polling',
-                        style: TextStyle(
-                            fontFamily: kFontBody,
-                            fontSize: 9.5,
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: 0.5,
-                            color: live ? pal.success : pal.faint)),
-                  ]),
-                );
-              },
-            ),
+                        ? pal.success.withValues(alpha: 0.35)
+                        : pal.border),
+              ),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                Container(
+                  width: 6,
+                  height: 6,
+                  decoration: BoxDecoration(
+                      shape: BoxShape.circle, color: c),
+                ),
+                const SizedBox(width: 4),
+                Text(live ? 'Live' : 'Polling',
+                    style: TextStyle(
+                        fontFamily: kFontBody,
+                        fontSize: 9.5,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.5,
+                        color: live ? pal.success : pal.faint)),
+              ]),
+            );
+          }),
           const SizedBox(width: 6),
           InkWell(
             onTap: _toggleMute,
@@ -902,10 +714,10 @@ class _KitchenBoardState extends ConsumerState<KitchenBoard>
                 border: Border.all(color: pal.border),
               ),
               child: Row(children: [
-                Icon(_muted ? Icons.volume_off : Icons.volume_up,
-                    size: 13, color: _muted ? pal.danger : pal.primary),
+                Icon(_boardMuted ? Icons.volume_off : Icons.volume_up,
+                    size: 13, color: _boardMuted ? pal.danger : pal.primary),
                 const SizedBox(width: 4),
-                Text(_muted ? 'Muted' : 'Sound',
+                Text(_boardMuted ? 'Muted' : 'Sound',
                     style: TextStyle(
                         fontFamily: kFontBody,
                         fontSize: 10.5,

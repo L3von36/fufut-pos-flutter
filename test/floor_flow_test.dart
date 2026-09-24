@@ -47,7 +47,12 @@ class _ScriptedClient extends http.BaseClient {
 
     final key = '${request.method} $path'
         '${request.url.query.isEmpty ? '' : '?${request.url.query}'}';
-    final scripted = routes[key] ?? routes['${request.method} $path'];
+    final scripted = routes[key] ??
+        routes['${request.method} $path'] ??
+        // The kitchen feed asks for the FULL order list (the pipeline's
+        // cancelled/served lanes need it); the scripted kitchen world
+        // serves the same open list however the app asks.
+        routes['${request.method} $path?open=1'];
     final (status, payload) = scripted ?? (200, <String, dynamic>{});
     return http.StreamedResponse(
         Stream.value(utf8.encode(jsonEncode(payload))), status,

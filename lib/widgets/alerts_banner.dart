@@ -5,14 +5,14 @@
 /// web mounts it in AppLayout above the content wrap), so a breach follows
 /// the user from the floor to the till without re-mounting.
 ///
-/// **Live via SSE** — it rides the fufut-api `alerts` channel: an
-/// `alerts_update` payload `{alerts:[...]}` replaces the list within
-/// seconds of the minute tick, and the sounds ride the push (critical
-/// breaches, and the `order-ready-now` ping — "food on the pass for YOUR
-/// table" — aimed at the waiter). A 60s poll survives unconditionally for
-/// tablets where EventSource quietly dies (the web ships the same
-/// always-on poll here — unlike the kitchen board, a missed alert has no
-/// other screen to catch it).
+/// **Live via the shared ops alerts feed** — one `alerts` SSE channel (plus
+/// the 60s always-on poll) lives in `state/live_feeds.dart`, shared with
+/// the alerts dashboard. An `alerts_update` payload `{alerts:[...]}` or the
+/// poll refreshes the watched list within seconds of the minute tick, and
+/// the sounds ride the snapshot (critical breaches, and the
+/// `order-ready-now` ping — "food on the pass for YOUR table" — aimed at
+/// the waiter). The web ships the same always-on poll here — unlike the
+/// kitchen board, a missed alert has no other screen to catch it.
 ///
 /// **Roles** mirror the server exactly: read is wide (every floor role
 /// except cleaner), per-alert Ack is manager / head-chef / head-waiter /
@@ -22,20 +22,18 @@
 ///
 /// **Quota notice** — the circuit breaker's human voice: the same
 /// conserve/emergency/critical ladder text the web shows, driven by the
-/// channel's quota mode (hello + `quota_mode` transitions).
+/// feed's quota mode (hello + `quota_mode` transitions).
 library;
-
-import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../api/api_client.dart';
-import '../api/sse/sse_channel.dart';
 import '../models/models.dart';
 import '../services/alerts_live.dart';
 import '../services/audio_alerts.dart';
 import '../state/app_state.dart';
+import '../state/audio_providers.dart';
+import '../state/live_feeds.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 
@@ -73,21 +71,16 @@ class OpsAlertsBanner extends ConsumerStatefulWidget {
   ConsumerState<OpsAlertsBanner> createState() => _OpsAlertsBannerState();
 }
 
-class _OpsAlertsBannerState extends ConsumerState<OpsAlertsBanner>
-    with WidgetsBindingObserver {
-  List<OpsAlert> _alerts = [];
+class _OpsAlertsBannerState extends ConsumerState<OpsAlertsBanner> {
   bool _expanded = false;
   String? _acking;
-  String? _quotaMode;
-  bool _lifecycleUp = true;
 
   final AlertsLive _live = AlertsLive();
-  SseChannel? _sse;
-  StreamSubscription<SseEvent>? _sseSub;
-  Timer? _poll;
 
-  AppState? _app;
-  bool _muted = false;
+  /// The open list the sound engine last saw — a new snapshot (push or
+  /// poll) re-baselines the dedup sets; a mere connected/quota flip does
+  /// not re-run sounds.
+  List<OpsAlert>? _lastSynced;
 
   bool _canRead = false;
   bool _canAck = false;
@@ -96,146 +89,41 @@ class _OpsAlertsBannerState extends ConsumerState<OpsAlertsBanner>
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
-    _app = ref.read(appStateProvider);
-    final role = _app?.roleKey ?? '';
+    final app = ref.read(appStateProvider);
+    final role = app.roleKey ?? '';
     _canRead = kAlertReadRoles.contains(role);
     _canAck = kAlertAckRoles.contains(role);
     _canAckAll = kAlertAckAllRoles.contains(role);
-    _loadMute();
-    if (_canRead) {
-      _load();
-      // Always-on poll (web parity): the banner is the only thing watching
-      // for breaches, so it keeps its 60s net even while the stream is up.
-      _poll = Timer.periodic(const Duration(seconds: 60), (_) => _load(quiet: true));
-      _connectSse();
-    }
   }
 
-  Future<void> _loadMute() async {
-    await AudioAlerts.instance.load();
-    if (mounted) setState(() => _muted = AudioAlerts.instance.opsMuted);
-  }
-
-  Future<void> _load({bool quiet = true}) async {
-    final app = _app;
-    if (app == null) return;
-    try {
-      final list = await app.api.alerts();
-      if (!mounted) return;
-      setState(() => _alerts = list);
-      _syncSound(list);
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) {
-        await app.sessionExpired();
-        return;
-      }
-      // Refused or offline: silence, not an error banner on an error banner.
-      if (!quiet && _alerts.isEmpty) setState(() => _alerts = []);
-    } catch (_) {
-      if (!mounted) return;
-      if (!quiet && _alerts.isEmpty) setState(() => _alerts = []);
-    }
-  }
-
+  /// Sound sync on every snapshot the banner sees. The mute gate is the
+  /// [opsMutedProvider] switch, kept in step with the service by the
+  /// notifier; [AlertsLive] decides WHAT deserves a tone.
   void _syncSound(List<OpsAlert> list) {
     final sync = _live.apply(list);
-    if (_muted) return;
+    if (ref.read(opsMutedProvider)) return;
+    final audio = ref.read(audioAlertsProvider);
     if (sync.freshCriticals > 0) {
-      AudioAlerts.instance.playOps(AlertSound.critical);
+      audio.playOps(AlertSound.critical);
     }
     if (sync.freshPing) {
       // The warm order-ready chime — the same one the kitchen hears when a
       // ticket goes ready, here telling the waiter their table's food is up.
-      AudioAlerts.instance.playOps(AlertSound.orderReady);
+      audio.playOps(AlertSound.orderReady);
     }
   }
 
-  void _connectSse() {
-    final app = _app;
-    if (app == null) return;
-    _sseSub?.cancel();
-    _sse?.disconnect();
-    final sse = SseChannel(
-      baseUrl: app.baseUrl,
-      channel: 'alerts',
-      sessionToken: app.client.sessionToken,
-    );
-    _sse = sse;
-    _sseSub = sse.stream.listen(_onSseEvent);
-    sse.connected.addListener(_onConnectedChanged);
-    sse.connect();
-  }
-
-  void _onConnectedChanged() {
-    if (!mounted) return;
-    final mode = _sse?.quotaMode.value;
-    if (mode != null && mode != _quotaMode) setState(() => _quotaMode = mode);
-  }
-
-  void _onSseEvent(SseEvent event) {
-    if (!mounted) return;
-    if (event.event != 'alerts_update') return;
-
-    final data = event.tryDecodeJson();
-    final raw = data?['alerts'];
-    if (raw is! List) {
-      // Payload shape unexpected — fetch instead of showing a stale list.
-      _load(quiet: true);
-      return;
-    }
-
-    // Parse defensively: one malformed row must never take down the banner.
-    final fresh = <OpsAlert>[];
-    for (final row in raw.whereType<Map>()) {
-      try {
-        fresh.add(OpsAlert.fromJson(Map<String, dynamic>.from(row)));
-      } catch (_) {}
-    }
-
-    setState(() => _alerts = fresh);
-    _syncSound(fresh);
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    super.didChangeAppLifecycleState(state);
-    // Web visibilitychange parity: a locked tablet must not pin a Worker
-    // connection it cannot read. The banner has no tab gate — it is on
-    // stage in every tab — so lifecycle is its only gate.
-    if (state == AppLifecycleState.hidden ||
-        state == AppLifecycleState.paused) {
-      _lifecycleUp = false;
-    } else if (state == AppLifecycleState.resumed) {
-      _lifecycleUp = true;
-    } else {
-      return;
-    }
-    final sse = _sse;
-    if (sse == null) return;
-    if (_lifecycleUp) {
-      sse.resume();
-    } else {
-      sse.suspend();
-    }
-  }
-
-  Future<void> _toggleMute() async {
-    final next = !_muted;
-    await AudioAlerts.instance.setOpsMuted(next);
-    if (mounted) setState(() => _muted = next);
+  void _toggleMute() {
+    final m = ref.read(opsMutedProvider);
+    ref.read(opsMutedProvider.notifier).set(!m);
   }
 
   Future<void> _ack(OpsAlert a) async {
-    final app = _app;
-    if (app == null) return;
     final messenger = ScaffoldMessenger.of(context);
     setState(() => _acking = a.id);
     try {
-      await app.api.acknowledgeAlert(a.id);
+      await ref.read(opsAlertsFeedProvider.notifier).ack(a);
       if (!mounted) return;
-      setState(() => _alerts.removeWhere((x) => x.id == a.id));
       showInfoOn(messenger, 'Alert acknowledged');
     } catch (e) {
       showErrorOn(messenger, e);
@@ -245,13 +133,10 @@ class _OpsAlertsBannerState extends ConsumerState<OpsAlertsBanner>
   }
 
   Future<void> _ackAll() async {
-    final app = _app;
-    if (app == null) return;
     final messenger = ScaffoldMessenger.of(context);
     try {
-      await app.api.acknowledgeAllAlerts();
+      await ref.read(opsAlertsFeedProvider.notifier).ackAll();
       if (!mounted) return;
-      setState(() => _alerts.clear());
       showInfoOn(messenger, 'All alerts acknowledged');
     } catch (e) {
       showErrorOn(messenger, e);
@@ -259,22 +144,20 @@ class _OpsAlertsBannerState extends ConsumerState<OpsAlertsBanner>
   }
 
   @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    _poll?.cancel();
-    _sse?.connected.removeListener(_onConnectedChanged);
-    _sseSub?.cancel();
-    _sse?.disconnect();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
     if (!_canRead) return const SizedBox.shrink();
+    final feed = ref.watch(opsAlertsFeedProvider);
+    final muted = ref.watch(opsMutedProvider);
+    final alerts = feed.open;
+    if (!identical(_lastSynced, alerts)) {
+      _lastSynced = alerts;
+      _syncSound(alerts);
+    }
+    final quotaMode = feed.quotaMode;
     final pal = Pal.of(context);
 
     // The circuit breaker's human voice, web text verbatim.
-    final quotaNotice = switch (_quotaMode) {
+    final quotaNotice = switch (quotaMode) {
       'conserve' || 'emergency' =>
         'Live updates slowed to conserve quota — boards refresh less often',
       'critical' =>
@@ -282,19 +165,19 @@ class _OpsAlertsBannerState extends ConsumerState<OpsAlertsBanner>
       _ => null,
     };
 
-    if (_alerts.isEmpty && quotaNotice == null) return const SizedBox.shrink();
+    if (alerts.isEmpty && quotaNotice == null) return const SizedBox.shrink();
 
-    final criticalCount = _alerts.where((a) => a.severity == 'critical').length;
+    final criticalCount = alerts.where((a) => a.severity == 'critical').length;
     final hasCritical = criticalCount > 0;
-    final sorted = [..._alerts]..sort(OpsAlert.rank);
+    final sorted = [...alerts]..sort(OpsAlert.rank);
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (quotaNotice != null) _QuotaNotice(text: quotaNotice, critical: _quotaMode == 'critical'),
-          if (_alerts.isNotEmpty)
+          if (quotaNotice != null) _QuotaNotice(text: quotaNotice, critical: quotaMode == 'critical'),
+          if (alerts.isNotEmpty)
             Material(
               color: pal.surface,
               borderRadius: BorderRadius.circular(10),
@@ -320,7 +203,7 @@ class _OpsAlertsBannerState extends ConsumerState<OpsAlertsBanner>
                           const SizedBox(width: 7),
                           Expanded(
                             child: Text(
-                              '${_alerts.length} operation${_alerts.length == 1 ? '' : 's'} need${_alerts.length == 1 ? 's' : ''} attention',
+                              '${alerts.length} operation${alerts.length == 1 ? '' : 's'} need${alerts.length == 1 ? 's' : ''} attention',
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: TextStyle(
@@ -356,11 +239,11 @@ class _OpsAlertsBannerState extends ConsumerState<OpsAlertsBanner>
                             child: Padding(
                               padding: const EdgeInsets.all(3),
                               child: Icon(
-                                _muted
+                                muted
                                     ? Icons.volume_off_outlined
                                     : Icons.volume_up_outlined,
                                 size: 15,
-                                color: _muted ? pal.faint : pal.muted,
+                                color: muted ? pal.faint : pal.muted,
                               ),
                             ),
                           ),
@@ -385,7 +268,7 @@ class _OpsAlertsBannerState extends ConsumerState<OpsAlertsBanner>
                             acking: _acking == a.id,
                             onAck: _canAck ? () => _ack(a) : null,
                           ),
-                        if (_canAckAll && _alerts.length > 1) ...[
+                        if (_canAckAll && alerts.length > 1) ...[
                           const SizedBox(height: 4),
                           SizedBox(
                             height: 28,
