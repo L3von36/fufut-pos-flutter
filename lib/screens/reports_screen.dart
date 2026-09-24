@@ -7,6 +7,10 @@
 /// the same windows `resolveWindow` defines server-side. Parity additions
 /// from ReportsView: staff performance, time-to-table, and the CSV exports
 /// (JSON export stays manager-only, exactly like the web).
+///
+/// Tier-2: the fetch lives in a screen-scoped FutureProvider keyed by the
+/// period + timing window; the session is READ inside the provider, never
+/// watched (the fetch must not rebuild on its own session echo).
 library;
 
 import 'package:flutter/material.dart';
@@ -21,6 +25,36 @@ import '../widgets/backoffice.dart';
 import '../widgets/common.dart';
 import '../widgets/dashboard.dart';
 
+/// What reaches the server: the trading period and the time-to-table
+/// sample window (staff performance is unfiltered).
+typedef ReportsFilter = ({String period, int timingDays});
+
+/// The dashboard figures, staff performance and the timing sample arrive
+/// together — exactly like the old _load() trio.
+typedef ReportsData = ({
+  DashboardStats stats,
+  List<Map<String, dynamic>> staff,
+  List<Map<String, dynamic>> timing,
+});
+
+final reportsProvider =
+    FutureProvider.family<ReportsData, ReportsFilter>((ref, f) async {
+  final app = ref.read(appStateProvider);
+  try {
+    final stats = await app.api.reportsDashboard(period: f.period);
+    final staff = await app.api.staffPerformance();
+    final from = DateTime.now()
+        .add(Duration(days: -f.timingDays))
+        .toUtc()
+        .toIso8601String();
+    final timing = await app.api.orderTiming(from);
+    return (stats: stats, staff: staff, timing: timing);
+  } on ApiError catch (e) {
+    if (e.isAuthError) await app.sessionExpired();
+    rethrow;
+  }
+});
+
 class ReportsScreen extends ConsumerStatefulWidget {
   const ReportsScreen({super.key});
 
@@ -29,58 +63,27 @@ class ReportsScreen extends ConsumerStatefulWidget {
 }
 
 class _ReportsScreenState extends ConsumerState<ReportsScreen> {
-  DashboardStats? _stats;
-  bool _loading = true;
   String _period = 'day';
-  Object? _error;
-  List<Map<String, dynamic>> _staff = [];
-  List<Map<String, dynamic>> _timing = [];
   int _timingDays = 7;
 
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  Future<void> _load({bool quiet = false}) async {
-    final app = ref.read(appStateProvider);
-    if (!quiet) setState(() { _loading = true; _error = null; });
-    try {
-      final s = await app.api.reportsDashboard(period: _period);
-      final staff = await app.api.staffPerformance();
-      final from = DateTime.now()
-          .add(Duration(days: -_timingDays))
-          .toUtc()
-          .toIso8601String();
-      final timing = await app.api.orderTiming(from);
-      if (!mounted) return;
-      setState(() {
-        _stats = s; _staff = staff; _timing = timing; _loading = false;
-      });
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) {
-        await app.sessionExpired();
-        return;
-      }
-      setState(() { _loading = false; _error = e; });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _error = e; });
-    }
-  }
+  void _reload() =>
+      ref.invalidate(reportsProvider((period: _period, timingDays: _timingDays)));
 
   bool get _isManager => ref.read(appStateProvider).roleKey == 'manager';
 
   Future<void> _exportCsv(String kind) async {
     final messenger = ScaffoldMessenger.of(context);
+    final data = ref
+        .read(reportsProvider((period: _period, timingDays: _timingDays)))
+        .value;
+    final stats = data?.stats;
+    final staff = data?.staff ?? const <Map<String, dynamic>>[];
     final now = DateTime.now();
     String name;
     String text;
     switch (kind) {
       case 'today':
-        final s = _stats;
+        final s = stats;
         text = toCsv(['Metric', 'ETB'], [
           ['Orders', s?.orders ?? 0],
           ['Net sales', s?.netSales.toStringAsFixed(2) ?? '0'],
@@ -93,7 +96,7 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
         break;
       case 'staff':
         text = toCsv(['Staff', 'Orders', 'Net ETB', 'Tips ETB', 'Avg ETB'], [
-          for (final row in _staff)
+          for (final row in staff)
             [row['name'], row['ordersCount'] ?? 0,
              row['totalSales'] ?? 0, row['totalTips'] ?? 0,
              row['averageOrder'] ?? 0],
@@ -111,15 +114,20 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading && _stats == null) return const DashboardSkeleton();
-    if (_error != null && _stats == null) {
-      return LoadError(error: _error!, onRetry: () => _load());
+    final dataAsync = ref
+        .watch(reportsProvider((period: _period, timingDays: _timingDays)));
+    final data = dataAsync.value;
+    final staff = data?.staff ?? const <Map<String, dynamic>>[];
+    final timing = data?.timing ?? const <Map<String, dynamic>>[];
+    if (dataAsync.isLoading && data == null) return const DashboardSkeleton();
+    if (dataAsync.hasError && data == null) {
+      return LoadError(error: dataAsync.error!, onRetry: _reload);
     }
-    final s = _stats;
+    final s = data?.stats;
     final pal = Pal.of(context);
 
     return RefreshIndicator(
-      onRefresh: () => _load(quiet: true),
+      onRefresh: () async => _reload(),
       child: ListView(
         padding: const EdgeInsets.all(14),
         children: [
@@ -150,7 +158,7 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
                     visualDensity: VisualDensity.compact,
                     onSelected: (_) {
                       setState(() => _period = p.$1);
-                      _load(quiet: true);
+                      _reload();
                     },
                   ),
                 ),
@@ -230,11 +238,11 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
                 ],
               ),
             const SizedBox(height: 10),
-            if (_staff.isNotEmpty)
+            if (staff.isNotEmpty)
               SectionCard(
                 title: 'Staff performance',
                 children: [
-                  for (final row in _staff.take(12))
+                  for (final row in staff.take(12))
                     ListRow(
                       head: '${row['name'] ?? '—'}',
                       rest: '${row['ordersCount'] ?? 0} orders · avg ${money(_d(row['averageOrder']))}',
@@ -242,8 +250,8 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
                     ),
                 ],
               ),
-            if (_staff.isNotEmpty) const SizedBox(height: 10),
-            if (_timing.isNotEmpty)
+            if (staff.isNotEmpty) const SizedBox(height: 10),
+            if (timing.isNotEmpty)
               SectionCard(
                 title: 'Time to table',
                 trailing: Row(mainAxisSize: MainAxisSize.min, children: [
@@ -253,14 +261,14 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
                       child: RowAction(
                           '${d}d',
                           () {
-                            _timingDays = d;
-                            _load(quiet: true);
+                            setState(() => _timingDays = d);
+                            _reload();
                           },
                           color: _timingDays == d ? pal.primary : null),
                     ),
                 ]),
                 children: [
-                  for (final row in _timing.take(10))
+                  for (final row in timing.take(10))
                     ListRow(
                       head: '${row['category'] ?? '—'}',
                       rest:

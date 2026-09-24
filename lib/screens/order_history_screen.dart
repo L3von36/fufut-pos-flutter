@@ -16,10 +16,35 @@ import '../widgets/dashboard.dart';
 /// (`GET /api/orders?from=&to=&limit=&offset=` — Addis wall-clock day keys,
 /// the same day semantics the reports use) and pages through it.
 ///
+/// Riverpod shape: the INITIAL page of the selected window lives in
+/// [orderHistoryPageProvider] (keyed by from/to — the only fields that
+/// change the server call; search and status filter are client-side).
+/// The load-more pager deliberately stays screen-local: a growing appended
+/// list is screen state, not a refetchable query, so [_loadMore] pages
+/// through the api directly and appends into `_extra`.
+///
 /// Read-only on purpose: yesterday's tickets are records, not work in
 /// progress — status changes belong to today's board where they can be acted
 /// on. The money line follows REAL_ORDERS (voided and cancelled excluded),
 /// mirroring the web's isRealOrder and reports.js.
+
+const _orderHistoryPageSize = 100;
+
+/// First page of a history window. Invalidate (pull-to-refresh, the refresh
+/// button, a preset change) refetches it; deeper pages belong to the screen.
+final orderHistoryPageProvider = FutureProvider.family<List<FufutOrder>,
+    ({String from, String to})>((ref, f) async {
+  // Read, never watch: the fetch must not rebuild on its own session echo.
+  final app = ref.read(appStateProvider);
+  try {
+    return await app.api.orders(
+        from: f.from, to: f.to, limit: _orderHistoryPageSize, offset: 0);
+  } on ApiError catch (e) {
+    if (e.isAuthError) await app.sessionExpired();
+    rethrow;
+  }
+});
+
 class OrderHistoryScreen extends ConsumerStatefulWidget {
   const OrderHistoryScreen({super.key});
 
@@ -28,8 +53,6 @@ class OrderHistoryScreen extends ConsumerStatefulWidget {
 }
 
 class _OrderHistoryScreenState extends ConsumerState<OrderHistoryScreen> {
-  static const _page = 100;
-
   static const _presets = [
     ('today', 'Today'),
     ('yesterday', 'Yesterday'),
@@ -40,11 +63,10 @@ class _OrderHistoryScreenState extends ConsumerState<OrderHistoryScreen> {
   String _preset = 'yesterday';
   DateTime? _customFrom;
   DateTime? _customTo;
-  List<FufutOrder> _orders = [];
-  bool _loading = true;
+  // Pagination beyond the provider's first page, owned by the screen.
+  List<FufutOrder> _extra = [];
+  bool _lastPageFull = false;
   bool _loadingMore = false;
-  bool _hasMore = false;
-  String? _error;
   String _query = '';
   String _statusFilter = 'all';
   final _search = TextEditingController();
@@ -53,12 +75,6 @@ class _OrderHistoryScreenState extends ConsumerState<OrderHistoryScreen> {
     'all', 'new', 'preparing', 'ready', 'served', 'fulfilled', 'completed',
     'cancelled'
   ];
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
 
   @override
   void dispose() {
@@ -110,29 +126,14 @@ class _OrderHistoryScreenState extends ConsumerState<OrderHistoryScreen> {
     return '$_from → $_to';
   }
 
-  Future<void> _load() async {
-    final app = ref.read(appStateProvider);
-    setState(() { _loading = true; _error = null; });
-    try {
-      final rows = await app.api.orders(
-          from: _from, to: _to, limit: _page, offset: 0);
-      if (!mounted) return;
-      setState(() {
-        _orders = rows;
-        _hasMore = rows.length == _page;
-        _loading = false;
-      });
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) {
-        await app.sessionExpired();
-        return;
-      }
-      setState(() { _loading = false; _error = e.message; });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _error = '$e'; });
-    }
+  void _reload() {
+    // A refresh restarts the window at page one; the extras belong to the
+    // old run.
+    setState(() {
+      _extra = [];
+      _lastPageFull = false;
+    });
+    ref.invalidate(orderHistoryPageProvider((from: _from, to: _to)));
   }
 
   Future<void> _loadMore() async {
@@ -140,12 +141,20 @@ class _OrderHistoryScreenState extends ConsumerState<OrderHistoryScreen> {
     final messenger = ScaffoldMessenger.of(context);
     setState(() => _loadingMore = true);
     try {
+      final pageLen = ref
+              .read(orderHistoryPageProvider((from: _from, to: _to)))
+              .value
+              ?.length ??
+          0;
       final rows = await app.api.orders(
-          from: _from, to: _to, limit: _page, offset: _orders.length);
+          from: _from,
+          to: _to,
+          limit: _orderHistoryPageSize,
+          offset: pageLen + _extra.length);
       if (!mounted) return;
       setState(() {
-        _orders = [..._orders, ...rows];
-        _hasMore = rows.length == _page;
+        _extra = [..._extra, ...rows];
+        _lastPageFull = rows.length == _orderHistoryPageSize;
         _loadingMore = false;
       });
     } catch (_) {
@@ -155,9 +164,9 @@ class _OrderHistoryScreenState extends ConsumerState<OrderHistoryScreen> {
     }
   }
 
-  List<FufutOrder> get _filtered {
+  List<FufutOrder> _filtered(List<FufutOrder> orders) {
     final q = _query.trim().toLowerCase();
-    return _orders.where((o) {
+    return orders.where((o) {
       if (_statusFilter != 'all' && o.status.toLowerCase() != _statusFilter) {
         return false;
       }
@@ -172,7 +181,7 @@ class _OrderHistoryScreenState extends ConsumerState<OrderHistoryScreen> {
   /// Page money over REAL orders — voided_at / cancelled excluded, the same
   /// rule reports use. Labelled "in view" because the pager may not have
   /// pulled the whole window yet.
-  double get _realTotal => _filtered
+  double _realTotal(List<FufutOrder> filtered) => filtered
       .where(orderIsReal)
       .fold(0.0, (s, o) => s + o.total);
 
@@ -212,15 +221,25 @@ class _OrderHistoryScreenState extends ConsumerState<OrderHistoryScreen> {
         _preset = 'custom';
         _customFrom = picked.start;
         _customTo = picked.end;
+        _extra = [];
+        _lastPageFull = false;
       });
-      _load();
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final pal = Pal.of(context);
-    final rows = _filtered;
+    final pageAsync =
+        ref.watch(orderHistoryPageProvider((from: _from, to: _to)));
+    final page = pageAsync.value ?? const <FufutOrder>[];
+    final all = [...page, ..._extra];
+    // "Load more" visibility: before any manual paging it follows the first
+    // page's fullness; after, the last fetch's.
+    final hasMore = _extra.isEmpty
+        ? page.length == _orderHistoryPageSize
+        : _lastPageFull;
+    final rows = _filtered(all);
     return Scaffold(
       backgroundColor: pal.bg,
       body: SafeArea(
@@ -244,7 +263,7 @@ class _OrderHistoryScreenState extends ConsumerState<OrderHistoryScreen> {
                   IconButton(
                     icon: Icon(Icons.refresh_rounded,
                         size: 20, color: pal.muted),
-                    onPressed: _load,
+                    onPressed: _reload,
                   ),
                 ],
               ),
@@ -263,8 +282,11 @@ class _OrderHistoryScreenState extends ConsumerState<OrderHistoryScreen> {
                         label: label,
                         active: _preset == key,
                         onTap: () {
-                          setState(() => _preset = key);
-                          _load();
+                          setState(() {
+                            _preset = key;
+                            _extra = [];
+                            _lastPageFull = false;
+                          });
                         },
                       ),
                     ),
@@ -320,8 +342,8 @@ class _OrderHistoryScreenState extends ConsumerState<OrderHistoryScreen> {
                       child: _HistoryChip(
                         label: s == 'all' ? 'All' : _cap(s),
                         count: s == 'all'
-                            ? _orders.length
-                            : _orders
+                            ? all.length
+                            : all
                                 .where((o) =>
                                     o.status.toLowerCase() == s.toLowerCase())
                                 .length,
@@ -333,7 +355,7 @@ class _OrderHistoryScreenState extends ConsumerState<OrderHistoryScreen> {
               ),
             ),
             // ── Money line ──────────────────────────────────────────────
-            if (!_loading && _error == null)
+            if (!pageAsync.isLoading && !pageAsync.hasError)
               Padding(
                 padding: const EdgeInsets.fromLTRB(14, 4, 14, 2),
                 child: Row(children: [
@@ -345,7 +367,7 @@ class _OrderHistoryScreenState extends ConsumerState<OrderHistoryScreen> {
                   const Spacer(),
                   Flexible(
                     child: Text(
-                        'Page total ${money(_realTotal)}  ·  voided excluded',
+                        'Page total ${money(_realTotal(rows))}  ·  voided excluded',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         textAlign: TextAlign.right,
@@ -359,10 +381,10 @@ class _OrderHistoryScreenState extends ConsumerState<OrderHistoryScreen> {
               ),
             // ── List ────────────────────────────────────────────────────
             Expanded(
-              child: _loading
+              child: pageAsync.isLoading && all.isEmpty
                   ? const Center(child: CircularProgressIndicator())
-                  : _error != null
-                      ? LoadError(error: _error!, onRetry: _load)
+                  : pageAsync.hasError && all.isEmpty
+                      ? LoadError(error: pageAsync.error!, onRetry: _reload)
                       : rows.isEmpty
                           ? const EmptyState(
                               icon: Icons.history_rounded,
@@ -386,7 +408,7 @@ class _OrderHistoryScreenState extends ConsumerState<OrderHistoryScreen> {
                                           _accentFor(context, o.status),
                                     ),
                                   ),
-                                if (_hasMore)
+                                if (hasMore)
                                   Padding(
                                     padding: const EdgeInsets.only(top: 2),
                                     child: OutlinedButton.icon(

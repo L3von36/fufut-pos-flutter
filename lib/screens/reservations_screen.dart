@@ -10,6 +10,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../api/api_client.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
+import '../state/catalog_providers.dart'
+    show reservationsProvider, tablesOnceProvider;
 import '../theme.dart';
 import '../widgets/backoffice.dart';
 import '../widgets/common.dart';
@@ -23,18 +25,8 @@ class ReservationsScreen extends ConsumerStatefulWidget {
 }
 
 class _ReservationsScreenState extends ConsumerState<ReservationsScreen> {
-  List<Reservation> _rows = [];
-  List<CafeTable> _tables = [];
-  bool _loading = true;
-  Object? _error;
   String _status = 'all';
   final _search = TextEditingController();
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
 
   @override
   void dispose() {
@@ -42,29 +34,11 @@ class _ReservationsScreenState extends ConsumerState<ReservationsScreen> {
     super.dispose();
   }
 
-  Future<void> _load({bool quiet = false}) async {
-    final app = ref.read(appStateProvider);
-    if (!quiet) setState(() { _loading = true; _error = null; });
-    try {
-      final results = await Future.wait<dynamic>(
-          [app.api.reservations(), app.api.tables()]);
-      final rows = results[0] as List<Reservation>;
-      final tables = results[1] as List<CafeTable>;
-      if (!mounted) return;
-      setState(() { _rows = rows; _tables = tables; _loading = false; });
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) { await app.sessionExpired(); return; }
-      setState(() { _loading = false; _error = e; });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _error = e; });
-    }
-  }
+  void _reload() => ref.invalidate(reservationsProvider);
 
-  List<Reservation> get _filtered {
+  List<Reservation> _filtered(List<Reservation> all) {
     final q = _search.text.trim().toLowerCase();
-    return _rows.where((r) {
+    return all.where((r) {
       if (_status != 'all' && r.status != _status) return false;
       if (q.isNotEmpty && !r.name.toLowerCase().contains(q)) return false;
       return true;
@@ -78,12 +52,14 @@ class _ReservationsScreenState extends ConsumerState<ReservationsScreen> {
   Future<void> _book() async {
     final messenger = ScaffoldMessenger.of(context);
     final app = ref.read(appStateProvider);
+    final tables =
+        ref.read(tablesOnceProvider).value ?? const <CafeTable>[];
     final nameC = TextEditingController();
     final guestsC = TextEditingController(text: '2');
     final phoneC = TextEditingController();
     final dateC = TextEditingController(text: DateRangeRow.fmt(DateTime.now()));
     final timeC = TextEditingController(text: '19:00');
-    String tableNum = _tables.isNotEmpty ? _tables.first.number : '';
+    String tableNum = tables.isNotEmpty ? tables.first.number : '';
     String duration = '90';
     String clash = '';
     StateSetter? sheetSet;
@@ -108,7 +84,7 @@ class _ReservationsScreenState extends ConsumerState<ReservationsScreen> {
                 SelectF(
                     label: 'Table',
                     value: tableNum,
-                    options: _tables.map((t) => t.number).toList(),
+                    options: tables.map((t) => t.number).toList(),
                     onChanged: (v) => setSheet(() => tableNum = v)),
                 SelectF(
                     label: 'Holds for',
@@ -154,7 +130,7 @@ class _ReservationsScreenState extends ConsumerState<ReservationsScreen> {
             durationMin: int.tryParse(duration) ?? 90,
           );
           showInfoOn(messenger, 'Table $tableNum booked for ${nameC.text.trim()}');
-          await _load(quiet: true);
+          _reload();
         } on ApiError catch (e) {
           // The 409 clash message is the sheet's inline error, not a toast.
           if (e.status == 409) {
@@ -178,7 +154,7 @@ class _ReservationsScreenState extends ConsumerState<ReservationsScreen> {
     try {
       await app.api.updateReservation(r.id, status);
       showInfoOn(messenger, '${r.name} → $status');
-      await _load(quiet: true);
+      _reload();
     } catch (e) {
       showErrorOn(messenger, e);
     }
@@ -190,7 +166,7 @@ class _ReservationsScreenState extends ConsumerState<ReservationsScreen> {
     try {
       await app.api.releaseReservation(r.id);
       showInfoOn(messenger, 'Hold on table ${r.tableNum ?? '—'} released');
-      await _load(quiet: true);
+      _reload();
     } catch (e) {
       showErrorOn(messenger, e);
     }
@@ -211,19 +187,24 @@ class _ReservationsScreenState extends ConsumerState<ReservationsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading && _rows.isEmpty) {
+    final rowsAsync = ref.watch(reservationsProvider);
+    // The Book sheet's table picker: watched so it's warm by the time the
+    // sheet opens; a refused fetch (no tables grant) just leaves it empty.
+    ref.watch(tablesOnceProvider);
+    final all = rowsAsync.value ?? const <Reservation>[];
+    if (rowsAsync.isLoading && all.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (_error != null && _rows.isEmpty) {
-      return LoadError(error: _error!, onRetry: () => _load());
+    if (rowsAsync.hasError && all.isEmpty) {
+      return LoadError(error: rowsAsync.error!, onRetry: _reload);
     }
     final pal = Pal.of(context);
-    final rows = _filtered;
+    final rows = _filtered(all);
     final today = DateRangeRow.fmt(DateTime.now());
-    final todays = _rows.where((r) => (r.date ?? '') == today).length;
+    final todays = all.where((r) => (r.date ?? '') == today).length;
 
     return RefreshIndicator(
-      onRefresh: () => _load(quiet: true),
+      onRefresh: () async => _reload(),
       child: ListView(
         padding: const EdgeInsets.all(14),
         children: [
@@ -236,7 +217,7 @@ class _ReservationsScreenState extends ConsumerState<ReservationsScreen> {
             const SizedBox(width: 8),
             Expanded(
                 child: KpiCard(label: 'All upcoming',
-                    value: '${_rows.length}', icon: Icons.event_note_outlined)),
+                    value: '${all.length}', icon: Icons.event_note_outlined)),
           ]),
           const SizedBox(height: 10),
           SearchField(

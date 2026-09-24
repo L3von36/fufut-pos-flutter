@@ -19,6 +19,74 @@ const kCountReasons = [
   'Delivery not recorded', 'Transfer', 'Other',
 ];
 
+/// One provider per tab payload — each tab is its own query (some keyed by
+/// the tab's date controls), so only the visited tabs fetch and each
+/// refetches on its own key.
+final stockReorderProvider = FutureProvider<List<ReorderRow>>((ref) async {
+  // Read, never watch: the fetch must not rebuild on its own session echo.
+  final app = ref.read(appStateProvider);
+  try {
+    return await app.api.inventoryReorder();
+  } on ApiError catch (e) {
+    if (e.isAuthError) await app.sessionExpired();
+    rethrow;
+  }
+});
+
+final stockVarianceProvider = FutureProvider.family<List<VarianceRow>,
+    ({String fromIso, String toIso})>((ref, f) async {
+  final app = ref.read(appStateProvider);
+  try {
+    return await app.api.inventoryVariance(f.fromIso, f.toIso);
+  } on ApiError catch (e) {
+    if (e.isAuthError) await app.sessionExpired();
+    rethrow;
+  }
+});
+
+final stockSnapshotProvider =
+    FutureProvider.family<List<SnapshotRow>, String>((ref, date) async {
+  final app = ref.read(appStateProvider);
+  try {
+    return await app.api.inventorySnapshot(date);
+  } on ApiError catch (e) {
+    if (e.isAuthError) await app.sessionExpired();
+    rethrow;
+  }
+});
+
+final stockForecastProvider = FutureProvider.family<List<ForecastRow>,
+    ({String fromIso, String toIso})>((ref, f) async {
+  final app = ref.read(appStateProvider);
+  try {
+    return await app.api.inventoryForecast(f.fromIso, f.toIso);
+  } on ApiError catch (e) {
+    if (e.isAuthError) await app.sessionExpired();
+    rethrow;
+  }
+});
+
+final stockCapacityProvider = FutureProvider<List<CapacityRow>>((ref) async {
+  final app = ref.read(appStateProvider);
+  try {
+    return await app.api.inventoryCapacity();
+  } on ApiError catch (e) {
+    if (e.isAuthError) await app.sessionExpired();
+    rethrow;
+  }
+});
+
+final stockCountSheetProvider =
+    FutureProvider<List<InventoryItem>>((ref) async {
+  final app = ref.read(appStateProvider);
+  try {
+    return await app.api.inventory();
+  } on ApiError catch (e) {
+    if (e.isAuthError) await app.sessionExpired();
+    rethrow;
+  }
+});
+
 class StockControlScreen extends ConsumerStatefulWidget {
   const StockControlScreen({super.key});
 
@@ -28,19 +96,12 @@ class StockControlScreen extends ConsumerStatefulWidget {
 
 class _StockControlScreenState extends ConsumerState<StockControlScreen> {
   int _tab = 0;
-  bool _loading = true;
-  Object? _error;
   String _from = '';
   String _to = '';
   String _snapshotDate = '';
 
-  // Per-tab payloads, loaded on demand and cached.
-  List<ReorderRow> _reorder = [];
-  List<VarianceRow> _variance = [];
-  List<SnapshotRow> _snapshot = [];
-  List<ForecastRow> _forecast = [];
-  List<CapacityRow> _capacity = [];
-  List<InventoryItem> _countSheet = [];
+  // Count-sheet entry state: one controller per inventory row, created as
+  // the sheet's data lands and disposed with the screen.
   final Map<String, TextEditingController> _countCtrl = {};
 
   static const _tabs = [
@@ -59,7 +120,6 @@ class _StockControlScreenState extends ConsumerState<StockControlScreen> {
     _from = DateRangeRow.fmt(now.add(const Duration(days: -6)));
     _to = DateRangeRow.fmt(now);
     _snapshotDate = DateRangeRow.fmt(now.add(const Duration(days: -1)));
-    _loadTab(0);
   }
 
   @override
@@ -73,53 +133,32 @@ class _StockControlScreenState extends ConsumerState<StockControlScreen> {
   String get _fromIso => '${_from}T00:00:00.000Z';
   String get _toIso => '${_to}T23:59:59.999Z';
 
-  Future<void> _loadTab(int tab, {bool quiet = false}) async {
-    final app = ref.read(appStateProvider);
-    setState(() {
-      _tab = tab;
-      if (!quiet) { _loading = true; _error = null; }
-    });
-    try {
-      switch (tab) {
-        case 0:
-          _reorder = await app.api.inventoryReorder();
-          break;
-        case 1:
-          _variance = await app.api.inventoryVariance(_fromIso, _toIso);
-          break;
-        case 2:
-          _snapshot = await app.api.inventorySnapshot(_snapshotDate);
-          break;
-        case 3:
-          _forecast = await app.api.inventoryForecast(_fromIso, _toIso);
-          break;
-        case 4:
-          _capacity = await app.api.inventoryCapacity();
-          break;
-        case 5:
-          _countSheet = await app.api.inventory();
-          for (final i in _countSheet) {
-            _countCtrl.putIfAbsent(i.id, () => TextEditingController());
-          }
-          break;
-      }
-      if (!mounted) return;
-      setState(() => _loading = false);
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) { await app.sessionExpired(); return; }
-      setState(() { _loading = false; _error = e; });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _error = e; });
+  void _reload() {
+    switch (_tab) {
+      case 1:
+        ref.invalidate(
+            stockVarianceProvider((fromIso: _fromIso, toIso: _toIso)));
+      case 2:
+        ref.invalidate(stockSnapshotProvider(_snapshotDate));
+      case 3:
+        ref.invalidate(
+            stockForecastProvider((fromIso: _fromIso, toIso: _toIso)));
+      case 4:
+        ref.invalidate(stockCapacityProvider);
+      case 5:
+        ref.invalidate(stockCountSheetProvider);
+      default:
+        ref.invalidate(stockReorderProvider);
     }
   }
 
   Future<void> _postCount() async {
     final messenger = ScaffoldMessenger.of(context);
     final app = ref.read(appStateProvider);
+    final sheet =
+        ref.read(stockCountSheetProvider).value ?? const <InventoryItem>[];
     final items = <Map<String, dynamic>>[];
-    for (final i in _countSheet) {
+    for (final i in sheet) {
       final raw = _countCtrl[i.id]?.text.trim() ?? '';
       if (raw.isEmpty) continue; // blank rows are never treated as zero
       final counted = double.tryParse(raw.replaceAll(',', '.'));
@@ -132,9 +171,9 @@ class _StockControlScreenState extends ConsumerState<StockControlScreen> {
     }
     final entered = items.length;
     try {
-      await app.api.postInventoryCount(items, 'Counted $entered of ${_countSheet.length}');
+      await app.api.postInventoryCount(items, 'Counted $entered of ${sheet.length}');
       showInfoOn(messenger, 'Count posted — stock adjusted');
-      await _loadTab(5, quiet: true);
+      _reload();
     } catch (e) {
       showErrorOn(messenger, e);
     }
@@ -156,7 +195,7 @@ class _StockControlScreenState extends ConsumerState<StockControlScreen> {
                 Padding(
                   padding: const EdgeInsets.only(right: 6),
                   child: InkWell(
-                    onTap: () => _loadTab(i),
+                    onTap: () => setState(() => _tab = i),
                     borderRadius: BorderRadius.circular(8),
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -186,14 +225,10 @@ class _StockControlScreenState extends ConsumerState<StockControlScreen> {
           ),
         ),
         Expanded(
-          child: _loading
-              ? const Center(child: CircularProgressIndicator())
-              : _error != null
-                  ? LoadError(error: _error!, onRetry: () => _loadTab(_tab))
-                  : RefreshIndicator(
-                      onRefresh: () => _loadTab(_tab, quiet: true),
-                      child: _body(pal),
-                    ),
+          child: RefreshIndicator(
+            onRefresh: () async => _reload(),
+            child: _body(pal),
+          ),
         ),
       ],
     );
@@ -229,7 +264,15 @@ class _StockControlScreenState extends ConsumerState<StockControlScreen> {
   // ── Tab 1: Reorder ───────────────────────────────────────────────────────
 
   Widget _reorderTab(Pal pal) {
-    final est = _reorder.fold<double>(0, (s, r) => s + r.estCost);
+    final tab = ref.watch(stockReorderProvider);
+    final rows = tab.value ?? const <ReorderRow>[];
+    if (tab.isLoading && rows.isEmpty) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (tab.hasError && rows.isEmpty) {
+      return LoadError(error: tab.error!, onRetry: _reload);
+    }
+    final est = rows.fold<double>(0, (s, r) => s + r.estCost);
     return _frame(
       header: [
         KpiCard(
@@ -237,12 +280,12 @@ class _StockControlScreenState extends ConsumerState<StockControlScreen> {
             value: money(est),
             valueColor: pal.warning,
             icon: Icons.shopping_cart_outlined,
-            sub: '${_reorder.length} items below their reorder point'),
+            sub: '${rows.length} items below their reorder point'),
       ],
       child: SectionCard(
         title: 'The buying list',
         children: [
-          for (final r in _reorder.take(150))
+          for (final r in rows.take(150))
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 6),
               child: Row(
@@ -290,7 +333,7 @@ class _StockControlScreenState extends ConsumerState<StockControlScreen> {
                 ],
               ),
             ),
-          if (_reorder.isEmpty)
+          if (rows.isEmpty)
             _empty('Nothing to reorder — stock is above its lines', pal),
         ],
       ),
@@ -313,12 +356,21 @@ class _StockControlScreenState extends ConsumerState<StockControlScreen> {
   // ── Tab 2: Variance ──────────────────────────────────────────────────────
 
   Widget _varianceTab(Pal pal) {
+    final tab = ref.watch(
+        stockVarianceProvider((fromIso: _fromIso, toIso: _toIso)));
+    final rows = tab.value ?? const <VarianceRow>[];
+    if (tab.isLoading && rows.isEmpty) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (tab.hasError && rows.isEmpty) {
+      return LoadError(error: tab.error!, onRetry: _reload);
+    }
     return _frame(
       header: [
         DateRangeRow(
             from: _from, to: _to,
-            onFrom: (v) { _from = v; _loadTab(1); },
-            onTo: (v) { _to = v; _loadTab(1); }),
+            onFrom: (v) => setState(() => _from = v),
+            onTo: (v) => setState(() => _to = v)),
       ],
       child: SectionCard(
         title: 'Expected vs actual',
@@ -326,7 +378,7 @@ class _StockControlScreenState extends ConsumerState<StockControlScreen> {
             style: TextStyle(
                 fontFamily: kFontBody, fontSize: 9.5, color: pal.faint)),
         children: [
-          for (final r in _variance.take(150))
+          for (final r in rows.take(150))
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 6),
               child: Row(
@@ -363,7 +415,7 @@ class _StockControlScreenState extends ConsumerState<StockControlScreen> {
                 ],
               ),
             ),
-          if (_variance.isEmpty) _empty('No variance data in this range', pal),
+          if (rows.isEmpty) _empty('No variance data in this range', pal),
         ],
       ),
     );
@@ -372,6 +424,14 @@ class _StockControlScreenState extends ConsumerState<StockControlScreen> {
   // ── Tab 3: Snapshot ──────────────────────────────────────────────────────
 
   Widget _snapshotTab(Pal pal) {
+    final tab = ref.watch(stockSnapshotProvider(_snapshotDate));
+    final rows = tab.value ?? const <SnapshotRow>[];
+    if (tab.isLoading && rows.isEmpty) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (tab.hasError && rows.isEmpty) {
+      return LoadError(error: tab.error!, onRetry: _reload);
+    }
     return _frame(
       header: [
         Row(children: [
@@ -381,21 +441,21 @@ class _StockControlScreenState extends ConsumerState<StockControlScreen> {
           const SizedBox(width: 8),
           DateRangeRow(
               from: _snapshotDate, to: _snapshotDate,
-              onFrom: (v) { _snapshotDate = v; _loadTab(2); },
+              onFrom: (v) => setState(() => _snapshotDate = v),
               onTo: (_) {}),
         ]),
       ],
       child: SectionCard(
         title: 'Point-in-time snapshot',
         children: [
-          for (final r in _snapshot.take(150))
+          for (final r in rows.take(150))
             ListRow(
                 head: r.name,
                 rest:
                     '${_f(r.stockThen)} ${r.unit} ${r.basis} · now ${_f(r.stockNow)}'
                     ' · +${_f(r.bought)} −${_f(r.consumed)} (w ${_f(r.wasted)})',
                 trailing: r.basis),
-          if (_snapshot.isEmpty) _empty('Nothing recorded for that day', pal),
+          if (rows.isEmpty) _empty('Nothing recorded for that day', pal),
         ],
       ),
     );
@@ -404,17 +464,26 @@ class _StockControlScreenState extends ConsumerState<StockControlScreen> {
   // ── Tab 4: Forecast ──────────────────────────────────────────────────────
 
   Widget _forecastTab(Pal pal) {
+    final tab = ref.watch(
+        stockForecastProvider((fromIso: _fromIso, toIso: _toIso)));
+    final rows = tab.value ?? const <ForecastRow>[];
+    if (tab.isLoading && rows.isEmpty) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (tab.hasError && rows.isEmpty) {
+      return LoadError(error: tab.error!, onRetry: _reload);
+    }
     return _frame(
       header: [
         DateRangeRow(
             from: _from, to: _to,
-            onFrom: (v) { _from = v; _loadTab(3); },
-            onTo: (v) { _to = v; _loadTab(3); }),
+            onFrom: (v) => setState(() => _from = v),
+            onTo: (v) => setState(() => _to = v)),
       ],
       child: SectionCard(
         title: 'Days of stock left',
         children: [
-          for (final r in _forecast.take(150))
+          for (final r in rows.take(150))
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 6),
               child: Row(
@@ -462,7 +531,7 @@ class _StockControlScreenState extends ConsumerState<StockControlScreen> {
                 ],
               ),
             ),
-          if (_forecast.isEmpty) _empty('Not enough usage history to forecast', pal),
+          if (rows.isEmpty) _empty('Not enough usage history to forecast', pal),
         ],
       ),
     );
@@ -471,11 +540,19 @@ class _StockControlScreenState extends ConsumerState<StockControlScreen> {
   // ── Tab 5: Capacity ──────────────────────────────────────────────────────
 
   Widget _capacityTab(Pal pal) {
+    final tab = ref.watch(stockCapacityProvider);
+    final rows = tab.value ?? const <CapacityRow>[];
+    if (tab.isLoading && rows.isEmpty) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (tab.hasError && rows.isEmpty) {
+      return LoadError(error: tab.error!, onRetry: _reload);
+    }
     return _frame(
       child: SectionCard(
         title: 'What can we make right now',
         children: [
-          for (final r in _capacity.take(150))
+          for (final r in rows.take(150))
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 6),
               child: Row(
@@ -516,7 +593,7 @@ class _StockControlScreenState extends ConsumerState<StockControlScreen> {
                 ],
               ),
             ),
-          if (_capacity.isEmpty) _empty('No recipe capacity data', pal),
+          if (rows.isEmpty) _empty('No recipe capacity data', pal),
         ],
       ),
     );
@@ -525,14 +602,26 @@ class _StockControlScreenState extends ConsumerState<StockControlScreen> {
   // ── Tab 6: Count sheet ───────────────────────────────────────────────────
 
   Widget _countTab(Pal pal) {
-    final entered = _countSheet
+    final tab = ref.watch(stockCountSheetProvider);
+    final rows = tab.value ?? const <InventoryItem>[];
+    if (tab.isLoading && rows.isEmpty) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (tab.hasError && rows.isEmpty) {
+      return LoadError(error: tab.error!, onRetry: _reload);
+    }
+    // One entry field per row, created as the sheet lands.
+    for (final i in rows) {
+      _countCtrl.putIfAbsent(i.id, () => TextEditingController());
+    }
+    final entered = rows
         .where((i) => (_countCtrl[i.id]?.text.trim() ?? '').isNotEmpty)
         .length;
     return _frame(
       header: [
         Row(children: [
           Expanded(
-            child: Text('$entered of ${_countSheet.length} entered',
+            child: Text('$entered of ${rows.length} entered',
                 style: TextStyle(
                     fontFamily: kFontMono, fontSize: 11.5, color: pal.muted)),
           ),
@@ -552,7 +641,7 @@ class _StockControlScreenState extends ConsumerState<StockControlScreen> {
             style: TextStyle(
                 fontFamily: kFontBody, fontSize: 9.5, color: pal.faint)),
         children: [
-          for (final i in _countSheet.take(200))
+          for (final i in rows.take(200))
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 4),
               child: Row(
@@ -598,7 +687,7 @@ class _StockControlScreenState extends ConsumerState<StockControlScreen> {
                 ],
               ),
             ),
-          if (_countSheet.isEmpty) _empty('Catalogue is empty', pal),
+          if (rows.isEmpty) _empty('Catalogue is empty', pal),
         ],
       ),
     );

@@ -1,6 +1,11 @@
 /// P&L — the web `PnLView.vue`: profit & loss over a date range. Revenue
 /// (net of tips) against expenses, the 30-day rev-vs-expense picture, the
 /// expense breakdown and the recent ledgers on both sides.
+///
+/// Tier-2: orders + expenses arrive in one screen-scoped FutureProvider;
+/// the date range below is applied in the UI, so the fetch itself is
+/// unfiltered (same as the old _load). The session is READ inside the
+/// provider, never watched (the fetch must not rebuild on its own echo).
 library;
 
 import 'package:flutter/material.dart';
@@ -15,6 +20,25 @@ import '../widgets/charts.dart';
 import '../widgets/common.dart';
 import '../widgets/dashboard.dart';
 
+final pnlProvider = FutureProvider<
+    ({List<FufutOrder> orders, List<Expense> expenses})>((ref) async {
+  final app = ref.read(appStateProvider);
+  try {
+    // Future.wait: every request keeps a listener even when a sibling
+    // fails first — sequential awaits used to strand the losers as
+    // unhandled async errors.
+    final results =
+        await Future.wait<dynamic>([app.api.orders(), app.api.expenses()]);
+    return (
+      orders: results[0] as List<FufutOrder>,
+      expenses: results[1] as List<Expense>,
+    );
+  } on ApiError catch (e) {
+    if (e.isAuthError) await app.sessionExpired();
+    rethrow;
+  }
+});
+
 class PnlScreen extends ConsumerStatefulWidget {
   const PnlScreen({super.key});
 
@@ -23,10 +47,6 @@ class PnlScreen extends ConsumerStatefulWidget {
 }
 
 class _PnlScreenState extends ConsumerState<PnlScreen> {
-  List<FufutOrder> _orders = [];
-  List<Expense> _expenses = [];
-  bool _loading = true;
-  Object? _error;
   String _from = '';
   String _to = '';
 
@@ -36,28 +56,9 @@ class _PnlScreenState extends ConsumerState<PnlScreen> {
     final now = DateTime.now();
     _from = DateRangeRow.fmt(now.add(const Duration(days: -29)));
     _to = DateRangeRow.fmt(now);
-    _load();
   }
 
-  Future<void> _load({bool quiet = false}) async {
-    final app = ref.read(appStateProvider);
-    if (!quiet) setState(() { _loading = true; _error = null; });
-    try {
-      final results = await Future.wait<dynamic>(
-          [app.api.orders(), app.api.expenses()]);
-      final rows = results[0] as List<FufutOrder>;
-      final exps = results[1] as List<Expense>;
-      if (!mounted) return;
-      setState(() { _orders = rows; _expenses = exps; _loading = false; });
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) { await app.sessionExpired(); return; }
-      setState(() { _loading = false; _error = e; });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _error = e; });
-    }
-  }
+  void _reload() => ref.invalidate(pnlProvider);
 
   bool _inRange(String? stamp) {
     final d = dayKey(stamp);
@@ -67,25 +68,29 @@ class _PnlScreenState extends ConsumerState<PnlScreen> {
     return true;
   }
 
-  List<FufutOrder> get _ordersInRange => _orders.where((o) {
+  List<FufutOrder> _ordersInRange(List<FufutOrder> orders) =>
+      orders.where((o) {
         final s = o.status.toLowerCase();
         return s != 'cancelled' && s != 'voided' && _inRange(o.created);
       }).toList();
 
-  List<Expense> get _expensesInRange =>
-      _expenses.where((e) => _inRange(e.date)).toList();
+  List<Expense> _expensesInRange(List<Expense> expenses) =>
+      expenses.where((e) => _inRange(e.date)).toList();
 
   @override
   Widget build(BuildContext context) {
-    if (_loading && _orders.isEmpty) {
+    final dataAsync = ref.watch(pnlProvider);
+    final allOrders = dataAsync.value?.orders ?? const <FufutOrder>[];
+    final allExpenses = dataAsync.value?.expenses ?? const <Expense>[];
+    if (dataAsync.isLoading && allOrders.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (_error != null && _orders.isEmpty) {
-      return LoadError(error: _error!, onRetry: () => _load());
+    if (dataAsync.hasError && allOrders.isEmpty) {
+      return LoadError(error: dataAsync.error!, onRetry: _reload);
     }
     final pal = Pal.of(context);
-    final orders = _ordersInRange;
-    final expenses = _expensesInRange;
+    final orders = _ordersInRange(allOrders);
+    final expenses = _expensesInRange(allExpenses);
     final revenue = orders.fold<double>(0, (s, o) => s + (o.total - o.tip));
     final expenseTotal = expenses.fold<double>(0, (s, e) => s + e.amount);
     final net = revenue - expenseTotal;
@@ -116,7 +121,7 @@ class _PnlScreenState extends ConsumerState<PnlScreen> {
       ..sort((a, b) => b.value.compareTo(a.value));
 
     return RefreshIndicator(
-      onRefresh: () => _load(quiet: true),
+      onRefresh: () async => _reload(),
       child: ListView(
         padding: const EdgeInsets.all(14),
         children: [

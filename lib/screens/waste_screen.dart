@@ -2,6 +2,12 @@
 /// `WasteView.vue`. Two ways to log: pick a stock item (the server deducts
 /// it from inventory through the ledger) or free-text what is in your hands.
 /// Category summary cards like the web; delete is manager-only.
+///
+/// Tier-2: the log rides the SHARED wasteLogProvider (the cleaner's
+/// dashboard watches the same feed); the stock list for the picker is its
+/// own screen-scoped provider (a refused catalogue read degrades to the
+/// free-text path — `inventory()` turns 403 into an empty list). The
+/// session is READ inside the providers, never watched.
 library;
 
 import 'package:flutter/material.dart';
@@ -10,6 +16,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../api/api_client.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
+import '../state/catalog_providers.dart';
 import '../theme.dart';
 import '../widgets/backoffice.dart';
 import '../widgets/common.dart';
@@ -21,6 +28,18 @@ const kWasteCategories = [
   'Beverages', 'Packaging', 'Other',
 ];
 
+/// The stock list behind the picker — logging waste against an item is how
+/// the ledger deducts it, so the picker needs the current catalogue levels.
+final wasteStockProvider = FutureProvider<List<InventoryItem>>((ref) async {
+  final app = ref.read(appStateProvider);
+  try {
+    return await app.api.inventory();
+  } on ApiError catch (e) {
+    if (e.isAuthError) await app.sessionExpired();
+    rethrow;
+  }
+});
+
 class WasteScreen extends ConsumerStatefulWidget {
   const WasteScreen({super.key});
 
@@ -29,45 +48,16 @@ class WasteScreen extends ConsumerStatefulWidget {
 }
 
 class _WasteScreenState extends ConsumerState<WasteScreen> {
-  List<WasteEntry> _entries = [];
-  List<InventoryItem> _stock = [];
-  bool _loading = true;
-  Object? _error;
   String _category = 'All';
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
 
   String get _role => ref.read(appStateProvider).roleKey ?? '';
   bool get _canDelete => _role == 'manager';
 
-  Future<void> _load({bool quiet = false}) async {
-    final app = ref.read(appStateProvider);
-    if (!quiet) setState(() { _loading = true; _error = null; });
-    try {
-      // Future.wait: every request keeps a listener even when a sibling
-      // fails first — sequential awaits used to strand the losers as
-      // unhandled async errors.
-      final results = await Future.wait<dynamic>(
-          [app.api.wasteLog(), app.api.inventory()]);
-      final entries = results[0] as List<WasteEntry>;
-      final stock = results[1] as List<InventoryItem>; // may 403 for cleaner → free-text path
-      if (!mounted) return;
-      setState(() { _entries = entries; _stock = stock; _loading = false; });
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) {
-        await app.sessionExpired();
-        return;
-      }
-      setState(() { _loading = false; _error = e; });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _error = e; });
-    }
+  /// Logging and deleting both move the ledger — refresh the log and the
+  /// stock levels the picker shows.
+  void _reload() {
+    ref.invalidate(wasteLogProvider);
+    ref.invalidate(wasteStockProvider);
   }
 
   bool _isToday(WasteEntry w) {
@@ -79,16 +69,16 @@ class _WasteScreenState extends ConsumerState<WasteScreen> {
     return d.substring(0, 10) == today;
   }
 
-  List<WasteEntry> get _filtered {
-    if (_category == 'All') return _entries;
-    return _entries
+  List<WasteEntry> _filtered(List<WasteEntry> entries) {
+    if (_category == 'All') return entries;
+    return entries
         .where((w) => w.item.toLowerCase().contains(_category.toLowerCase()))
         .toList();
   }
 
-  Map<String, double> get _todayByCategory {
+  Map<String, double> _todayByCategory(List<WasteEntry> entries) {
     final map = <String, double>{};
-    for (final w in _entries.where(_isToday)) {
+    for (final w in entries.where(_isToday)) {
       map[w.item] = (map[w.item] ?? 0) + w.cost;
     }
     return Map.fromEntries(
@@ -96,7 +86,7 @@ class _WasteScreenState extends ConsumerState<WasteScreen> {
             .take(6));
   }
 
-  Future<void> _logForm() async {
+  Future<void> _logForm(List<InventoryItem> stock) async {
     final messenger = ScaffoldMessenger.of(context);
     final app = ref.read(appStateProvider);
     String? inventoryId; // null = free-text path
@@ -113,7 +103,7 @@ class _WasteScreenState extends ConsumerState<WasteScreen> {
         builder: (ctx, setSheet) => Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            if (_stock.isNotEmpty) ...[
+            if (stock.isNotEmpty) ...[
               DropdownButton<String?>(
                 value: inventoryId,
                 isExpanded: true,
@@ -126,7 +116,7 @@ class _WasteScreenState extends ConsumerState<WasteScreen> {
                 items: [
                   const DropdownMenuItem<String?>(
                       value: '__free__', child: Text('Free-text item')),
-                  for (final s in _stock.take(100))
+                  for (final s in stock.take(100))
                     DropdownMenuItem<String?>(
                         value: s.id,
                         child: Text('${s.name} (${s.stock.toStringAsFixed(0)} ${s.unit} left)',
@@ -168,7 +158,7 @@ class _WasteScreenState extends ConsumerState<WasteScreen> {
         }
         final name = inventoryId == null
             ? nameC.text.trim()
-            : _stock.where((s) => s.id == inventoryId).map((s) => s.name).firstOrNull ?? '';
+            : stock.where((s) => s.id == inventoryId).map((s) => s.name).firstOrNull ?? '';
         if (name.isEmpty) {
           showErrorOn(messenger, ApiError('What was thrown away?'));
           return;
@@ -183,7 +173,7 @@ class _WasteScreenState extends ConsumerState<WasteScreen> {
           );
           showInfoOn(messenger,
               inventoryId != null ? 'Waste recorded — stock deducted' : 'Waste recorded');
-          await _load(quiet: true);
+          _reload();
         } catch (e) {
           showErrorOn(messenger, e);
           rethrow;
@@ -213,7 +203,7 @@ class _WasteScreenState extends ConsumerState<WasteScreen> {
     try {
       await app.api.deleteWaste(w.id);
       showInfoOn(messenger, 'Entry deleted');
-      await _load(quiet: true);
+      _reload();
     } catch (e) {
       showErrorOn(messenger, e);
     }
@@ -224,20 +214,24 @@ class _WasteScreenState extends ConsumerState<WasteScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading && _entries.isEmpty) {
+    final entriesAsync = ref.watch(wasteLogProvider);
+    final stockAsync = ref.watch(wasteStockProvider);
+    final entries = entriesAsync.value ?? const <WasteEntry>[];
+    final stock = stockAsync.value ?? const <InventoryItem>[];
+    if (entriesAsync.isLoading && entries.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (_error != null && _entries.isEmpty) {
-      return LoadError(error: _error!, onRetry: () => _load());
+    if (entriesAsync.hasError && entries.isEmpty) {
+      return LoadError(error: entriesAsync.error!, onRetry: _reload);
     }
     final pal = Pal.of(context);
-    final today = _entries.where(_isToday).toList();
+    final today = entries.where(_isToday).toList();
     final todayCost = today.fold<double>(0, (s, w) => s + w.cost);
-    final rows = _filtered;
-    final byCat = _todayByCategory;
+    final rows = _filtered(entries);
+    final byCat = _todayByCategory(entries);
 
     return RefreshIndicator(
-      onRefresh: () => _load(quiet: true),
+      onRefresh: () async => _reload(),
       child: ListView(
         padding: const EdgeInsets.all(14),
         children: [
@@ -261,7 +255,7 @@ class _WasteScreenState extends ConsumerState<WasteScreen> {
           SizedBox(
             height: 34,
             child: FilledButton.icon(
-              onPressed: _logForm,
+              onPressed: () => _logForm(stock),
               icon: const Icon(Icons.add, size: 16),
               label: const Text('Record waste'),
             ),

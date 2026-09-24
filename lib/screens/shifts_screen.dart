@@ -17,6 +17,25 @@ import '../widgets/dashboard.dart';
 
 const kShiftTypes = ['morning', 'afternoon', 'evening'];
 
+/// The roster plus the staff lookup it joins client-side — the web view
+/// loads the same two reads together, so one record keeps them consistent.
+final shiftsDataProvider = FutureProvider<
+    ({List<ShiftRow> shifts, List<StaffMember> staff})>((ref) async {
+  // Read, never watch: the fetch must not rebuild on its own session echo.
+  final app = ref.read(appStateProvider);
+  try {
+    final results =
+        await Future.wait<dynamic>([app.api.shifts(), app.api.staff()]);
+    return (
+      shifts: results[0] as List<ShiftRow>,
+      staff: results[1] as List<StaffMember>,
+    );
+  } on ApiError catch (e) {
+    if (e.isAuthError) await app.sessionExpired();
+    rethrow;
+  }
+});
+
 class ShiftsScreen extends ConsumerStatefulWidget {
   const ShiftsScreen({super.key});
 
@@ -25,18 +44,8 @@ class ShiftsScreen extends ConsumerStatefulWidget {
 }
 
 class _ShiftsScreenState extends ConsumerState<ShiftsScreen> {
-  List<ShiftRow> _rows = [];
-  List<StaffMember> _staff = [];
-  bool _loading = true;
-  Object? _error;
   String _type = 'all';
   final _search = TextEditingController();
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
 
   @override
   void dispose() {
@@ -47,50 +56,32 @@ class _ShiftsScreenState extends ConsumerState<ShiftsScreen> {
   String get _role => ref.read(appStateProvider).roleKey ?? '';
   bool get _canWrite => _role == 'manager';
 
-  Future<void> _load({bool quiet = false}) async {
-    final app = ref.read(appStateProvider);
-    if (!quiet) setState(() { _loading = true; _error = null; });
-    try {
-      final results = await Future.wait<dynamic>(
-          [app.api.shifts(), app.api.staff()]);
-      final rows = results[0] as List<ShiftRow>;
-      final staff = results[1] as List<StaffMember>;
-      if (!mounted) return;
-      setState(() { _rows = rows; _staff = staff; _loading = false; });
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) { await app.sessionExpired(); return; }
-      setState(() { _loading = false; _error = e; });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _error = e; });
-    }
-  }
+  void _reload() => ref.invalidate(shiftsDataProvider);
 
-  String _nameOf(ShiftRow s) {
+  String _nameOf(ShiftRow s, List<StaffMember> staff) {
     if (s.staffName.isNotEmpty) return s.staffName;
-    return _staff.where((m) => m.id == s.staffId).map((m) => m.name).firstOrNull ?? 'Staff';
+    return staff.where((m) => m.id == s.staffId).map((m) => m.name).firstOrNull ?? 'Staff';
   }
 
-  List<ShiftRow> get _filtered {
+  List<ShiftRow> _filtered(List<ShiftRow> all, List<StaffMember> staff) {
     final q = _search.text.trim().toLowerCase();
-    return _rows.where((s) {
+    return all.where((s) {
       if (_type != 'all' && s.shiftType != _type) return false;
-      if (q.isNotEmpty && !_nameOf(s).toLowerCase().contains(q)) return false;
+      if (q.isNotEmpty && !_nameOf(s, staff).toLowerCase().contains(q)) return false;
       return true;
     }).toList()
       ..sort((a, b) => (b.date ?? '').compareTo(a.date ?? ''));
   }
 
-  Future<void> _form({ShiftRow? edit}) async {
-    if (_staff.isEmpty) {
+  Future<void> _form({ShiftRow? edit, required List<StaffMember> staff}) async {
+    if (staff.isEmpty) {
       showErrorOn(ScaffoldMessenger.of(context),
           ApiError('No staff roster available to schedule against'));
       return;
     }
     final messenger = ScaffoldMessenger.of(context);
     final app = ref.read(appStateProvider);
-    String staffId = edit?.staffId ?? _staff.first.id;
+    String staffId = edit?.staffId ?? staff.first.id;
     String type = edit?.shiftType.isEmpty == false ? edit!.shiftType : 'morning';
     final dateC = TextEditingController(
         text: edit?.date ?? DateRangeRow.fmt(DateTime.now()));
@@ -107,10 +98,10 @@ class _ShiftsScreenState extends ConsumerState<ShiftsScreen> {
             SelectF(
               label: 'Staff',
               value: staffId,
-              options: _staff.map((s) => s.id).toList(),
+              options: staff.map((s) => s.id).toList(),
               onChanged: (v) => setSheet(() => staffId = v),
             ),
-            Text(_staff.where((s) => s.id == staffId).map((s) => s.name).firstOrNull ?? '',
+            Text(staff.where((s) => s.id == staffId).map((s) => s.name).firstOrNull ?? '',
                 style: TextStyle(
                     fontFamily: kFontBody,
                     fontSize: 11, color: Pal.of(ctx).faint)),
@@ -142,7 +133,7 @@ class _ShiftsScreenState extends ConsumerState<ShiftsScreen> {
             });
           }
           showInfoOn(messenger, edit == null ? 'Shift added' : 'Shift updated');
-          await _load(quiet: true);
+          _reload();
         } catch (e) {
           showErrorOn(messenger, e);
           rethrow;
@@ -157,7 +148,7 @@ class _ShiftsScreenState extends ConsumerState<ShiftsScreen> {
     try {
       await app.api.deleteShift(s.id);
       showInfoOn(messenger, 'Shift removed');
-      await _load(quiet: true);
+      _reload();
     } catch (e) {
       showErrorOn(messenger, e);
     }
@@ -176,19 +167,23 @@ class _ShiftsScreenState extends ConsumerState<ShiftsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading && _rows.isEmpty) {
+    final dataAsync = ref.watch(shiftsDataProvider);
+    final data = dataAsync.value;
+    final all = data?.shifts ?? const <ShiftRow>[];
+    final staff = data?.staff ?? const <StaffMember>[];
+    if (dataAsync.isLoading && all.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (_error != null && _rows.isEmpty) {
-      return LoadError(error: _error!, onRetry: () => _load());
+    if (dataAsync.hasError && all.isEmpty) {
+      return LoadError(error: dataAsync.error!, onRetry: _reload);
     }
     final pal = Pal.of(context);
-    final rows = _filtered;
+    final rows = _filtered(all, staff);
     final today = DateRangeRow.fmt(DateTime.now());
-    final onToday = _rows.where((s) => (s.date ?? '') == today).length;
+    final onToday = all.where((s) => (s.date ?? '') == today).length;
 
     return RefreshIndicator(
-      onRefresh: () => _load(quiet: true),
+      onRefresh: () async => _reload(),
       child: ListView(
         padding: const EdgeInsets.all(14),
         children: [
@@ -201,7 +196,7 @@ class _ShiftsScreenState extends ConsumerState<ShiftsScreen> {
             const SizedBox(width: 8),
             Expanded(
                 child: KpiCard(label: 'Roster entries',
-                    value: '${_rows.length}', icon: Icons.calendar_month_outlined)),
+                    value: '${all.length}', icon: Icons.calendar_month_outlined)),
           ]),
           const SizedBox(height: 10),
           SearchField(
@@ -219,7 +214,7 @@ class _ShiftsScreenState extends ConsumerState<ShiftsScreen> {
             SizedBox(
               height: 34,
               child: FilledButton.icon(
-                onPressed: () => _form(),
+                onPressed: () => _form(staff: staff),
                 icon: const Icon(Icons.add, size: 16),
                 label: const Text('Add shift'),
               ),
@@ -240,7 +235,7 @@ class _ShiftsScreenState extends ConsumerState<ShiftsScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(_nameOf(s),
+                            Text(_nameOf(s, staff),
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
@@ -274,7 +269,7 @@ class _ShiftsScreenState extends ConsumerState<ShiftsScreen> {
                       ),
                       if (_canWrite) ...[
                         const SizedBox(width: 6),
-                        RowAction('Edit', () => _form(edit: s)),
+                        RowAction('Edit', () => _form(edit: s, staff: staff)),
                         const SizedBox(width: 4),
                         AsyncRowAction('Del', () => _delete(s), color: pal.danger),
                       ],

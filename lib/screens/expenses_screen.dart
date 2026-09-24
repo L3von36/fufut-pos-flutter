@@ -21,6 +21,20 @@ const kExpenseCategories = [
   'Transport', 'Taxes & Fees', 'Misc',
 ];
 
+/// The whole ledger. The category / date-range / search filters are applied
+/// client-side (the endpoint takes none), so one unparameterized fetch
+/// serves every view of the screen.
+final expensesProvider = FutureProvider<List<Expense>>((ref) async {
+  // Read, never watch: the fetch must not rebuild on its own session echo.
+  final app = ref.read(appStateProvider);
+  try {
+    return await app.api.expenses();
+  } on ApiError catch (e) {
+    if (e.isAuthError) await app.sessionExpired();
+    rethrow;
+  }
+});
+
 class ExpensesScreen extends ConsumerStatefulWidget {
   const ExpensesScreen({super.key});
 
@@ -29,9 +43,6 @@ class ExpensesScreen extends ConsumerStatefulWidget {
 }
 
 class _ExpensesScreenState extends ConsumerState<ExpensesScreen> {
-  List<Expense> _rows = [];
-  bool _loading = true;
-  Object? _error;
   String _category = 'All';
   String _from = '';
   String _to = '';
@@ -43,7 +54,6 @@ class _ExpensesScreenState extends ConsumerState<ExpensesScreen> {
     final now = DateTime.now();
     _from = DateRangeRow.fmt(now.add(const Duration(days: -30)));
     _to = DateRangeRow.fmt(now);
-    _load();
   }
 
   @override
@@ -56,26 +66,11 @@ class _ExpensesScreenState extends ConsumerState<ExpensesScreen> {
       const {'manager', 'accountant'}.contains(
           ref.read(appStateProvider).roleKey);
 
-  Future<void> _load({bool quiet = false}) async {
-    final app = ref.read(appStateProvider);
-    if (!quiet) setState(() { _loading = true; _error = null; });
-    try {
-      final rows = await app.api.expenses();
-      if (!mounted) return;
-      setState(() { _rows = rows; _loading = false; });
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) { await app.sessionExpired(); return; }
-      setState(() { _loading = false; _error = e; });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _error = e; });
-    }
-  }
+  void _reload() => ref.invalidate(expensesProvider);
 
-  List<Expense> get _filtered {
+  List<Expense> _filtered(List<Expense> all) {
     final q = _search.text.trim().toLowerCase();
-    return _rows.where((e) {
+    return all.where((e) {
       if (_category != 'All' && e.category != _category) return false;
       final d = dayKey(e.date);
       if (_from.isNotEmpty && d.isNotEmpty && d.compareTo(_from) < 0) return false;
@@ -90,9 +85,9 @@ class _ExpensesScreenState extends ConsumerState<ExpensesScreen> {
       ..sort((a, b) => (b.date ?? '').compareTo(a.date ?? ''));
   }
 
-  Map<String, double> get _byCategory {
+  Map<String, double> _byCategory(List<Expense> filtered) {
     final map = <String, double>{};
-    for (final e in _filtered) {
+    for (final e in filtered) {
       map[e.category] = (map[e.category] ?? 0) + e.amount;
     }
     final entries = map.entries.toList()
@@ -147,7 +142,7 @@ class _ExpensesScreenState extends ConsumerState<ExpensesScreen> {
             });
           }
           showInfoOn(messenger, edit == null ? 'Expense recorded' : 'Expense updated');
-          await _load(quiet: true);
+          _reload();
         } catch (e) {
           showErrorOn(messenger, e);
           rethrow;
@@ -177,7 +172,7 @@ class _ExpensesScreenState extends ConsumerState<ExpensesScreen> {
     try {
       await app.api.deleteExpense(e.id);
       showInfoOn(messenger, 'Expense deleted');
-      await _load(quiet: true);
+      _reload();
     } catch (err) {
       showErrorOn(messenger, err);
     }
@@ -185,7 +180,8 @@ class _ExpensesScreenState extends ConsumerState<ExpensesScreen> {
 
   Future<void> _export() async {
     final messenger = ScaffoldMessenger.of(context);
-    final rows = _filtered
+    final rows = _filtered(
+            ref.read(expensesProvider).value ?? const <Expense>[])
         .map((e) => [dayKey(e.date), e.category,
             e.description, e.amount.toStringAsFixed(2)])
         .toList();
@@ -197,19 +193,21 @@ class _ExpensesScreenState extends ConsumerState<ExpensesScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading && _rows.isEmpty) {
+    final rowsAsync = ref.watch(expensesProvider);
+    final all = rowsAsync.value ?? const <Expense>[];
+    if (rowsAsync.isLoading && all.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (_error != null && _rows.isEmpty) {
-      return LoadError(error: _error!, onRetry: () => _load());
+    if (rowsAsync.hasError && all.isEmpty) {
+      return LoadError(error: rowsAsync.error!, onRetry: _reload);
     }
     final pal = Pal.of(context);
-    final rows = _filtered;
+    final rows = _filtered(all);
     final total = rows.fold<double>(0, (s, e) => s + e.amount);
-    final byCat = _byCategory;
+    final byCat = _byCategory(rows);
 
     return RefreshIndicator(
-      onRefresh: () => _load(quiet: true),
+      onRefresh: () async => _reload(),
       child: ListView(
         padding: const EdgeInsets.all(14),
         children: [

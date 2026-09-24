@@ -2,6 +2,11 @@
 ///  * manager — full catalogue CRUD (add/edit/delete, cost & margin columns)
 ///  * head-chef — the dish-86 toggle only (the API only accepts the
 ///    availability flag from the kitchen; add/edit/delete hide)
+///
+/// Tier-2: the list rides the SHARED menuProvider (register, boards and
+/// analytics watch the same catalogue) — every create/update/delete/86
+/// toggle invalidates it, and the shared copy refetches everywhere.
+/// Search and the category filter are client-side.
 library;
 
 import 'package:flutter/material.dart';
@@ -10,6 +15,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../api/api_client.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
+import '../state/catalog_providers.dart';
 import '../theme.dart';
 import '../widgets/backoffice.dart';
 import '../widgets/common.dart';
@@ -28,17 +34,8 @@ class MenuMgmtScreen extends ConsumerStatefulWidget {
 }
 
 class _MenuMgmtScreenState extends ConsumerState<MenuMgmtScreen> {
-  List<MenuItem> _rows = [];
-  bool _loading = true;
-  Object? _error;
   String _category = 'All';
   final _search = TextEditingController();
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
 
   @override
   void dispose() {
@@ -49,35 +46,20 @@ class _MenuMgmtScreenState extends ConsumerState<MenuMgmtScreen> {
   String get _role => ref.read(appStateProvider).roleKey ?? '';
   bool get _canCrud => _role == 'manager';
 
+  void _reload() => ref.invalidate(menuProvider);
+
   /// Categories actually on the menu + the defaults, merged per the web.
-  List<String> get _categories {
+  List<String> _categories(List<MenuItem> rows) {
     final set = <String>{...kMenuCategories};
-    for (final m in _rows) {
+    for (final m in rows) {
       if (m.category.isNotEmpty) set.add(m.category);
     }
     return set.toList();
   }
 
-  Future<void> _load({bool quiet = false}) async {
-    final app = ref.read(appStateProvider);
-    if (!quiet) setState(() { _loading = true; _error = null; });
-    try {
-      final rows = await app.api.menu();
-      if (!mounted) return;
-      setState(() { _rows = rows; _loading = false; });
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) { await app.sessionExpired(); return; }
-      setState(() { _loading = false; _error = e; });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _error = e; });
-    }
-  }
-
-  List<MenuItem> get _filtered {
+  List<MenuItem> _filtered(List<MenuItem> all) {
     final q = _search.text.trim().toLowerCase();
-    return _rows.where((m) {
+    return all.where((m) {
       if (_category != 'All' && m.category != _category) return false;
       if (q.isNotEmpty && !m.name.toLowerCase().contains(q)) return false;
       return true;
@@ -92,15 +74,17 @@ class _MenuMgmtScreenState extends ConsumerState<MenuMgmtScreen> {
       await app.api.setAvailability(m.id, !m.available);
       showInfoOn(messenger,
           !m.available ? '${m.name} is back on' : '${m.name} marked 86');
-      await _load(quiet: true);
+      _reload();
     } catch (e) {
       showErrorOn(messenger, e);
     }
   }
 
   Future<void> _form({MenuItem? edit}) async {
+    final menu = ref.read(menuProvider).value ?? const <MenuItem>[];
+    final cats = _categories(menu);
     final nameC = TextEditingController(text: edit?.name ?? '');
-    String cat = edit?.category ?? _categories.first;
+    String cat = edit?.category ?? cats.first;
     final priceC = TextEditingController(
         text: edit != null && edit.price > 0 ? edit.price.toStringAsFixed(2) : '');
     final costC = TextEditingController();
@@ -122,7 +106,7 @@ class _MenuMgmtScreenState extends ConsumerState<MenuMgmtScreen> {
                 TextF('Name *', nameC),
                 SelectF(
                     label: 'Category', value: cat,
-                    options: _categories,
+                    options: cats,
                     onChanged: (v) => setSheet(() => cat = v)),
                 TextF('Price (ETB)', priceC, numeric: true),
                 TextF('Cost (ETB, for margin)', costC, numeric: true),
@@ -171,7 +155,7 @@ class _MenuMgmtScreenState extends ConsumerState<MenuMgmtScreen> {
             await app.api.updateMenu(edit.id, payload);
           }
           showInfoOn(messenger, edit == null ? 'Item added' : 'Item updated');
-          await _load(quiet: true);
+          _reload();
         } catch (e) {
           showErrorOn(messenger, e);
           rethrow;
@@ -201,7 +185,7 @@ class _MenuMgmtScreenState extends ConsumerState<MenuMgmtScreen> {
     try {
       await app.api.deleteMenu(m.id);
       showInfoOn(messenger, 'Item deleted');
-      await _load(quiet: true);
+      _reload();
     } catch (e) {
       showErrorOn(messenger, e);
     }
@@ -209,18 +193,20 @@ class _MenuMgmtScreenState extends ConsumerState<MenuMgmtScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading && _rows.isEmpty) {
+    final rowsAsync = ref.watch(menuProvider);
+    final all = rowsAsync.value ?? const <MenuItem>[];
+    if (rowsAsync.isLoading && all.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (_error != null && _rows.isEmpty) {
-      return LoadError(error: _error!, onRetry: () => _load());
+    if (rowsAsync.hasError && all.isEmpty) {
+      return LoadError(error: rowsAsync.error!, onRetry: _reload);
     }
     final pal = Pal.of(context);
-    final rows = _filtered;
-    final out = _rows.where((m) => !m.available).length;
+    final rows = _filtered(all);
+    final out = all.where((m) => !m.available).length;
 
     return RefreshIndicator(
-      onRefresh: () => _load(quiet: true),
+      onRefresh: () async => _reload(),
       child: ListView(
         padding: const EdgeInsets.all(14),
         children: [
@@ -244,7 +230,7 @@ class _MenuMgmtScreenState extends ConsumerState<MenuMgmtScreen> {
           Row(children: [
             Expanded(
                 child: KpiCard(label: 'Menu items',
-                    value: '${_rows.length}', icon: Icons.restaurant_menu_outlined)),
+                    value: '${all.length}', icon: Icons.restaurant_menu_outlined)),
             const SizedBox(width: 8),
             Expanded(
                 child: KpiCard(label: 'Marked 86',
@@ -260,7 +246,7 @@ class _MenuMgmtScreenState extends ConsumerState<MenuMgmtScreen> {
           const SizedBox(height: 8),
           ChipSelect(
             value: _category,
-            options: [('All', 'All'), ..._categories.map((c) => (c, c))],
+            options: [('All', 'All'), ..._categories(all).map((c) => (c, c))],
             onChanged: (v) => setState(() => _category = v),
           ),
           const SizedBox(height: 10),

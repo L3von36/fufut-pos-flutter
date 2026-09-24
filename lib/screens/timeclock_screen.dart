@@ -19,6 +19,43 @@ import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/dashboard.dart';
 
+/// Everything the screen renders in one fetch — the web view loads the same
+/// five reads together (me, history, roster, staff names, last handover);
+/// one record keeps them consistent across a reload.
+typedef TimeclockData = ({
+  TimeclockMe me,
+  List<TimeclockEntry> history,
+  List<TimeclockEntry> roster,
+  Map<String, String> staffNames,
+  Handover? lastHandover,
+});
+
+final timeclockProvider = FutureProvider<TimeclockData>((ref) async {
+  // Read, never watch: the fetch must not rebuild on its own session echo.
+  final app = ref.read(appStateProvider);
+  try {
+    final results = await Future.wait([
+      app.api.timeclockMe(),
+      app.api.timeclockHistory(),
+      app.api.timeclockRoster(),
+      app.api.staff(),
+      app.api.latestHandover(),
+    ]);
+    final roster = results[2] as List<TimeclockEntry>;
+    final staff = results[3] as List<StaffMember>;
+    return (
+      me: results[0] as TimeclockMe,
+      history: results[1] as List<TimeclockEntry>,
+      roster: roster,
+      staffNames: {for (final s in staff) s.id: s.name},
+      lastHandover: results[4] as Handover?,
+    );
+  } on ApiError catch (e) {
+    if (e.isAuthError) await app.sessionExpired();
+    rethrow;
+  }
+});
+
 class TimeClockScreen extends ConsumerStatefulWidget {
   const TimeClockScreen({super.key});
 
@@ -27,56 +64,7 @@ class TimeClockScreen extends ConsumerStatefulWidget {
 }
 
 class _TimeClockScreenState extends ConsumerState<TimeClockScreen> {
-  TimeclockMe? _me;
-  List<TimeclockEntry> _history = [];
-  List<TimeclockEntry> _roster = [];
-  Map<String, String> _staffNames = {};
-  Handover? _lastHandover;
-  bool _loading = true;
-  bool _rosterVisible = false;
-  Object? _error;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  Future<void> _load({bool quiet = false}) async {
-    final app = ref.read(appStateProvider);
-    if (!quiet) setState(() { _loading = true; _error = null; });
-    try {
-      final results = await Future.wait([
-        app.api.timeclockMe(),
-        app.api.timeclockHistory(),
-        app.api.timeclockRoster(),
-        app.api.staff(),
-        app.api.latestHandover(),
-      ]);
-      if (!mounted) return;
-      final roster = results[2] as List<TimeclockEntry>;
-      final staff = results[3] as List<StaffMember>;
-      setState(() {
-        _me = results[0] as TimeclockMe;
-        _history = results[1] as List<TimeclockEntry>;
-        _roster = roster;
-        _staffNames = {for (final s in staff) s.id: s.name};
-        _rosterVisible = roster.isNotEmpty;
-        _lastHandover = results[4] as Handover?;
-        _loading = false;
-      });
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) {
-        await app.sessionExpired();
-        return;
-      }
-      setState(() { _loading = false; _error = e; });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _error = e; });
-    }
-  }
+  void _reload() => ref.invalidate(timeclockProvider);
 
   // ── Actions ───────────────────────────────────────────────────────────────
 
@@ -87,7 +75,7 @@ class _TimeClockScreenState extends ConsumerState<TimeClockScreen> {
       await app.api.clockIn();
       HapticFeedback.mediumImpact();
       showInfoOn(messenger, 'Clocked in — good shift!');
-      await _load(quiet: true);
+      _reload();
     } catch (e) {
       showErrorOn(messenger, e);
     }
@@ -102,7 +90,7 @@ class _TimeClockScreenState extends ConsumerState<TimeClockScreen> {
       showInfoOn(messenger, force
           ? 'Clocked out — manager override applied'
           : 'Clocked out — see you next shift');
-      await _load(quiet: true);
+      _reload();
     } on ApiError catch (e) {
       // Refused: open checks. A manager gets the override button.
       if (e.isAuthError) {
@@ -165,7 +153,7 @@ class _TimeClockScreenState extends ConsumerState<TimeClockScreen> {
         showInfoOn(messenger,
             mins == null ? 'Break ended' : 'Break ended — $mins min');
       }
-      await _load(quiet: true);
+      _reload();
     } catch (e) {
       showErrorOn(messenger, e);
     }
@@ -183,23 +171,27 @@ class _TimeClockScreenState extends ConsumerState<TimeClockScreen> {
           maxHeight: MediaQuery.sizeOf(context).height * 0.92),
       builder: (_) => const _HandoverSheet(),
     );
-    if (saved == true && mounted) await _load(quiet: true);
+    if (saved == true && mounted) _reload();
   }
 
   // ── Build ─────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
-    if (_loading && _me == null) return const DashboardSkeleton();
-    if (_error != null && _me == null) {
-      return LoadError(error: _error!, onRetry: () => _load());
+    final dataAsync = ref.watch(timeclockProvider);
+    final data = dataAsync.value;
+    if (dataAsync.isLoading && data == null) return const DashboardSkeleton();
+    if (dataAsync.hasError && data == null) {
+      return LoadError(error: dataAsync.error!, onRetry: _reload);
     }
     final pal = Pal.of(context);
-    final me = _me;
+    final me = data?.me;
     final onShift = me?.clockedIn ?? false;
+    final inBreak = me?.entry?.onBreak ?? false;
+    final roster = data?.roster ?? const <TimeclockEntry>[];
 
     return RefreshIndicator(
-      onRefresh: () => _load(quiet: true),
+      onRefresh: () async => _reload(),
       child: ListView(
         padding: const EdgeInsets.all(14),
         children: [
@@ -261,11 +253,11 @@ class _TimeClockScreenState extends ConsumerState<TimeClockScreen> {
                     height: 38,
                     child: OutlinedButton.icon(
                       onPressed:
-                          onShift ? () => _break(!_inBreak) : null,
-                      icon: Icon(_inBreak
+                          onShift ? () => _break(!inBreak) : null,
+                      icon: Icon(inBreak
                           ? Icons.timer
                           : Icons.free_breakfast_outlined),
-                      label: Text(_inBreak ? 'End Break' : 'Start Break'),
+                      label: Text(inBreak ? 'End Break' : 'Start Break'),
                     ),
                   ),
                 ),
@@ -283,24 +275,22 @@ class _TimeClockScreenState extends ConsumerState<TimeClockScreen> {
             ],
           ),
           const SizedBox(height: 10),
-          // ── Last handover ───────────────────────────────────────────────
-          if (_lastHandover != null)
-            _handoverCard(_lastHandover!),
+          // ── Last handover ───────────────────────────────────────────
+          if (data?.lastHandover case final Handover handover)
+            _handoverCard(handover),
           // ── My recent shifts ────────────────────────────────────────────
           const SizedBox(height: 10),
-          _myShiftsCard(),
+          _myShiftsCard(data?.history ?? const <TimeclockEntry>[]),
           // ── Roster (permitted roles only) ───────────────────────────────
-          if (_rosterVisible) ...[
+          if (roster.isNotEmpty) ...[
             const SizedBox(height: 10),
-            _rosterCard(),
+            _rosterCard(
+                roster, data?.staffNames ?? const <String, String>{}),
           ],
         ],
       ),
     );
   }
-
-  /// Break state — the server stamps it on the open entry when one is live.
-  bool get _inBreak => _me?.entry?.onBreak ?? false;
 
   Widget _handoverCard(Handover h) {
     final pal = Pal.of(context);
@@ -327,13 +317,13 @@ class _TimeClockScreenState extends ConsumerState<TimeClockScreen> {
     );
   }
 
-  Widget _myShiftsCard() {
+  Widget _myShiftsCard(List<TimeclockEntry> history) {
     final pal = Pal.of(context);
     return SectionCard(
       title: 'My Recent Shifts',
       trailing: Icon(Icons.schedule, size: 15, color: pal.faint),
       children: [
-        if (_history.isEmpty)
+        if (history.isEmpty)
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 12),
             child: Center(
@@ -345,7 +335,7 @@ class _TimeClockScreenState extends ConsumerState<TimeClockScreen> {
             ),
           )
         else
-          for (final e in _history.take(8))
+          for (final e in history.take(8))
             ListRow(
               head: e.date ?? (e.created ?? '').split(' ').first,
               rest: '${e.clockIn ?? '—'} → ${e.clockOut ?? 'on shift'}',
@@ -370,9 +360,10 @@ class _TimeClockScreenState extends ConsumerState<TimeClockScreen> {
     return '${d ~/ 60}h${(d % 60).toString().padLeft(2, '0')}m';
   }
 
-  Widget _rosterCard() {
+  Widget _rosterCard(
+      List<TimeclockEntry> roster, Map<String, String> staffNames) {
     final pal = Pal.of(context);
-    final clockedIn = _roster
+    final clockedIn = roster
         .where((e) => (e.clockOut ?? '').isEmpty)
         .length;
     return SectionCard(
@@ -384,9 +375,9 @@ class _TimeClockScreenState extends ConsumerState<TimeClockScreen> {
               fontWeight: FontWeight.w600,
               color: clockedIn > 0 ? pal.success : pal.faint)),
       children: [
-        for (final e in _roster.take(10))
+        for (final e in roster.take(10))
           ListRow(
-            head: _staffNames[e.id] ?? 'Staff ${shortId(e.id)}',
+            head: staffNames[e.id] ?? 'Staff ${shortId(e.id)}',
             rest: '${e.clockIn ?? '—'} → ${e.clockOut ?? 'on shift'}',
             trailing: e.clockOut == null ? 'active' : _duration(e),
             trailingColor: e.clockOut == null ? pal.primary : null,

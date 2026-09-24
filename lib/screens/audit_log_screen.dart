@@ -1,6 +1,10 @@
 /// Audit log — the web `AuditLogView.vue`: the read-only system trail with
 /// entity/action/actor/date filters. Manager only (the grant). Max 500 rows
 /// per pull — the "narrow the range" note is the same on both.
+///
+/// Tier-2: the fetch lives in a screen-scoped FutureProvider keyed by the
+/// filter record; the session is READ inside the provider, never watched
+/// (the fetch must not rebuild on its own session echo).
 library;
 
 import 'package:flutter/material.dart';
@@ -25,6 +29,34 @@ const kAuditActions = [
   'void', 'verify', 'open', 'close', 'pay', 'count', 'accept', 'release',
 ];
 
+/// The filter exactly as it reaches the server — the record is the
+/// provider key, so any chip/date/actor change is a new fetch.
+typedef AuditFilter = ({
+  String entity,
+  String action,
+  String actor,
+  String from,
+  String to,
+});
+
+final auditLogProvider =
+    FutureProvider.family<List<AuditEntry>, AuditFilter>((ref, f) async {
+  final app = ref.read(appStateProvider);
+  try {
+    return await app.api.auditFiltered(
+      entity: f.entity == 'All' ? null : f.entity,
+      action: f.action == 'All' ? null : f.action,
+      actorId: f.actor.isEmpty ? null : f.actor,
+      from: '${f.from}T00:00:00',
+      to: '${f.to}T23:59:59',
+      limit: 500,
+    );
+  } on ApiError catch (e) {
+    if (e.isAuthError) await app.sessionExpired();
+    rethrow;
+  }
+});
+
 class AuditLogScreen extends ConsumerStatefulWidget {
   const AuditLogScreen({super.key});
 
@@ -33,9 +65,6 @@ class AuditLogScreen extends ConsumerStatefulWidget {
 }
 
 class _AuditLogScreenState extends ConsumerState<AuditLogScreen> {
-  List<AuditEntry> _rows = [];
-  bool _loading = true;
-  Object? _error;
   String _entity = 'All';
   String _action = 'All';
   final _actorC = TextEditingController();
@@ -48,7 +77,6 @@ class _AuditLogScreenState extends ConsumerState<AuditLogScreen> {
     final now = DateTime.now();
     _from = DateRangeRow.fmt(now.add(const Duration(days: -7)));
     _to = DateRangeRow.fmt(now);
-    _load();
   }
 
   @override
@@ -57,28 +85,21 @@ class _AuditLogScreenState extends ConsumerState<AuditLogScreen> {
     super.dispose();
   }
 
-  Future<void> _load({bool quiet = false}) async {
-    final app = ref.read(appStateProvider);
-    if (!quiet) setState(() { _loading = true; _error = null; });
-    try {
-      final rows = await app.api.auditFiltered(
-        entity: _entity == 'All' ? null : _entity,
-        action: _action == 'All' ? null : _action,
-        actorId: _actorC.text.trim().isEmpty ? null : _actorC.text.trim(),
-        from: '${_from}T00:00:00',
-        to: '${_to}T23:59:59',
-        limit: 500,
+  AuditFilter get _filter => (
+        entity: _entity,
+        action: _action,
+        actor: _actorC.text.trim(),
+        from: _from,
+        to: _to,
       );
-      if (!mounted) return;
-      setState(() { _rows = rows; _loading = false; });
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) { await app.sessionExpired(); return; }
-      setState(() { _loading = false; _error = e; });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _error = e; });
-    }
+
+  /// Re-key the watch to the current filter values, then invalidate: a new
+  /// combination fetches via the key change, an unchanged one via the
+  /// invalidate — and the rebuild applies a freshly typed actor id, like
+  /// the old _load() read it on every pull.
+  void _reload() {
+    setState(() {});
+    ref.invalidate(auditLogProvider(_filter));
   }
 
   Color _actionColor(Pal pal, String action) {
@@ -99,16 +120,18 @@ class _AuditLogScreenState extends ConsumerState<AuditLogScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading && _rows.isEmpty) {
+    final rowsAsync = ref.watch(auditLogProvider(_filter));
+    final rows = rowsAsync.value ?? const <AuditEntry>[];
+    if (rowsAsync.isLoading && rows.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (_error != null && _rows.isEmpty) {
-      return LoadError(error: _error!, onRetry: () => _load());
+    if (rowsAsync.hasError && rows.isEmpty) {
+      return LoadError(error: rowsAsync.error!, onRetry: _reload);
     }
     final pal = Pal.of(context);
 
     return RefreshIndicator(
-      onRefresh: () => _load(quiet: true),
+      onRefresh: () async => _reload(),
       child: ListView(
         padding: const EdgeInsets.all(14),
         children: [
@@ -118,9 +141,9 @@ class _AuditLogScreenState extends ConsumerState<AuditLogScreen> {
             Expanded(
               child: KpiCard(
                   label: 'Entries in range',
-                  value: _rows.length >= 500 ? '500 (max)' : '${_rows.length}',
+                  value: rows.length >= 500 ? '500 (max)' : '${rows.length}',
                   icon: Icons.receipt_long_outlined,
-                  sub: _rows.length >= 500 ? 'Narrow the range for more' : null),
+                  sub: rows.length >= 500 ? 'Narrow the range for more' : null),
             ),
           ]),
           const SizedBox(height: 10),
@@ -133,26 +156,26 @@ class _AuditLogScreenState extends ConsumerState<AuditLogScreen> {
             value: _entity,
             options: [('All', 'All entities'),
               ...kAuditEntities.map((e) => (e, e))],
-            onChanged: (v) { _entity = v; _load(); },
+            onChanged: (v) { _entity = v; _reload(); },
           ),
           const SizedBox(height: 8),
           ChipSelect(
             value: _action,
             options: [('All', 'All actions'),
               ...kAuditActions.map((a) => (a, a))],
-            onChanged: (v) { _action = v; _load(); },
+            onChanged: (v) { _action = v; _reload(); },
           ),
           const SizedBox(height: 8),
           Row(children: [
             Expanded(
               child: DateRangeRow(
                   from: _from, to: _to,
-                  onFrom: (v) { _from = v; _load(); },
-                  onTo: (v) { _to = v; _load(); }),
+                  onFrom: (v) { _from = v; _reload(); },
+                  onTo: (v) { _to = v; _reload(); }),
             ),
             const SizedBox(width: 8),
             FilledButton.icon(
-              onPressed: () => _load(),
+              onPressed: _reload,
               icon: const Icon(Icons.filter_alt_outlined, size: 15),
               label: const Text('Apply'),
               style: FilledButton.styleFrom(minimumSize: const Size(0, 34)),
@@ -162,7 +185,7 @@ class _AuditLogScreenState extends ConsumerState<AuditLogScreen> {
           SectionCard(
             title: 'Trail',
             children: [
-              for (final e in _rows.take(300))
+              for (final e in rows.take(300))
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 6),
                   child: Row(
@@ -211,7 +234,7 @@ class _AuditLogScreenState extends ConsumerState<AuditLogScreen> {
                     ],
                   ),
                 ),
-              if (_rows.isEmpty)
+              if (rows.isEmpty)
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 14),
                   child: Center(

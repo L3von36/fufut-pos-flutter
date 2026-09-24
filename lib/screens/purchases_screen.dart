@@ -2,6 +2,11 @@
 /// supplier (ledger stock-in), pay supplier accounts, the per-line analyse
 /// projection and the CSV export. Record/Pay = manager; head-chef and
 /// accountant read + export.
+///
+/// Tier-2: purchases + suppliers + stock arrive in one screen-scoped
+/// FutureProvider (the record sheet books against all three); the unpaid
+/// toggle below is client-side. The session is READ inside the provider,
+/// never watched (the fetch must not rebuild on its own session echo).
 library;
 
 import 'package:flutter/material.dart';
@@ -17,6 +22,30 @@ import '../widgets/backoffice.dart';
 import '../widgets/common.dart';
 import '../widgets/dashboard.dart';
 
+/// Purchases + suppliers + stock in one pull — the record sheet books a
+/// purchase against a supplier and its stock lines.
+typedef PurchasesData = ({
+  List<Purchase> purchases,
+  List<Supplier> suppliers,
+  List<InventoryItem> stock,
+});
+
+final purchasesDataProvider = FutureProvider<PurchasesData>((ref) async {
+  final app = ref.read(appStateProvider);
+  try {
+    final results = await Future.wait<dynamic>(
+        [app.api.purchases(), app.api.suppliers(), app.api.inventory()]);
+    return (
+      purchases: results[0] as List<Purchase>,
+      suppliers: results[1] as List<Supplier>,
+      stock: results[2] as List<InventoryItem>,
+    );
+  } on ApiError catch (e) {
+    if (e.isAuthError) await app.sessionExpired();
+    rethrow;
+  }
+});
+
 class PurchasesScreen extends ConsumerStatefulWidget {
   const PurchasesScreen({super.key});
 
@@ -25,50 +54,21 @@ class PurchasesScreen extends ConsumerStatefulWidget {
 }
 
 class _PurchasesScreenState extends ConsumerState<PurchasesScreen> {
-  List<Purchase> _rows = [];
-  List<Supplier> _suppliers = [];
-  List<InventoryItem> _stock = [];
-  bool _loading = true;
-  Object? _error;
   bool _unpaidOnly = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
 
   String get _role => ref.read(appStateProvider).roleKey ?? '';
   bool get _canWrite => _role == 'manager';
 
-  Future<void> _load({bool quiet = false}) async {
-    final app = ref.read(appStateProvider);
-    if (!quiet) setState(() { _loading = true; _error = null; });
-    try {
-      final results = await Future.wait<dynamic>(
-          [app.api.purchases(), app.api.suppliers(), app.api.inventory()]);
-      final rows = results[0] as List<Purchase>;
-      final sups = results[1] as List<Supplier>;
-      final stock = results[2] as List<InventoryItem>;
-      if (!mounted) return;
-      setState(() {
-        _rows = rows; _suppliers = sups; _stock = stock; _loading = false;
-      });
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) { await app.sessionExpired(); return; }
-      setState(() { _loading = false; _error = e; });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _error = e; });
-    }
-  }
+  void _reload() => ref.invalidate(purchasesDataProvider);
 
-  List<Purchase> get _filtered =>
-      _unpaidOnly ? _rows.where((p) => p.owing > 0.5).toList() : _rows;
+  List<Purchase> _filtered(List<Purchase> purchases) =>
+      _unpaidOnly ? purchases.where((p) => p.owing > 0.5).toList() : purchases;
 
   Future<void> _record() async {
-    if (_suppliers.isEmpty) {
+    final data = ref.read(purchasesDataProvider).value;
+    final suppliers = data?.suppliers ?? const <Supplier>[];
+    final stock = data?.stock ?? const <InventoryItem>[];
+    if (suppliers.isEmpty) {
       showInfoOn(ScaffoldMessenger.of(context),
           'Add a supplier first — the purchase books against one');
       return;
@@ -76,13 +76,13 @@ class _PurchasesScreenState extends ConsumerState<PurchasesScreen> {
     if (!mounted) return;
     final messenger = ScaffoldMessenger.of(context);
     final app = ref.read(appStateProvider);
-    String supplierId = _suppliers.first.id;
+    String supplierId = suppliers.first.id;
     final dateC = TextEditingController(text: DateRangeRow.fmt(DateTime.now()));
     final totalC = TextEditingController();
     final paidC = TextEditingController(text: '0');
     String method = 'cash';
     final notesC = TextEditingController();
-    final lines = <_LineInput>[_LineInput(stock: _stock)];
+    final lines = <_LineInput>[_LineInput(stock: stock)];
 
     await showFormSheet(
       context,
@@ -97,19 +97,19 @@ class _PurchasesScreenState extends ConsumerState<PurchasesScreen> {
                 SelectF(
                   label: 'Supplier',
                   value: supplierId,
-                  options: _suppliers.map((s) => s.id).toList(),
+                  options: suppliers.map((s) => s.id).toList(),
                   onChanged: (v) => setSheet(() => supplierId = v),
                 ),
                 // id dropdowns render raw ids; show names via a builder row.
                 Text(
-                  'Supplier: ${_suppliers.where((s) => s.id == supplierId).firstOrNull?.name ?? '—'}',
+                  'Supplier: ${suppliers.where((s) => s.id == supplierId).firstOrNull?.name ?? '—'}',
                   style: TextStyle(
                       fontFamily: kFontBody, fontSize: 11, color: Pal.of(ctx).faint),
                 ),
                 TextF('Date (YYYY-MM-DD)', dateC),
                 for (final l in lines) l.build(ctx, setSheet),
                 RowAction('+ Add item line',
-                    () => setSheet(() => lines.add(_LineInput(stock: _stock)))),
+                    () => setSheet(() => lines.add(_LineInput(stock: stock)))),
                 TextF('Total (ETB)', totalC, numeric: true,
                     hint: 'Defaults to the line sum'),
                 TextF('Paid now (ETB)', paidC, numeric: true),
@@ -154,7 +154,7 @@ class _PurchasesScreenState extends ConsumerState<PurchasesScreen> {
             notes: notesC.text.trim(),
           );
           showInfoOn(messenger, 'Purchase recorded — stock updated');
-          await _load(quiet: true);
+          _reload();
         } catch (e) {
           showErrorOn(messenger, e);
           rethrow;
@@ -196,7 +196,7 @@ class _PurchasesScreenState extends ConsumerState<PurchasesScreen> {
         try {
           await app.api.payPurchase(p.id, amount, method);
           showInfoOn(messenger, 'Payment recorded');
-          await _load(quiet: true);
+          _reload();
         } catch (e) {
           showErrorOn(messenger, e);
           rethrow;
@@ -263,10 +263,12 @@ class _PurchasesScreenState extends ConsumerState<PurchasesScreen> {
 
   Future<void> _export() async {
     final messenger = ScaffoldMessenger.of(context);
+    final purchases =
+        ref.read(purchasesDataProvider).value?.purchases ?? const <Purchase>[];
     final csv = toCsv(
         ['Date', 'Supplier', 'Item', 'Qty', 'Unit', 'Line ETB', 'Total',
          'Paid', 'Method', 'Notes'],
-        purchaseRows(_filtered));
+        purchaseRows(_filtered(purchases)));
     final downloaded = await exportCsv(purchaseExportName(DateTime.now()), csv);
     showInfoOn(messenger,
         downloaded ? 'Purchases downloaded' : 'Copied to clipboard');
@@ -277,19 +279,21 @@ class _PurchasesScreenState extends ConsumerState<PurchasesScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading && _rows.isEmpty) {
+    final dataAsync = ref.watch(purchasesDataProvider);
+    final purchases = dataAsync.value?.purchases ?? const <Purchase>[];
+    if (dataAsync.isLoading && purchases.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (_error != null && _rows.isEmpty) {
-      return LoadError(error: _error!, onRetry: () => _load());
+    if (dataAsync.hasError && purchases.isEmpty) {
+      return LoadError(error: dataAsync.error!, onRetry: _reload);
     }
     final pal = Pal.of(context);
-    final rows = _filtered;
+    final rows = _filtered(purchases);
     final total = rows.fold<double>(0, (s, p) => s + p.total);
     final owing = rows.fold<double>(0, (s, p) => s + (p.owing > 0 ? p.owing : 0));
 
     return RefreshIndicator(
-      onRefresh: () => _load(quiet: true),
+      onRefresh: () async => _reload(),
       child: ListView(
         padding: const EdgeInsets.all(14),
         children: [

@@ -1,6 +1,11 @@
 /// Revenue — the web `RevenueView.vue`: date-ranged revenue by day and
 /// payment-method split. Tips are excluded — NET_SALES convention (the
 /// guest's tip is the guest's money, never the restaurant's revenue).
+///
+/// Tier-2: the orders fetch lives in a screen-scoped FutureProvider; the
+/// date range below is applied in the UI, so the fetch itself is
+/// unfiltered (same as the old _load). The session is READ inside the
+/// provider, never watched (the fetch must not rebuild on its own echo).
 library;
 
 import 'package:flutter/material.dart';
@@ -14,6 +19,16 @@ import '../widgets/backoffice.dart';
 import '../widgets/charts.dart';
 import '../widgets/dashboard.dart';
 
+final revenueProvider = FutureProvider<List<FufutOrder>>((ref) async {
+  final app = ref.read(appStateProvider);
+  try {
+    return await app.api.orders();
+  } on ApiError catch (e) {
+    if (e.isAuthError) await app.sessionExpired();
+    rethrow;
+  }
+});
+
 class RevenueScreen extends ConsumerStatefulWidget {
   const RevenueScreen({super.key});
 
@@ -22,9 +37,6 @@ class RevenueScreen extends ConsumerStatefulWidget {
 }
 
 class _RevenueScreenState extends ConsumerState<RevenueScreen> {
-  List<FufutOrder> _orders = [];
-  bool _loading = true;
-  Object? _error;
   String _from = '';
   String _to = '';
 
@@ -34,34 +46,18 @@ class _RevenueScreenState extends ConsumerState<RevenueScreen> {
     final now = DateTime.now();
     _from = DateRangeRow.fmt(now.add(const Duration(days: -13)));
     _to = DateRangeRow.fmt(now);
-    _load();
   }
 
-  Future<void> _load({bool quiet = false}) async {
-    final app = ref.read(appStateProvider);
-    if (!quiet) setState(() { _loading = true; _error = null; });
-    try {
-      final rows = await app.api.orders();
-      if (!mounted) return;
-      setState(() { _orders = rows; _loading = false; });
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) { await app.sessionExpired(); return; }
-      setState(() { _loading = false; _error = e; });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _error = e; });
-    }
-  }
+  void _reload() => ref.invalidate(revenueProvider);
 
   /// Real orders only — the web `isRealOrder` (voided/cancelled rows are not
   /// revenue), then clipped to the range.
-  List<FufutOrder> get _inRange {
+  List<FufutOrder> _inRange(List<FufutOrder> orders) {
     bool real(FufutOrder o) {
       final s = o.status.toLowerCase();
       return s != 'cancelled' && s != 'voided';
     }
-    return _orders.where((o) {
+    return orders.where((o) {
       if (!real(o)) return false;
       final d = dayKey(o.created);
       if (d.length < 10) return false;
@@ -71,9 +67,9 @@ class _RevenueScreenState extends ConsumerState<RevenueScreen> {
     }).toList();
   }
 
-  Map<String, double> get _byDay {
+  Map<String, double> _byDay(List<FufutOrder> rows) {
     final map = <String, double>{};
-    for (final o in _inRange) {
+    for (final o in rows) {
       final d = dayKey(o.created);
       // Net of tip — the NET_SALES convention.
       map[d] = (map[d] ?? 0) + (o.total - o.tip);
@@ -82,9 +78,9 @@ class _RevenueScreenState extends ConsumerState<RevenueScreen> {
         map.entries.toList()..sort((a, b) => a.key.compareTo(b.key)));
   }
 
-  Map<String, double> get _byMethod {
+  Map<String, double> _byMethod(List<FufutOrder> rows) {
     final map = <String, double>{};
-    for (final o in _inRange) {
+    for (final o in rows) {
       if (!o.isPaid) continue;
       // The web splits combined methods on '+' ("cash+card").
       for (final part in (o.payment ?? 'unpaid').split('+')) {
@@ -98,16 +94,18 @@ class _RevenueScreenState extends ConsumerState<RevenueScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading && _orders.isEmpty) {
+    final ordersAsync = ref.watch(revenueProvider);
+    final all = ordersAsync.value ?? const <FufutOrder>[];
+    if (ordersAsync.isLoading && all.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (_error != null && _orders.isEmpty) {
-      return LoadError(error: _error!, onRetry: () => _load());
+    if (ordersAsync.hasError && all.isEmpty) {
+      return LoadError(error: ordersAsync.error!, onRetry: _reload);
     }
     final pal = Pal.of(context);
-    final rows = _inRange;
-    final byDay = _byDay;
-    final byMethod = _byMethod;
+    final rows = _inRange(all);
+    final byDay = _byDay(rows);
+    final byMethod = _byMethod(rows);
     final revenue = rows.fold<double>(0, (s, o) => s + (o.total - o.tip));
     final avg = rows.isEmpty ? 0.0 : revenue / rows.length;
     final cash = byMethod['cash'] ?? 0;
@@ -120,7 +118,7 @@ class _RevenueScreenState extends ConsumerState<RevenueScreen> {
     ];
 
     return RefreshIndicator(
-      onRefresh: () => _load(quiet: true),
+      onRefresh: () async => _reload(),
       child: ListView(
         padding: const EdgeInsets.all(14),
         children: [
@@ -189,7 +187,7 @@ class _RevenueScreenState extends ConsumerState<RevenueScreen> {
               for (final d in labels.reversed.take(20))
                 ListRow(
                     head: d,
-                    rest: '${_ordersFor(d)} orders',
+                    rest: '${_ordersFor(rows, d)} orders',
                     trailing: money(byDay[d] ?? 0)),
             ],
           ),
@@ -198,7 +196,7 @@ class _RevenueScreenState extends ConsumerState<RevenueScreen> {
     );
   }
 
-  int _ordersFor(String day) => _inRange
+  int _ordersFor(List<FufutOrder> rows, String day) => rows
       .where((o) => dayKey(o.created) == day)
       .length;
 }

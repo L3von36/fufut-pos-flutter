@@ -1,11 +1,9 @@
 /// Analytics — the web `AnalyticsView.vue`: preset/custom ranges, the 8 KPI
 /// cards (AOV, gross margin, fulfillment %, peak hour, cancellations,
 /// trend), the revenue/volume/category/hourly pictures and the top/bottom
-/// performer tables. 60s auto-refresh, all computation client-side like the
-/// web.
+/// performer tables. Minute-clock auto-refresh, all computation client-side
+/// like the web.
 library;
-
-import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -13,10 +11,27 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../api/api_client.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
+import '../state/catalog_providers.dart' show menuProvider;
+import '../state/clock.dart';
 import '../theme.dart';
 import '../widgets/backoffice.dart';
 import '../widgets/charts.dart';
 import '../widgets/dashboard.dart';
+
+/// The order window analytics computes over. The date filters are applied
+/// client-side (the endpoint takes none), so one unparameterized fetch
+/// serves every preset; the menu for the category backfill comes from the
+/// shared [menuProvider].
+final analyticsOrdersProvider = FutureProvider<List<FufutOrder>>((ref) async {
+  // Read, never watch: the fetch must not rebuild on its own session echo.
+  final app = ref.read(appStateProvider);
+  try {
+    return await app.api.orders();
+  } on ApiError catch (e) {
+    if (e.isAuthError) await app.sessionExpired();
+    rethrow;
+  }
+});
 
 class AnalyticsScreen extends ConsumerStatefulWidget {
   const AnalyticsScreen({super.key});
@@ -26,14 +41,9 @@ class AnalyticsScreen extends ConsumerStatefulWidget {
 }
 
 class _AnalyticsScreenState extends ConsumerState<AnalyticsScreen> {
-  List<FufutOrder> _orders = [];
-  List<MenuItem> _menu = [];
-  bool _loading = true;
-  Object? _error;
   String _preset = '7d';
   String _from = '';
   String _to = '';
-  Timer? _ticker;
 
   static const _presets = [
     ('today', 'Today'), ('7d', '7 days'), ('14d', '14 days'),
@@ -44,16 +54,9 @@ class _AnalyticsScreenState extends ConsumerState<AnalyticsScreen> {
   void initState() {
     super.initState();
     _applyPreset('7d');
-    _ticker = Timer.periodic(const Duration(seconds: 60), (_) {
-      if (mounted && _preset != 'custom') _load(quiet: true);
-    });
   }
 
-  @override
-  void dispose() {
-    _ticker?.cancel();
-    super.dispose();
-  }
+  void _reload() => ref.invalidate(analyticsOrdersProvider);
 
   void _applyPreset(String p) {
     final now = DateTime.now();
@@ -79,31 +82,10 @@ class _AnalyticsScreenState extends ConsumerState<AnalyticsScreen> {
           _to = DateRangeRow.fmt(now);
       }
     });
-    _load();
   }
 
-  Future<void> _load({bool quiet = false}) async {
-    final app = ref.read(appStateProvider);
-    if (!quiet) setState(() { _loading = true; _error = null; });
-    try {
-      final results = await Future.wait<dynamic>(
-          [app.api.orders(), app.api.menu()]);
-      final orders = results[0] as List<FufutOrder>;
-      final menu = results[1] as List<MenuItem>;
-      if (!mounted) return;
-      setState(() { _orders = orders; _menu = menu; _loading = false; });
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) { await app.sessionExpired(); return; }
-      setState(() { _loading = false; _error = e; });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _error = e; });
-    }
-  }
-
-  List<FufutOrder> get _inRange {
-    return _orders.where((o) {
+  List<FufutOrder> _inRange(List<FufutOrder> orders) {
+    return orders.where((o) {
       final s = o.status.toLowerCase();
       if (s == 'voided') return false;
       final d = dayKey(o.created);
@@ -116,25 +98,25 @@ class _AnalyticsScreenState extends ConsumerState<AnalyticsScreen> {
 
   // ── KPI math (web AnalyticsView computed set) ────────────────────────────
 
-  double get _revenue {
-    final rows = _inRange.where((o) => o.status.toLowerCase() != 'cancelled');
+  double _revenue(List<FufutOrder> inRange) {
+    final rows = inRange.where((o) => o.status.toLowerCase() != 'cancelled');
     return rows.fold<double>(0, (s, o) => s + (o.total - o.tip));
   }
 
-  double get _aov {
-    final rows = _inRange.where((o) => o.status.toLowerCase() != 'cancelled');
-    return rows.isEmpty ? 0 : _revenue / rows.length;
+  double _aov(List<FufutOrder> inRange) {
+    final rows = inRange.where((o) => o.status.toLowerCase() != 'cancelled');
+    return rows.isEmpty ? 0 : _revenue(inRange) / rows.length;
   }
 
-  int get _cancelled =>
-      _inRange.where((o) => o.status.toLowerCase() == 'cancelled').length;
+  int _cancelled(List<FufutOrder> inRange) =>
+      inRange.where((o) => o.status.toLowerCase() == 'cancelled').length;
 
-  double get _cancelPct =>
-      _inRange.isEmpty ? 0 : (_cancelled / _inRange.length) * 100;
+  double _cancelPct(List<FufutOrder> inRange) =>
+      inRange.isEmpty ? 0 : (_cancelled(inRange) / inRange.length) * 100;
 
   /// Fulfilment: served+fulfilled share of everything that wasn't cancelled.
-  double get _fulfillPct {
-    final rows = _inRange.where((o) => o.status.toLowerCase() != 'cancelled');
+  double _fulfillPct(List<FufutOrder> inRange) {
+    final rows = inRange.where((o) => o.status.toLowerCase() != 'cancelled');
     if (rows.isEmpty) return 0;
     final done = rows.where((o) {
       final s = o.status.toLowerCase();
@@ -143,9 +125,9 @@ class _AnalyticsScreenState extends ConsumerState<AnalyticsScreen> {
     return done / rows.length * 100;
   }
 
-  String get _peakHour {
+  String _peakHour(List<FufutOrder> inRange) {
     final counts = List<int>.filled(24, 0);
-    for (final o in _inRange) {
+    for (final o in inRange) {
       final t = o.created ?? '';
       if (t.length >= 13) {
         final h = int.tryParse(t.substring(11, 13));
@@ -161,7 +143,7 @@ class _AnalyticsScreenState extends ConsumerState<AnalyticsScreen> {
   }
 
   /// Revenue vs the equal-length previous window.
-  double get _trendPct {
+  double _trendPct(List<FufutOrder> orders) {
     final fromD = DateTime.tryParse(_from);
     if (fromD == null) return 0;
     final span = DateTime.tryParse(_to)?.difference(fromD).inDays ?? 6;
@@ -172,20 +154,21 @@ class _AnalyticsScreenState extends ConsumerState<AnalyticsScreen> {
       final d = dayKey(stamp);
       return d.compareTo(f(prevFrom)) >= 0 && d.compareTo(f(prevTo)) <= 0;
     }
-    final prev = _orders
+    final prev = orders
         .where((o) =>
             inPrev(o.created) && o.status.toLowerCase() != 'cancelled')
         .fold<double>(0, (s, o) => s + (o.total - o.tip));
     if (prev <= 0) return 0;
-    return ((_revenue - prev) / prev) * 100;
+    return ((_revenue(_inRange(orders)) - prev) / prev) * 100;
   }
 
-  Map<String, double> get _byCategory {
+  Map<String, double> _byCategory(
+      List<FufutOrder> inRange, List<MenuItem> menu) {
     // Category rides the structured lines; the menu map backfills names
     // written before categories were stamped.
-    final catOf = {for (final m in _menu) m.name.toLowerCase(): m.category};
+    final catOf = {for (final m in menu) m.name.toLowerCase(): m.category};
     final map = <String, double>{};
-    for (final o in _inRange) {
+    for (final o in inRange) {
       if (o.status.toLowerCase() == 'cancelled') continue;
       final lines = o.items.isNotEmpty
           ? o.items
@@ -202,9 +185,9 @@ class _AnalyticsScreenState extends ConsumerState<AnalyticsScreen> {
         map.entries.toList()..sort((a, b) => b.value.compareTo(a.value)));
   }
 
-  Map<String, int> get _itemCounts {
+  Map<String, int> _itemCounts(List<FufutOrder> inRange) {
     final map = <String, int>{};
-    for (final o in _inRange) {
+    for (final o in inRange) {
       for (final l in o.items) {
         map[l.name] = (map[l.name] ?? 0) + l.qty;
       }
@@ -212,17 +195,17 @@ class _AnalyticsScreenState extends ConsumerState<AnalyticsScreen> {
     return map;
   }
 
-  Map<String, int> get _statusCounts {
+  Map<String, int> _statusCounts(List<FufutOrder> inRange) {
     final map = <String, int>{};
-    for (final o in _inRange) {
+    for (final o in inRange) {
       map[o.status] = (map[o.status] ?? 0) + 1;
     }
     return map;
   }
 
-  Map<int, int> get _hourly {
+  Map<int, int> _hourly(List<FufutOrder> inRange) {
     final counts = List<int>.filled(24, 0);
-    for (final o in _inRange) {
+    for (final o in inRange) {
       final t = o.created ?? '';
       if (t.length >= 13) {
         final h = int.tryParse(t.substring(11, 13));
@@ -234,24 +217,38 @@ class _AnalyticsScreenState extends ConsumerState<AnalyticsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading && _orders.isEmpty) {
+    // The old 60s ticker refreshed the window; the minute clock does that
+    // now, paused while a custom range is on screen — like before.
+    ref.listen(minuteClockProvider, (_, __) {
+      if (_preset != 'custom') ref.invalidate(analyticsOrdersProvider);
+    });
+    final ordersAsync = ref.watch(analyticsOrdersProvider);
+    final menuAsync = ref.watch(menuProvider);
+    final orders = ordersAsync.value ?? const <FufutOrder>[];
+    final menu = menuAsync.value ?? const <MenuItem>[];
+    if (ordersAsync.isLoading && orders.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (_error != null && _orders.isEmpty) {
-      return LoadError(error: _error!, onRetry: () => _load());
+    if (ordersAsync.hasError && orders.isEmpty) {
+      return LoadError(error: ordersAsync.error!, onRetry: _reload);
     }
     final pal = Pal.of(context);
-    final rows = _inRange;
-    final byCat = _byCategory;
-    final items = _itemCounts;
-    final statuses = _statusCounts;
-    final hourly = _hourly;
-    final trend = _trendPct;
+    final rows = _inRange(orders);
+    final byCat = _byCategory(rows, menu);
+    final items = _itemCounts(rows);
+    final statuses = _statusCounts(rows);
+    final hourly = _hourly(rows);
+    final trend = _trendPct(orders);
+    final revenue = _revenue(rows);
+    final aov = _aov(rows);
+    final fulfillPct = _fulfillPct(rows);
+    final peakHour = _peakHour(rows);
+    final cancelPct = _cancelPct(rows);
     final totalItems = items.values.fold<int>(0, (s, v) => s + v);
     final avgItems = rows.isEmpty ? 0.0 : totalItems / rows.length;
 
     return RefreshIndicator(
-      onRefresh: () => _load(quiet: true),
+      onRefresh: () async => _reload(),
       child: ListView(
         padding: const EdgeInsets.all(14),
         children: [
@@ -266,18 +263,18 @@ class _AnalyticsScreenState extends ConsumerState<AnalyticsScreen> {
             const SizedBox(height: 8),
             DateRangeRow(
                 from: _from, to: _to,
-                onFrom: (v) { setState(() => _from = v); _load(quiet: true); },
-                onTo: (v) { setState(() => _to = v); _load(quiet: true); }),
+                onFrom: (v) => setState(() => _from = v),
+                onTo: (v) => setState(() => _to = v)),
           ],
           const SizedBox(height: 10),
           Row(children: [
             Expanded(
                 child: KpiCard(label: 'Revenue',
-                    value: money(_revenue), icon: Icons.trending_up_outlined)),
+                    value: money(revenue), icon: Icons.trending_up_outlined)),
             const SizedBox(width: 8),
             Expanded(
                 child: KpiCard(label: 'Avg order',
-                    value: money(_aov),
+                    value: money(aov),
                     sub: trend >= 0
                         ? '↑ ${trend.toStringAsFixed(0)}% vs prior'
                         : '↓ ${trend.abs().toStringAsFixed(0)}% vs prior',
@@ -288,13 +285,13 @@ class _AnalyticsScreenState extends ConsumerState<AnalyticsScreen> {
           Row(children: [
             Expanded(
                 child: KpiCard(label: 'Fulfillment',
-                    value: '${_fulfillPct.toStringAsFixed(0)}%',
-                    valueColor: _fulfillPct >= 80 ? pal.success : pal.warning,
+                    value: '${fulfillPct.toStringAsFixed(0)}%',
+                    valueColor: fulfillPct >= 80 ? pal.success : pal.warning,
                     icon: Icons.check_circle_outline)),
             const SizedBox(width: 8),
             Expanded(
                 child: KpiCard(label: 'Peak hour',
-                    value: _peakHour, icon: Icons.schedule_outlined)),
+                    value: peakHour, icon: Icons.schedule_outlined)),
           ]),
           const SizedBox(height: 8),
           Row(children: [
@@ -305,8 +302,8 @@ class _AnalyticsScreenState extends ConsumerState<AnalyticsScreen> {
             const SizedBox(width: 8),
             Expanded(
                 child: KpiCard(label: 'Cancellation',
-                    value: '${_cancelPct.toStringAsFixed(0)}%',
-                    valueColor: _cancelPct > 10 ? pal.danger : pal.body,
+                    value: '${cancelPct.toStringAsFixed(0)}%',
+                    valueColor: cancelPct > 10 ? pal.danger : pal.body,
                     icon: Icons.cancel_outlined)),
           ]),
           const SizedBox(height: 12),

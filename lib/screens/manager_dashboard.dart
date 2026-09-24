@@ -2,10 +2,8 @@
 ///
 /// Greeting, quick actions, the day's KPIs from `GET /api/reports/dashboard`,
 /// payment mix, recent orders and the operations counters. Refreshes on pull
-/// and on a 60s timer, like the web's poll.
+/// and on the shared minute clock, like the web's poll.
 library;
-
-import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -13,10 +11,36 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../api/api_client.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
+import '../state/clock.dart';
 import '../state/roles.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/dashboard.dart';
+
+/// One dashboard fetch for a period: the report plus the order list the
+/// recent-orders card and the open-checks counter derive from.
+final managerDashboardProvider = FutureProvider.family<
+    ({DashboardStats stats, List<FufutOrder> recent, int openChecks}), String>(
+  (ref, period) async {
+    // Read, never watch: the fetch must not rebuild on its own session echo.
+    final app = ref.read(appStateProvider);
+    try {
+      final results = await Future.wait([
+        app.api.reportsDashboard(period: period),
+        app.api.orders(),
+      ]);
+      final all = results[1] as List<FufutOrder>;
+      return (
+        stats: results[0] as DashboardStats,
+        recent: all.take(6).toList(),
+        openChecks: all.where((o) => !o.isClosed && !o.isPaid).length,
+      );
+    } on ApiError catch (e) {
+      if (e.isAuthError) await app.sessionExpired();
+      rethrow;
+    }
+  },
+);
 
 class ManagerDashboard extends ConsumerStatefulWidget {
   /// Lets quick actions jump to other screens of the shell.
@@ -29,71 +53,26 @@ class ManagerDashboard extends ConsumerStatefulWidget {
 }
 
 class _ManagerDashboardState extends ConsumerState<ManagerDashboard> {
-  DashboardStats? _stats;
-  List<FufutOrder> _recent = [];
-  int _openChecks = 0;
-  bool _loading = true;
   String _period = 'day';
-  Object? _error;
-  Timer? _poll;
 
-  @override
-  void initState() {
-    super.initState();
-    _load();
-    // The web dashboard polls; sixty seconds keeps a tablet honest without
-    // hammering the Worker.
-    _poll = Timer.periodic(const Duration(minutes: 1), (_) => _load(quiet: true));
-  }
-
-  @override
-  void dispose() {
-    _poll?.cancel();
-    super.dispose();
-  }
-
-  Future<void> _load({bool quiet = false}) async {
-    final app = ref.read(appStateProvider);
-    if (!quiet) setState(() { _loading = true; _error = null; });
-    try {
-      final results = await Future.wait([
-        app.api.reportsDashboard(period: _period),
-        app.api.orders(),
-      ]);
-      if (!mounted) return;
-      final all = results[1] as List<FufutOrder>;
-      setState(() {
-        _stats = results[0] as DashboardStats;
-        _recent = all.take(6).toList();
-        _openChecks = all.where((o) => !o.isClosed && !o.isPaid).length;
-        _loading = false;
-      });
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) {
-        await app.sessionExpired();
-        return;
-      }
-      setState(() { _loading = false; _error = e; });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _error = e; });
-    }
-  }
-
-  Future<void> _refresh() async {
-    await _load(quiet: true);
-  }
+  void _reload() => ref.invalidate(managerDashboardProvider(_period));
 
   @override
   Widget build(BuildContext context) {
-    if (_loading && _stats == null) return const DashboardSkeleton();
-    if (_error != null && _stats == null) {
-      return LoadError(error: _error!, onRetry: _refresh);
+    // The web dashboard polls; the shared minute clock keeps a tablet honest
+    // without hammering the Worker.
+    ref.listen(minuteClockProvider, (_, __) => _reload());
+    final dashAsync = ref.watch(managerDashboardProvider(_period));
+    final data = dashAsync.value;
+    if (dashAsync.isLoading && data == null) return const DashboardSkeleton();
+    if (dashAsync.hasError && data == null) {
+      return LoadError(error: dashAsync.error!, onRetry: _reload);
     }
-    final s = _stats;
+    final s = data?.stats;
+    final recent = data?.recent ?? const <FufutOrder>[];
+    final openChecks = data?.openChecks ?? 0;
     return RefreshIndicator(
-      onRefresh: _refresh,
+      onRefresh: () async => _reload(),
       child: ListView(
         padding: const EdgeInsets.all(14),
         children: [
@@ -104,7 +83,7 @@ class _ManagerDashboardState extends ConsumerState<ManagerDashboard> {
           _periodChips(),
           const SizedBox(height: 10),
           if (s != null) ...[
-            _kpiGrid(s),
+            _kpiGrid(s, openChecks),
             const SizedBox(height: 10),
             _orderMix(s),
             const SizedBox(height: 10),
@@ -113,7 +92,7 @@ class _ManagerDashboardState extends ConsumerState<ManagerDashboard> {
             _opsCard(s),
             const SizedBox(height: 10),
           ],
-          _recentOrders(),
+          _recentOrders(recent),
         ],
       ),
     );
@@ -159,7 +138,6 @@ class _ManagerDashboardState extends ConsumerState<ManagerDashboard> {
               visualDensity: VisualDensity.compact,
               onSelected: (_) {
                 setState(() => _period = p.$1);
-                _load(quiet: true);
               },
             ),
           ),
@@ -167,7 +145,7 @@ class _ManagerDashboardState extends ConsumerState<ManagerDashboard> {
     );
   }
 
-  Widget _kpiGrid(DashboardStats s) {
+  Widget _kpiGrid(DashboardStats s, int openChecks) {
     final pal = Pal.of(context);
     return Column(
       children: [
@@ -195,9 +173,9 @@ class _ManagerDashboardState extends ConsumerState<ManagerDashboard> {
           Expanded(
             child: KpiCard(
               label: 'Open Checks',
-              value: '$_openChecks',
+              value: '$openChecks',
               icon: Icons.credit_card,
-              valueColor: _openChecks > 0 ? pal.warning : null,
+              valueColor: openChecks > 0 ? pal.warning : null,
             ),
           ),
           const SizedBox(width: 8),
@@ -279,7 +257,7 @@ class _ManagerDashboardState extends ConsumerState<ManagerDashboard> {
     );
   }
 
-  Widget _recentOrders() {
+  Widget _recentOrders(List<FufutOrder> recent) {
     final pal = Pal.of(context);
     return SectionCard(
       title: 'Recent Orders',
@@ -291,7 +269,7 @@ class _ManagerDashboardState extends ConsumerState<ManagerDashboard> {
         child: const Text('View all'),
       ),
       children: [
-        if (_recent.isEmpty)
+        if (recent.isEmpty)
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 14),
             child: Center(
@@ -301,7 +279,7 @@ class _ManagerDashboardState extends ConsumerState<ManagerDashboard> {
             ),
           )
         else
-          for (final o in _recent)
+          for (final o in recent)
             ListRow(
               head: '${shortId(o.id)} · ${o.customer ?? 'Walk-in'}',
               rest: o.itemsRaw.isEmpty ? null : o.itemsRaw,

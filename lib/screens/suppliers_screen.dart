@@ -1,6 +1,12 @@
 /// Suppliers — the web `SuppliersView.vue`: the vendor directory with
 /// purchase totals / balances, statements, and manager-only create/edit.
 /// Everyone else with the grant reads (head-chef, accountant).
+///
+/// Tier-2: the directory fetch lives in a screen-scoped FutureProvider; the
+/// filter chips below are client-side. The session is READ inside the
+/// provider, never watched (the fetch must not rebuild on its own echo).
+/// Screen-scoped for now — the purchases screen still pulls its own
+/// suppliers copy; a shared provider can dedupe the two later.
 library;
 
 import 'package:flutter/material.dart';
@@ -19,6 +25,16 @@ const kSupplierCategories = [
   'Packaging', 'Equipment', 'Cleaning', 'Other',
 ];
 
+final suppliersProvider = FutureProvider<List<Supplier>>((ref) async {
+  final app = ref.read(appStateProvider);
+  try {
+    return await app.api.suppliers();
+  } on ApiError catch (e) {
+    if (e.isAuthError) await app.sessionExpired();
+    rethrow;
+  }
+});
+
 class SuppliersScreen extends ConsumerStatefulWidget {
   const SuppliersScreen({super.key});
 
@@ -27,45 +43,21 @@ class SuppliersScreen extends ConsumerStatefulWidget {
 }
 
 class _SuppliersScreenState extends ConsumerState<SuppliersScreen> {
-  List<Supplier> _rows = [];
-  bool _loading = true;
-  Object? _error;
   String _filter = 'all';
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
 
   String get _role => ref.read(appStateProvider).roleKey ?? '';
   bool get _canWrite => _role == 'manager';
 
-  Future<void> _load({bool quiet = false}) async {
-    final app = ref.read(appStateProvider);
-    if (!quiet) setState(() { _loading = true; _error = null; });
-    try {
-      final rows = await app.api.suppliers();
-      if (!mounted) return;
-      setState(() { _rows = rows; _loading = false; });
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) { await app.sessionExpired(); return; }
-      setState(() { _loading = false; _error = e; });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _error = e; });
-    }
-  }
+  void _reload() => ref.invalidate(suppliersProvider);
 
-  List<Supplier> get _filtered {
+  List<Supplier> _filtered(List<Supplier> all) {
     switch (_filter) {
       case 'owe':
-        return _rows.where((s) => s.balance > 0.5).toList();
+        return all.where((s) => s.balance > 0.5).toList();
       case 'coffee':
-        return _rows.where((s) => s.category == 'Coffee').toList();
+        return all.where((s) => s.category == 'Coffee').toList();
       default:
-        return _rows;
+        return all;
     }
   }
 
@@ -121,7 +113,7 @@ class _SuppliersScreenState extends ConsumerState<SuppliersScreen> {
             await app.api.updateSupplier(edit.id, payload);
           }
           showInfoOn(messenger, edit == null ? 'Supplier added' : 'Supplier updated');
-          await _load(quiet: true);
+          _reload();
         } catch (e) {
           showErrorOn(messenger, e);
           rethrow;
@@ -220,18 +212,20 @@ class _SuppliersScreenState extends ConsumerState<SuppliersScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading && _rows.isEmpty) {
+    final rowsAsync = ref.watch(suppliersProvider);
+    final all = rowsAsync.value ?? const <Supplier>[];
+    if (rowsAsync.isLoading && all.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (_error != null && _rows.isEmpty) {
-      return LoadError(error: _error!, onRetry: () => _load());
+    if (rowsAsync.hasError && all.isEmpty) {
+      return LoadError(error: rowsAsync.error!, onRetry: _reload);
     }
     final pal = Pal.of(context);
-    final rows = _filtered;
-    final outstanding = _rows.fold<double>(0, (s, x) => s + (x.balance > 0 ? x.balance : 0));
+    final rows = _filtered(all);
+    final outstanding = all.fold<double>(0, (s, x) => s + (x.balance > 0 ? x.balance : 0));
 
     return RefreshIndicator(
-      onRefresh: () => _load(quiet: true),
+      onRefresh: () async => _reload(),
       child: ListView(
         padding: const EdgeInsets.all(14),
         children: [
@@ -240,7 +234,7 @@ class _SuppliersScreenState extends ConsumerState<SuppliersScreen> {
           Row(children: [
             Expanded(
                 child: KpiCard(label: 'Suppliers',
-                    value: '${_rows.length}', icon: Icons.local_shipping_outlined)),
+                    value: '${all.length}', icon: Icons.local_shipping_outlined)),
             const SizedBox(width: 8),
             Expanded(
                 child: KpiCard(label: 'Outstanding',

@@ -19,6 +19,24 @@ import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/dashboard.dart';
 
+/// The signed-in member's audit trail for a range. The actor is the session
+/// user — read, not watched; the screen remounts per login and autoDispose
+/// clears the trail on logout — so the range is the only key that changes
+/// the server call.
+final myActivityProvider =
+    FutureProvider.family<List<AuditEntry>, String>((ref, from) async {
+  // Read, never watch: the fetch must not rebuild on its own session echo.
+  final app = ref.read(appStateProvider);
+  final me = app.user;
+  if (me == null) return const <AuditEntry>[];
+  try {
+    return await app.api.audit(actorId: me.id, from: from);
+  } on ApiError catch (e) {
+    if (e.isAuthError) await app.sessionExpired();
+    rethrow;
+  }
+});
+
 class MyActivityScreen extends ConsumerStatefulWidget {
   const MyActivityScreen({super.key});
 
@@ -27,16 +45,9 @@ class MyActivityScreen extends ConsumerStatefulWidget {
 }
 
 class _MyActivityScreenState extends ConsumerState<MyActivityScreen> {
-  List<AuditEntry> _entries = [];
   String _range = 'today';
-  bool _loading = true;
-  Object? _error;
 
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
+  void _reload() => ref.invalidate(myActivityProvider(_from));
 
   /// `from` for each range chip — local-time stamps, same as the web.
   String get _from {
@@ -58,36 +69,12 @@ class _MyActivityScreenState extends ConsumerState<MyActivityScreen> {
     }
   }
 
-  Future<void> _load({bool quiet = false}) async {
-    final app = ref.read(appStateProvider);
-    final me = app.user;
-    if (me == null) return;
-    if (!quiet) setState(() { _loading = true; _error = null; });
-    try {
-      final rows = await app.api.audit(actorId: me.id, from: _from);
-      if (!mounted) return;
-      setState(() { _entries = rows; _loading = false; });
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) {
-        await app.sessionExpired();
-        return;
-      }
-      setState(() { _loading = false; _error = e; });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _error = e; });
-    }
-  }
-
-  // ── Per-role KPI computation — the web's buildKpis(), condensed ──────────
-
-  List<(String, int)> _kpisFor(String role) {
-    int countByEntity(String entity) => _entries
+  List<(String, int)> _kpisFor(String role, List<AuditEntry> entries) {
+    int countByEntity(String entity) => entries
         .where((e) => e.entity.toLowerCase() == entity)
         .length;
     int countWhere(bool Function(AuditEntry) test) =>
-        _entries.where(test).length;
+        entries.where(test).length;
     String afterStatus(AuditEntry e) {
       final a = e.after;
       if (a is Map) return '${a['status'] ?? ''}'.toLowerCase();
@@ -162,14 +149,14 @@ class _MyActivityScreenState extends ConsumerState<MyActivityScreen> {
           ('Orders touched', countByEntity('orders')),
           ('Payments', countByEntity('payments')),
           ('Tables', countByEntity('tables')),
-          ('Other actions', _entries.length),
+          ('Other actions', entries.length),
         ];
     }
   }
 
-  List<(String, int)> _topBy(bool byArea) {
+  List<(String, int)> _topBy(bool byArea, List<AuditEntry> entries) {
     final counts = <String, int>{};
-    for (final e in _entries) {
+    for (final e in entries) {
       final key = (byArea ? e.entity : e.action).toLowerCase();
       if (key.isEmpty) continue;
       counts[key] = (counts[key] ?? 0) + 1;
@@ -181,25 +168,29 @@ class _MyActivityScreenState extends ConsumerState<MyActivityScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading && _entries.isEmpty) return const DashboardSkeleton();
-    if (_error != null && _entries.isEmpty) {
-      return LoadError(error: _error!, onRetry: () => _load());
+    final entriesAsync = ref.watch(myActivityProvider(_from));
+    final entries = entriesAsync.value ?? const <AuditEntry>[];
+    if (entriesAsync.isLoading && entries.isEmpty) {
+      return const DashboardSkeleton();
+    }
+    if (entriesAsync.hasError && entries.isEmpty) {
+      return LoadError(error: entriesAsync.error!, onRetry: _reload);
     }
     final pal = Pal.of(context);
     final app = ref.read(appStateProvider);
     final role = app.roleKey ?? '';
-    final kpis = _kpisFor(role);
-    final byArea = _topBy(true);
-    final byAction = _topBy(false);
+    final kpis = _kpisFor(role, entries);
+    final byArea = _topBy(true, entries);
+    final byAction = _topBy(false, entries);
 
     return RefreshIndicator(
-      onRefresh: () => _load(quiet: true),
+      onRefresh: () async => _reload(),
       child: ListView(
         padding: const EdgeInsets.all(14),
         children: [
           const GreetingHeader(),
           const SizedBox(height: 4),
-          Text('${_entries.length} actions in range',
+          Text('${entries.length} actions in range',
               style: TextStyle(
                   fontFamily: kFontMono,
                   fontSize: 11.5,
@@ -236,7 +227,6 @@ class _MyActivityScreenState extends ConsumerState<MyActivityScreen> {
                       visualDensity: VisualDensity.compact,
                       onSelected: (_) {
                         setState(() => _range = r.$1);
-                        _load(quiet: true);
                       },
                     ),
                   ),
@@ -277,7 +267,7 @@ class _MyActivityScreenState extends ConsumerState<MyActivityScreen> {
             title: 'Activity Timeline',
             trailing: Icon(Icons.history, size: 15, color: pal.faint),
             children: [
-              if (_entries.isEmpty)
+              if (entries.isEmpty)
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 14),
                   child: Center(
@@ -289,7 +279,7 @@ class _MyActivityScreenState extends ConsumerState<MyActivityScreen> {
                   ),
                 )
               else
-                for (final e in _entries.take(50))
+                for (final e in entries.take(50))
                   _timelineRow(context, e),
             ],
           ),

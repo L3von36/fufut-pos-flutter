@@ -3,17 +3,18 @@
 /// The driver's jobs, newest first, each with the order behind it (what is in
 /// the bag, what it comes to, whether it is paid) and one action to move it
 /// along: assign → pick up → delivered. Status labels mirror the server's
-/// delivery pipeline.
+/// delivery pipeline. The list is the shared [deliveriesProvider] — the
+/// driver's dashboard reads the same feed — and the minute clock stands in
+/// for the old 45s poll.
 library;
-
-import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../api/api_client.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
+import '../state/catalog_providers.dart';
+import '../state/clock.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/dashboard.dart';
@@ -26,43 +27,7 @@ class DeliveryScreen extends ConsumerStatefulWidget {
 }
 
 class _DeliveryScreenState extends ConsumerState<DeliveryScreen> {
-  List<DeliveryJob> _jobs = [];
-  bool _loading = true;
-  Object? _error;
-  Timer? _poll;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-    _poll = Timer.periodic(const Duration(seconds: 45), (_) => _load(quiet: true));
-  }
-
-  @override
-  void dispose() {
-    _poll?.cancel();
-    super.dispose();
-  }
-
-  Future<void> _load({bool quiet = false}) async {
-    final app = ref.read(appStateProvider);
-    if (!quiet) setState(() { _loading = true; _error = null; });
-    try {
-      final jobs = await app.api.deliveries();
-      if (!mounted) return;
-      setState(() { _jobs = jobs; _loading = false; });
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) {
-        await app.sessionExpired();
-        return;
-      }
-      setState(() { _loading = false; _error = e; });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _error = e; });
-    }
-  }
+  void _reload() => ref.invalidate(deliveriesProvider);
 
   Future<void> _advance(DeliveryJob j) async {
     final app = ref.read(appStateProvider);
@@ -72,7 +37,7 @@ class _DeliveryScreenState extends ConsumerState<DeliveryScreen> {
     try {
       await app.api.advanceDelivery(j.id, to);
       showInfoOn(messenger, 'Job → ${_label(to)}');
-      await _load(quiet: true);
+      _reload();
     } catch (e) {
       showErrorOn(messenger, e);
     }
@@ -103,24 +68,28 @@ class _DeliveryScreenState extends ConsumerState<DeliveryScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading && _jobs.isEmpty) {
+    // The old 45s poll; the shared feed refetches on the minute.
+    ref.listen(minuteClockProvider, (_, __) => _reload());
+    final jobsAsync = ref.watch(deliveriesProvider);
+    final jobs = jobsAsync.value ?? const <DeliveryJob>[];
+    if (jobsAsync.isLoading && jobs.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (_error != null && _jobs.isEmpty) {
-      return LoadError(error: _error!, onRetry: () => _load());
+    if (jobsAsync.hasError && jobs.isEmpty) {
+      return LoadError(error: jobsAsync.error!, onRetry: _reload);
     }
     // Live work first, finished last.
-    final open = _jobs.where((j) {
+    final open = jobs.where((j) {
       final s = j.status;
       return s != 'delivered' && s != 'settled' && s != 'cancelled';
     }).toList();
-    final done = _jobs.where((j) {
+    final done = jobs.where((j) {
       final s = j.status;
       return s == 'delivered' || s == 'settled';
     }).toList();
 
     return RefreshIndicator(
-      onRefresh: () => _load(quiet: true),
+      onRefresh: () async => _reload(),
       child: ListView(
         padding: const EdgeInsets.all(14),
         children: [

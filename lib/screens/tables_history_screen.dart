@@ -21,11 +21,27 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../api/api_client.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
+import '../state/catalog_providers.dart' show tablesOnceProvider;
 import '../state/floor_plan.dart' show paymentLabel;
 import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/dashboard.dart' show LoadError;
 import 'orders_screen.dart' show OrderDetailSheet;
+
+/// One window of the archive — the same read the Order History screen pages
+/// through, limited to the 200 rows the grid needs. The room itself comes
+/// from the shared [tablesOnceProvider] (the server scopes it per role).
+final tableHistoryOrdersProvider = FutureProvider.family<List<FufutOrder>,
+    ({String from, String to})>((ref, f) async {
+  // Read, never watch: the fetch must not rebuild on its own session echo.
+  final app = ref.read(appStateProvider);
+  try {
+    return await app.api.orders(from: f.from, to: f.to, limit: 200);
+  } on ApiError catch (e) {
+    if (e.isAuthError) await app.sessionExpired();
+    rethrow;
+  }
+});
 
 class TablesHistoryScreen extends ConsumerStatefulWidget {
   /// Pre-select a table (the floor plan's "view history" deep link).
@@ -37,10 +53,6 @@ class TablesHistoryScreen extends ConsumerStatefulWidget {
 }
 
 class _TablesHistoryScreenState extends ConsumerState<TablesHistoryScreen> {
-  List<CafeTable> _tables = [];
-  List<FufutOrder> _orders = [];
-  bool _loading = true;
-  Object? _error;
   String _preset = 'today'; // today | yesterday | 7d | 30d
   String? _openTableId; // null = the grid; set = that table's timeline
 
@@ -48,7 +60,6 @@ class _TablesHistoryScreenState extends ConsumerState<TablesHistoryScreen> {
   void initState() {
     super.initState();
     _openTableId = widget.initialTableId;
-    _load();
   }
 
   String _dayKey(DateTime d) {
@@ -72,37 +83,13 @@ class _TablesHistoryScreenState extends ConsumerState<TablesHistoryScreen> {
     }
   }
 
-  Future<void> _load({bool quiet = false}) async {
-    final app = ref.read(appStateProvider);
-    if (!mounted) return;
-    if (!quiet) setState(() { _loading = true; _error = null; });
-    try {
-      final (from, to) = _window;
-      final results = await Future.wait([
-        app.api.tables(),
-        app.api.orders(from: from, to: to, limit: 200),
-      ]);
-      if (!mounted) return;
-      setState(() {
-        _tables = results[0] as List<CafeTable>;
-        _orders = results[1] as List<FufutOrder>;
-        _loading = false;
-      });
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) {
-        await ref.read(appStateProvider).sessionExpired();
-        return;
-      }
-      setState(() { _loading = false; _error = e; });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _error = e; });
-    }
+  void _reload() {
+    final (from, to) = _window;
+    ref.invalidate(tableHistoryOrdersProvider((from: from, to: to)));
   }
 
-  List<FufutOrder> _ordersFor(CafeTable t) {
-    return _orders
+  List<FufutOrder> _ordersFor(CafeTable t, List<FufutOrder> orders) {
+    return orders
         .where((o) => o.tableNum == t.number || o.tableNum == t.id)
         .toList()
       ..sort((a, b) => (b.created ?? '').compareTo(a.created ?? ''));
@@ -114,19 +101,31 @@ class _TablesHistoryScreenState extends ConsumerState<TablesHistoryScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading && _orders.isEmpty && _tables.isEmpty) {
+    final (from, to) = _window;
+    final ordersAsync =
+        ref.watch(tableHistoryOrdersProvider((from: from, to: to)));
+    // The room; a refused fetch (no tables grant) leaves it empty.
+    final tablesAsync = ref.watch(tablesOnceProvider);
+    final orders = ordersAsync.value ?? const <FufutOrder>[];
+    final tables = tablesAsync.value ?? const <CafeTable>[];
+    if ((ordersAsync.isLoading || tablesAsync.isLoading) &&
+        orders.isEmpty &&
+        tables.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (_error != null && _orders.isEmpty && _tables.isEmpty) {
-      return LoadError(error: _error!, onRetry: () => _load());
+    if ((ordersAsync.hasError || tablesAsync.hasError) &&
+        orders.isEmpty &&
+        tables.isEmpty) {
+      return LoadError(
+          error: ordersAsync.error ?? tablesAsync.error!, onRetry: _reload);
     }
     final pal = Pal.of(context);
     final table = _openTableId == null
         ? null
-        : _tables.where((t) => t.id == _openTableId).firstOrNull;
+        : tables.where((t) => t.id == _openTableId).firstOrNull;
 
     return RefreshIndicator(
-      onRefresh: () => _load(quiet: true),
+      onRefresh: () async => _reload(),
       child: Column(children: [
         // ── Day filter ────────────────────────────────────────────────
         Padding(
@@ -147,7 +146,7 @@ class _TablesHistoryScreenState extends ConsumerState<TablesHistoryScreen> {
               ),
             ),
             const SizedBox(width: 8),
-            Text('${_orders.length} order${_orders.length == 1 ? '' : 's'}',
+            Text('${orders.length} order${orders.length == 1 ? '' : 's'}',
                 style: TextStyle(
                     fontFamily: kFontMono,
                     fontSize: 11,
@@ -158,7 +157,9 @@ class _TablesHistoryScreenState extends ConsumerState<TablesHistoryScreen> {
         const SizedBox(height: 4),
         // ── Body: grid, or one table's timeline ───────────────────────
         Expanded(
-          child: table != null ? _tableTimeline(context, table) : _grid(context),
+          child: table != null
+              ? _tableTimeline(context, table, orders)
+              : _grid(context, tables, orders),
         ),
       ]),
     );
@@ -172,7 +173,6 @@ class _TablesHistoryScreenState extends ConsumerState<TablesHistoryScreen> {
           ? null
           : () {
               setState(() => _preset = value);
-              _load(quiet: true);
             },
       borderRadius: BorderRadius.circular(99),
       child: Container(
@@ -195,9 +195,10 @@ class _TablesHistoryScreenState extends ConsumerState<TablesHistoryScreen> {
 
   // ── The room: one card per table ───────────────────────────────────────
 
-  Widget _grid(BuildContext context) {
+  Widget _grid(BuildContext context, List<CafeTable> tables,
+      List<FufutOrder> allOrders) {
     final pal = Pal.of(context);
-    if (_tables.isEmpty) {
+    if (tables.isEmpty) {
       return ListView(children: [
         const SizedBox(height: 100),
         const EmptyState(
@@ -217,10 +218,10 @@ class _TablesHistoryScreenState extends ConsumerState<TablesHistoryScreen> {
           crossAxisSpacing: 10,
           childAspectRatio: 1.5,
         ),
-        itemCount: _tables.length,
+        itemCount: tables.length,
         itemBuilder: (context, i) {
-          final t = _tables[i];
-          final orders = _ordersFor(t);
+          final t = tables[i];
+          final orders = _ordersFor(t, allOrders);
           final revenue = _revenueOf(orders);
           final unpaid = orders
               .where((o) =>
@@ -299,9 +300,10 @@ class _TablesHistoryScreenState extends ConsumerState<TablesHistoryScreen> {
 
   // ── One table: the ordered timeline of the window ──────────────────────
 
-  Widget _tableTimeline(BuildContext context, CafeTable t) {
+  Widget _tableTimeline(
+      BuildContext context, CafeTable t, List<FufutOrder> allOrders) {
     final pal = Pal.of(context);
-    final orders = _ordersFor(t);
+    final orders = _ordersFor(t, allOrders);
     return Column(children: [
       // Table header — back, name, window totals.
       Container(

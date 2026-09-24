@@ -2,6 +2,11 @@
 /// versioning, cost & margin, "can we make it" capacity and history. Barista
 /// sees drink recipes read-only (lib/drinks filter); manager + head-chef
 /// create and revise.
+///
+/// Tier-2: recipes + stock + units arrive in one screen-scoped
+/// FutureProvider; the menu rides the shared menuProvider (the register and
+/// boards watch the same catalogue). The session is READ inside the
+/// provider, never watched (the fetch must not rebuild on its own echo).
 library;
 
 import 'package:flutter/material.dart';
@@ -10,11 +15,36 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../api/api_client.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
+import '../state/catalog_providers.dart';
 import '../state/roles.dart';
 import '../theme.dart';
 import '../widgets/backoffice.dart';
 import '../widgets/common.dart';
 import '../widgets/dashboard.dart';
+
+/// Recipes + stock + units in one pull — the editor's ingredient lines need
+/// the catalogue and its unit dimensions alongside the bills of materials.
+typedef RecipesData = ({
+  List<RecipeRow> rows,
+  List<InventoryItem> stock,
+  List<UnitRow> units,
+});
+
+final recipesDataProvider = FutureProvider<RecipesData>((ref) async {
+  final app = ref.read(appStateProvider);
+  try {
+    final results = await Future.wait<dynamic>(
+        [app.api.recipes(), app.api.inventory(), app.api.units()]);
+    return (
+      rows: results[0] as List<RecipeRow>,
+      stock: results[1] as List<InventoryItem>,
+      units: results[2] as List<UnitRow>,
+    );
+  } on ApiError catch (e) {
+    if (e.isAuthError) await app.sessionExpired();
+    rethrow;
+  }
+});
 
 class RecipesScreen extends ConsumerStatefulWidget {
   const RecipesScreen({super.key});
@@ -24,61 +54,28 @@ class RecipesScreen extends ConsumerStatefulWidget {
 }
 
 class _RecipesScreenState extends ConsumerState<RecipesScreen> {
-  List<RecipeRow> _rows = [];
-  List<MenuItem> _menu = [];
-  List<InventoryItem> _stock = [];
-  List<UnitRow> _units = [];
-  bool _loading = true;
-  Object? _error;
   String _filter = 'all';
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
 
   String get _role => ref.read(appStateProvider).roleKey ?? '';
   bool get _isBarista => _role == 'barista';
   bool get _canWrite => _role == 'manager' || _role == 'head-chef';
 
+  void _reload() => ref.invalidate(recipesDataProvider);
+
   /// Barista scope: drink recipes only (category or name reads as a drink).
-  bool _isDrinkName(String name) {
-    final cat = _menu
+  bool _isDrinkName(List<MenuItem> menu, String name) {
+    final cat = menu
         .where((m) => m.name == name)
         .map((m) => m.category)
         .firstOrNull ?? '';
     return nameIsDrink(cat, name);
   }
 
-  Future<void> _load({bool quiet = false}) async {
-    final app = ref.read(appStateProvider);
-    if (!quiet) setState(() { _loading = true; _error = null; });
-    try {
-      final results = await Future.wait<dynamic>(
-          [app.api.recipes(), app.api.menu(), app.api.inventory(), app.api.units()]);
-      final rows = results[0] as List<RecipeRow>;
-      final menu = results[1] as List<MenuItem>;
-      final stock = results[2] as List<InventoryItem>;
-      final units = results[3] as List<UnitRow>;
-      if (!mounted) return;
-      setState(() {
-        _rows = rows; _menu = menu; _stock = stock; _units = units;
-        _loading = false;
-      });
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) { await app.sessionExpired(); return; }
-      setState(() { _loading = false; _error = e; });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _error = e; });
+  List<RecipeRow> _filtered(List<RecipeRow> all, List<MenuItem> menu) {
+    var rows = all;
+    if (_isBarista) {
+      rows = rows.where((r) => _isDrinkName(menu, r.menuItemName)).toList();
     }
-  }
-
-  List<RecipeRow> get _filtered {
-    var rows = _rows;
-    if (_isBarista) rows = rows.where((r) => _isDrinkName(r.menuItemName)).toList();
     switch (_filter) {
       case 'provisional':
         return rows.where((r) => r.provisional).toList();
@@ -90,17 +87,17 @@ class _RecipesScreenState extends ConsumerState<RecipesScreen> {
   }
 
   /// Menu items with no recipe at all — the coverage banner's list.
-  List<MenuItem> get _uncovered {
-    final covered = _rows.map((r) => r.menuItemId).toSet();
-    var items = _menu;
+  List<MenuItem> _uncovered(List<RecipeRow> rows, List<MenuItem> menu) {
+    final covered = rows.map((r) => r.menuItemId).toSet();
+    var items = menu;
     if (_isBarista) {
       items = items.where((m) => nameIsDrink(m.category, m.name)).toList();
     }
     return items.where((m) => !covered.contains(m.id)).toList();
   }
 
-  double get _avgMargin {
-    final priced = _filtered.where((r) => r.price > 0 && r.totalCost > 0);
+  double _avgMargin(List<RecipeRow> rows) {
+    final priced = rows.where((r) => r.price > 0 && r.totalCost > 0);
     if (priced.isEmpty) return 0;
     return priced.map((r) => r.grossMarginPct).reduce((a, b) => a + b) /
         priced.length;
@@ -210,16 +207,20 @@ class _RecipesScreenState extends ConsumerState<RecipesScreen> {
   Future<void> _editor({RecipeRow? edit}) async {
     final messenger = ScaffoldMessenger.of(context);
     final app = ref.read(appStateProvider);
+    final data = ref.read(recipesDataProvider).value;
+    final menu = ref.read(menuProvider).value ?? const <MenuItem>[];
+    final stock = data?.stock ?? const <InventoryItem>[];
+    final units = data?.units ?? const <UnitRow>[];
     final items = _isBarista
-        ? _menu.where((m) => nameIsDrink(m.category, m.name)).toList()
-        : _menu;
+        ? menu.where((m) => nameIsDrink(m.category, m.name)).toList()
+        : menu;
     String menuItemId =
         edit?.menuItemId ?? (items.isNotEmpty ? items.first.id : '');
     final yieldC = TextEditingController(
         text: edit?.yieldQty.toStringAsFixed(0) ?? '1');
     final notesC = TextEditingController(text: edit?.notes ?? '');
     final lines = <_RecipeLineInput>[
-      _RecipeLineInput(stock: _stock, units: _units),
+      _RecipeLineInput(stock: stock, units: units),
     ];
 
     await showFormSheet(
@@ -262,7 +263,7 @@ class _RecipesScreenState extends ConsumerState<RecipesScreen> {
                 for (final l in lines) l.build(ctx),
                 RowAction('+ Add ingredient line',
                     () => setSheet(() => lines.add(_RecipeLineInput(
-                        stock: _stock, units: _units)))),
+                        stock: stock, units: units)))),
               ],
             ),
           ),
@@ -294,7 +295,7 @@ class _RecipesScreenState extends ConsumerState<RecipesScreen> {
             lines: payloadLines,
           );
           showInfoOn(messenger, 'Recipe saved — stock will move with sales');
-          await _load(quiet: true);
+          _reload();
         } catch (e) {
           showErrorOn(messenger, e);
           rethrow;
@@ -308,18 +309,24 @@ class _RecipesScreenState extends ConsumerState<RecipesScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading && _rows.isEmpty) {
+    final dataAsync = ref.watch(recipesDataProvider);
+    final menuAsync = ref.watch(menuProvider);
+    final menu = menuAsync.value ?? const <MenuItem>[];
+    final data = dataAsync.value;
+    final allRows = data?.rows ?? const <RecipeRow>[];
+    if (dataAsync.isLoading && allRows.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (_error != null && _rows.isEmpty) {
-      return LoadError(error: _error!, onRetry: () => _load());
+    if (dataAsync.hasError && allRows.isEmpty) {
+      return LoadError(error: dataAsync.error!, onRetry: _reload);
     }
     final pal = Pal.of(context);
-    final rows = _filtered;
-    final uncovered = _uncovered;
+    final rows = _filtered(allRows, menu);
+    final uncovered = _uncovered(allRows, menu);
+    final avgMargin = _avgMargin(rows);
 
     return RefreshIndicator(
-      onRefresh: () => _load(quiet: true),
+      onRefresh: () async => _reload(),
       child: ListView(
         padding: const EdgeInsets.all(14),
         children: [
@@ -366,8 +373,8 @@ class _RecipesScreenState extends ConsumerState<RecipesScreen> {
             const SizedBox(width: 8),
             Expanded(
                 child: KpiCard(label: 'Avg margin',
-                    value: '${_avgMargin.toStringAsFixed(0)}%',
-                    valueColor: _avgMargin >= 60 ? pal.success : pal.warning,
+                    value: '${avgMargin.toStringAsFixed(0)}%',
+                    valueColor: avgMargin >= 60 ? pal.success : pal.warning,
                     icon: Icons.percent_outlined)),
           ]),
           const SizedBox(height: 10),

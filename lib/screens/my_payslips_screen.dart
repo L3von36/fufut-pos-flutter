@@ -5,6 +5,11 @@
 /// line items — base, overtime, bonuses, deductions, income tax, pension,
 /// net pay, tips earned. Everything is server-scoped to the session; you
 /// only ever see your own money.
+///
+/// Tier-2: one screen-scoped FutureProvider — the payload is server-scoped
+/// to the session, so there is no filter key. The session is READ inside
+/// the provider, never watched (the fetch must not rebuild on its own
+/// echo).
 library;
 
 import 'package:flutter/material.dart';
@@ -16,6 +21,16 @@ import '../state/app_state.dart';
 import '../theme.dart';
 import '../widgets/dashboard.dart';
 
+final payrollMeProvider = FutureProvider<PayrollMe>((ref) async {
+  final app = ref.read(appStateProvider);
+  try {
+    return await app.api.payrollMe();
+  } on ApiError catch (e) {
+    if (e.isAuthError) await app.sessionExpired();
+    rethrow;
+  }
+});
+
 class MyPayslipsScreen extends ConsumerStatefulWidget {
   const MyPayslipsScreen({super.key});
 
@@ -24,47 +39,22 @@ class MyPayslipsScreen extends ConsumerStatefulWidget {
 }
 
 class _MyPayslipsScreenState extends ConsumerState<MyPayslipsScreen> {
-  PayrollMe? _payroll;
-  bool _loading = true;
-  Object? _error;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  Future<void> _load({bool quiet = false}) async {
-    final app = ref.read(appStateProvider);
-    if (!quiet) setState(() { _loading = true; _error = null; });
-    try {
-      final p = await app.api.payrollMe();
-      if (!mounted) return;
-      setState(() { _payroll = p; _loading = false; });
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) {
-        await app.sessionExpired();
-        return;
-      }
-      setState(() { _loading = false; _error = e; });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _error = e; });
-    }
-  }
+  void _reload() => ref.invalidate(payrollMeProvider);
 
   @override
   Widget build(BuildContext context) {
-    if (_loading && _payroll == null) return const DashboardSkeleton();
-    if (_error != null && _payroll == null) {
-      return LoadError(error: _error!, onRetry: () => _load());
+    final payrollAsync = ref.watch(payrollMeProvider);
+    if (payrollAsync.isLoading && payrollAsync.value == null) {
+      return const DashboardSkeleton();
+    }
+    if (payrollAsync.hasError && payrollAsync.value == null) {
+      return LoadError(error: payrollAsync.error!, onRetry: _reload);
     }
     final pal = Pal.of(context);
-    final p = _payroll!;
+    final p = payrollAsync.value!;
 
     return RefreshIndicator(
-      onRefresh: () => _load(quiet: true),
+      onRefresh: () async => _reload(),
       child: ListView(
         padding: const EdgeInsets.all(14),
         children: [

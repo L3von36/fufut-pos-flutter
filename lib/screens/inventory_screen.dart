@@ -5,6 +5,11 @@
 ///
 /// Manager + head-chef add/edit/adjust; delete is manager-only; everyone
 /// else with the grant reads.
+///
+/// Tier-2: the catalogue fetch lives in a screen-scoped FutureProvider; the
+/// session is READ inside the provider, never watched (the fetch must not
+/// rebuild on its own session echo). Search and the low-stock toggle are
+/// client-side, so the provider key is the whole catalogue.
 library;
 
 import 'package:flutter/material.dart';
@@ -24,6 +29,16 @@ const kInventoryCategories = [
   'Beverages', 'Packaging', 'Cleaning', 'Other',
 ];
 
+final inventoryProvider = FutureProvider<List<InventoryItem>>((ref) async {
+  final app = ref.read(appStateProvider);
+  try {
+    return await app.api.inventory();
+  } on ApiError catch (e) {
+    if (e.isAuthError) await app.sessionExpired();
+    rethrow;
+  }
+});
+
 class InventoryScreen extends ConsumerStatefulWidget {
   const InventoryScreen({super.key});
 
@@ -32,17 +47,8 @@ class InventoryScreen extends ConsumerStatefulWidget {
 }
 
 class _InventoryScreenState extends ConsumerState<InventoryScreen> {
-  List<InventoryItem> _rows = [];
-  bool _loading = true;
-  Object? _error;
   bool _lowOnly = false;
   final _search = TextEditingController();
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
 
   @override
   void dispose() {
@@ -54,26 +60,11 @@ class _InventoryScreenState extends ConsumerState<InventoryScreen> {
   bool get _canWrite => _role == 'manager' || _role == 'head-chef';
   bool get _canDelete => _role == 'manager';
 
-  Future<void> _load({bool quiet = false}) async {
-    final app = ref.read(appStateProvider);
-    if (!quiet) setState(() { _loading = true; _error = null; });
-    try {
-      final rows = await app.api.inventory();
-      if (!mounted) return;
-      setState(() { _rows = rows; _loading = false; });
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) { await app.sessionExpired(); return; }
-      setState(() { _loading = false; _error = e; });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _error = e; });
-    }
-  }
+  void _reload() => ref.invalidate(inventoryProvider);
 
-  List<InventoryItem> get _filtered {
+  List<InventoryItem> _filtered(List<InventoryItem> all) {
     final q = _search.text.trim().toLowerCase();
-    final rows = _rows.where((i) {
+    final rows = all.where((i) {
       if (_lowOnly && !i.isLow) return false;
       if (q.isNotEmpty &&
           !i.name.toLowerCase().contains(q) &&
@@ -142,7 +133,7 @@ class _InventoryScreenState extends ConsumerState<InventoryScreen> {
             });
           }
           showInfoOn(messenger, edit == null ? 'Item added' : 'Item updated');
-          await _load(quiet: true);
+          _reload();
         } catch (e) {
           showErrorOn(messenger, e);
           rethrow;
@@ -182,7 +173,7 @@ class _InventoryScreenState extends ConsumerState<InventoryScreen> {
         try {
           await app.api.adjustInventory(item.id, target, reasonC.text);
           showInfoOn(messenger, 'Stock adjusted');
-          await _load(quiet: true);
+          _reload();
         } catch (e) {
           showErrorOn(messenger, e);
           rethrow;
@@ -212,7 +203,7 @@ class _InventoryScreenState extends ConsumerState<InventoryScreen> {
     try {
       await app.api.deleteInventory(item.id);
       showInfoOn(messenger, 'Item deleted');
-      await _load(quiet: true);
+      _reload();
     } catch (e) {
       showErrorOn(messenger, e);
     }
@@ -223,18 +214,20 @@ class _InventoryScreenState extends ConsumerState<InventoryScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading && _rows.isEmpty) {
+    final rowsAsync = ref.watch(inventoryProvider);
+    final all = rowsAsync.value ?? const <InventoryItem>[];
+    if (rowsAsync.isLoading && all.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (_error != null && _rows.isEmpty) {
-      return LoadError(error: _error!, onRetry: () => _load());
+    if (rowsAsync.hasError && all.isEmpty) {
+      return LoadError(error: rowsAsync.error!, onRetry: _reload);
     }
     final pal = Pal.of(context);
-    final rows = _filtered;
-    final lowCount = _rows.where((i) => i.isLow).length;
+    final rows = _filtered(all);
+    final lowCount = all.where((i) => i.isLow).length;
 
     return RefreshIndicator(
-      onRefresh: () => _load(quiet: true),
+      onRefresh: () async => _reload(),
       child: ListView(
         padding: const EdgeInsets.all(14),
         children: [
