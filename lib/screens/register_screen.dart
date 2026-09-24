@@ -1,12 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
-import '../api/api_client.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
 import '../state/cart.dart';
+import '../state/catalog_providers.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 import 'cart_sheet.dart';
@@ -26,64 +25,22 @@ class RegisterScreen extends ConsumerStatefulWidget {
 }
 
 class _RegisterScreenState extends ConsumerState<RegisterScreen> {
-  List<MenuItem> _menu = const [];
-  bool _loading = true;
-  bool _offline = false;
   String _category = 'All';
   String _query = '';
   String _course = 'main';
-  bool _listMode = false; // density toggle, persisted like the web
   final _search = TextEditingController();
 
-  @override
-  void initState() {
-    super.initState();
-    _load();
-    _restoreDensity();
-  }
+  // The menu is the shared [menuProvider] — the same fetch the boards and
+  // the analytics panel ride (the till used to keep its own copy, the fifth
+  // independent menu fetch in the app). Density is the persisted
+  // [menuDensityProvider]; no raw SharedPreferences access in screens.
+  List<MenuItem> get _menu =>
+      ref.watch(menuProvider).value ?? const <MenuItem>[];
+  bool get _listMode => ref.watch(menuDensityProvider);
 
-  Future<void> _restoreDensity() async {
-    final prefs = await SharedPreferences.getInstance();
-    if (mounted) {
-      setState(() => _listMode =
-          (prefs.getString('fufut.pos.menuDensity') == 'list'));
-    }
-  }
+  void _toggleDensity() => ref.read(menuDensityProvider.notifier).toggle();
 
-  Future<void> _toggleDensity() async {
-    setState(() => _listMode = !_listMode);
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(
-        'fufut.pos.menuDensity', _listMode ? 'list' : 'grid');
-  }
-
-  Future<void> _load() async {
-    final app = ref.read(appStateProvider);
-    setState(() {
-      _loading = true;
-      _offline = false;
-    });
-    try {
-      final menu = await app.api.menu();
-      if (!mounted) return;
-      setState(() {
-        _menu = menu;
-        _loading = false;
-      });
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) {
-        await app.sessionExpired();
-        return;
-      }
-      setState(() => _loading = false);
-      showError(context, e);
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _loading = false);
-      showError(context, e);
-    }
-  }
+  Future<void> _reload() => ref.refresh(menuProvider.future);
 
   List<String> get _categories {
     final cats = _menu.map((m) => m.category).toSet().toList()..sort();
@@ -184,19 +141,21 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
   }
 
   Widget _buildMenuColumn(CartState cart, Pal pal) {
+    final menuAsync = ref.watch(menuProvider);
+    final loading = menuAsync.isLoading && _menu.isEmpty;
     return Column(
       children: [
         Expanded(
-          child: _loading
+          child: loading
               ? const Center(child: CircularProgressIndicator())
               : RefreshIndicator(
-                  onRefresh: _load,
+                  onRefresh: _reload,
                   child: ListView(
                     physics: const AlwaysScrollableScrollPhysics(),
                     padding: const EdgeInsets.fromLTRB(12, 8, 12, 120),
                     children: [
-                      if (_offline)
-                        _OfflineBanner(onRetry: _load),
+                      if (menuAsync.hasError)
+                        _OfflineBanner(onRetry: _reload),
                       if (cart.orderType == 'dine-in' &&
                           cart.tableNum.isNotEmpty) ...[
                         TableContextBar(

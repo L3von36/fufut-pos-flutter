@@ -5,6 +5,7 @@ import '../api/api_client.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
 import '../state/cart.dart';
+import '../state/catalog_providers.dart';
 import '../theme.dart';
 import '../widgets/backoffice.dart';
 import '../widgets/common.dart';
@@ -27,25 +28,12 @@ class ReviewSheet extends ConsumerStatefulWidget {
 }
 
 class _ReviewSheetState extends ConsumerState<ReviewSheet> {
-  List<CafeTable> _tables = [];
   bool _sending = false;
 
-  @override
-  void initState() {
-    super.initState();
-    _loadTables();
-  }
-
-  Future<void> _loadTables() async {
-    final app = ref.read(appStateProvider);
-    try {
-      final t = await app.api.tables();
-      if (!mounted) return;
-      setState(() => _tables = t);
-    } on ApiError {
-      // Degrade to free-text — ordering must never block on the floor plan.
-    } catch (_) {}
-  }
+  /// The shared tables fetch — the review sheet used to keep its own copy
+  /// (the eighth independent tables fetch in the app).
+  List<CafeTable> get _tables =>
+      ref.watch(tablesOnceProvider).value ?? const <CafeTable>[];
 
   @override
   Widget build(BuildContext context) {

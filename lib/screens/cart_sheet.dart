@@ -6,6 +6,7 @@ import '../api/api_client.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
 import '../state/cart.dart';
+import '../state/catalog_providers.dart';
 import '../state/roles.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
@@ -122,29 +123,13 @@ class CartPanel extends ConsumerStatefulWidget {
 }
 
 class _CartPanelState extends ConsumerState<CartPanel> {
-  List<CafeTable> _tables = [];
   bool _sending = false;
   bool _detailsOpen = false;
 
-  @override
-  void initState() {
-    super.initState();
-    _loadTables();
-  }
-
-  Future<void> _loadTables() async {
-    final app = ref.read(appStateProvider);
-    try {
-      final t = await app.api.tables();
-      if (!mounted) return;
-      setState(() => _tables = t);
-    } on ApiError {
-      // The table picker degrades to a free-text field when /tables is not
-      // readable for this role — ordering must never block on the floor plan.
-    } catch (_) {
-      // Same: fail soft.
-    }
-  }
+  /// The shared tables fetch — every picker in the app rides one provider
+  /// (this panel used to keep a private copy, the seventh tables fetch).
+  List<CafeTable> get _tables =>
+      ref.watch(tablesOnceProvider).value ?? const <CafeTable>[];
 
   @override
   Widget build(BuildContext context) {
@@ -526,20 +511,9 @@ class _CartPanelState extends ConsumerState<CartPanel> {
       if (match.status.toLowerCase() == 'occupied') return true;
       await app.api.claimTable(match, newSeating: !cart.addingRound);
       if (mounted) {
-        // Keep the fresh row so a second round does not re-claim.
-        final chosen = match;
-        setState(() {
-          final i = _tables.indexWhere((t) => t.id == chosen.id);
-          if (i >= 0) {
-            _tables[i] = CafeTable(
-              id: chosen.id,
-              number: chosen.number,
-              section: chosen.section,
-              status: 'occupied',
-              seats: chosen.seats,
-            );
-          }
-        });
+        // Refresh the shared rows so a second round does not re-claim
+        // (the claimed table reads back as occupied).
+        ref.invalidate(tablesOnceProvider);
       }
       return true;
     } on ApiError catch (e) {

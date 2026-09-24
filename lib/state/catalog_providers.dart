@@ -14,7 +14,9 @@
 library;
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
+import '../api/api_client.dart';
 import '../models/models.dart';
 import 'app_state.dart';
 import 'session_providers.dart';
@@ -28,11 +30,59 @@ import 'session_providers.dart';
 /// the session here would rebuild the provider on its own echo.
 final menuProvider = FutureProvider<List<MenuItem>>((ref) async {
   final api = ref.read(fufutApiProvider);
-  final menu = await api.menu();
-  // The station router's session cache (AppState.catByName) adopts the
-  // fresh copy so EVERY screen classifies alike, not just the watchers.
-  ref.read(appStateProvider).adoptCategories(menu);
-  return menu;
+  final app = ref.read(appStateProvider);
+  try {
+    final menu = await api.menu();
+    // The station router's session cache (AppState.catByName) adopts the
+    // fresh copy so EVERY screen classifies alike, not just the watchers.
+    app.adoptCategories(menu);
+    return menu;
+  } on ApiError catch (e) {
+    if (e.isAuthError) await app.sessionExpired();
+    rethrow;
+  }
+});
+
+/// The register screen's density toggle (grid ⇄ list), persisted per device
+/// like the web's localStorage flag. true = list.
+class MenuDensityNotifier extends Notifier<bool> {
+  static const _key = 'fufut.pos.menuDensity';
+
+  @override
+  bool build() {
+    _restore();
+    return false;
+  }
+
+  Future<void> _restore() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (!ref.mounted) return;
+      state = prefs.getString(_key) == 'list';
+    } catch (_) {
+      // Unreadable prefs: stay in grid (the default).
+    }
+  }
+
+  void toggle() {
+    final next = !state;
+    state = next;
+    SharedPreferences.getInstance()
+        .then((p) => p.setString(_key, next ? 'list' : 'grid'));
+  }
+}
+
+final menuDensityProvider =
+    NotifierProvider<MenuDensityNotifier, bool>(MenuDensityNotifier.new);
+
+/// Tables for PICKERS — one shared fetch for every sheet that needs a table
+/// dropdown (the cart's table picker, the review sheet, reservations).
+/// Read, not watched: a picker refetches on invalidate() or remount, never
+/// on the session object's every notify. A refused fetch (a role without
+/// the tables grant) is a real error — the pickers degrade to free text.
+final tablesOnceProvider = FutureProvider<List<CafeTable>>((ref) async {
+  final api = ref.read(fufutApiProvider);
+  return api.tables();
 });
 
 /// name → category, lowercased — the station router's lookup table

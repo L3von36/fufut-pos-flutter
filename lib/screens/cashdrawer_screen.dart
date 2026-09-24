@@ -23,6 +23,7 @@ import '../api/api_client.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
 import '../state/roles.dart';
+import '../state/session_providers.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/dashboard.dart';
@@ -36,59 +37,144 @@ class CashDrawerScreen extends ConsumerStatefulWidget {
   ConsumerState<CashDrawerScreen> createState() => _CashDrawerScreenState();
 }
 
-class _CashDrawerScreenState extends ConsumerState<CashDrawerScreen> {
-  DashboardStats? _stats;
-  CashDrawerState? _drawer;
-  List<DrawerSession> _history = [];
-  List<ShiftLogEntry> _shiftLog = [];
-  bool _loading = true;
-  bool _showHistory = false;
-  Object? _error;
+/// The till's whole read model — one feed, one fetch pass.
+///
+/// Before this, the screen kept four setState fields + a 45s poll, and the
+/// "Recent Payments" section ran `FutureBuilder(future: app.api.orders())`
+/// inline — the future was re-created on EVERY rebuild, so every drawer
+/// toast refetched the whole order book. Now the feed fetches all five
+/// reads in one pass (payments included), the poll refreshes the bundle,
+/// and rebuilds cost nothing.
+class CashDrawerFeedState {
+  final DashboardStats? stats;
+  final CashDrawerState? drawer;
+  final List<DrawerSession> history;
+  final List<ShiftLogEntry> shiftLog;
+  final List<FufutOrder> recentPayments;
+  final bool loading;
+  final Object? error;
+
+  const CashDrawerFeedState({
+    this.stats,
+    this.drawer,
+    this.history = const [],
+    this.shiftLog = const [],
+    this.recentPayments = const [],
+    this.loading = true,
+    this.error,
+  });
+
+  CashDrawerFeedState copyWith({
+    DashboardStats? stats,
+    CashDrawerState? drawer,
+    List<DrawerSession>? history,
+    List<ShiftLogEntry>? shiftLog,
+    List<FufutOrder>? recentPayments,
+    bool? loading,
+    Object? error,
+    bool clearError = false,
+  }) {
+    return CashDrawerFeedState(
+      stats: stats ?? this.stats,
+      drawer: drawer ?? this.drawer,
+      history: history ?? this.history,
+      shiftLog: shiftLog ?? this.shiftLog,
+      recentPayments: recentPayments ?? this.recentPayments,
+      loading: loading ?? this.loading,
+      error: clearError ? null : (error ?? this.error),
+    );
+  }
+}
+
+class CashDrawerFeedNotifier extends Notifier<CashDrawerFeedState> {
   Timer? _poll;
+  bool _appPaused = false;
+
+  static const _interval = Duration(seconds: 45);
 
   @override
-  void initState() {
-    super.initState();
-    _load();
-    _poll = Timer.periodic(const Duration(seconds: 45), (_) => _load(quiet: true));
+  CashDrawerFeedState build() {
+    ref.onDispose(_teardown);
+    _poll = Timer.periodic(_interval, (_) {
+      if (!_appPaused) _refresh();
+    });
+    _refresh();
+    return const CashDrawerFeedState();
   }
 
-  @override
-  void dispose() {
-    _poll?.cancel();
-    super.dispose();
-  }
-
-  Future<void> _load({bool quiet = false}) async {
+  Future<void> _refresh() async {
     final app = ref.read(appStateProvider);
-    if (!quiet) setState(() { _loading = true; _error = null; });
     try {
       final results = await Future.wait([
         app.api.reportsDashboard(),
         app.api.cashdrawer(),
         app.api.cashdrawerHistory(),
         app.api.cashdrawerShiftLog(),
+        app.api.orders(),
       ]);
-      if (!mounted) return;
-      setState(() {
-        _stats = results[0] as DashboardStats;
-        _drawer = results[1] as CashDrawerState;
-        _history = results[2] as List<DrawerSession>;
-        _shiftLog = results[3] as List<ShiftLogEntry>;
-        _loading = false;
-      });
+      if (!ref.mounted) return;
+      state = CashDrawerFeedState(
+        stats: results[0] as DashboardStats,
+        drawer: results[1] as CashDrawerState,
+        history: results[2] as List<DrawerSession>,
+        shiftLog: results[3] as List<ShiftLogEntry>,
+        recentPayments:
+            (results[4] as List<FufutOrder>).where((o) => o.isPaid).toList(),
+        loading: false,
+      );
     } on ApiError catch (e) {
-      if (!mounted) return;
+      if (!ref.mounted) return;
       if (e.isAuthError) {
         await app.sessionExpired();
         return;
       }
-      setState(() { _loading = false; _error = e; });
+      state = state.copyWith(loading: false, error: e);
     } catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _error = e; });
+      if (!ref.mounted) return;
+      state = state.copyWith(loading: false, error: e);
     }
   }
+
+  Future<void> refresh() => _refresh();
+
+  void appPaused() {
+    _appPaused = true;
+    _poll?.cancel();
+  }
+
+  void appResumed() {
+    _appPaused = false;
+    _poll = Timer.periodic(_interval, (_) {
+      if (!_appPaused) _refresh();
+    });
+    _refresh();
+  }
+
+  void _teardown() {
+    _poll?.cancel();
+    _poll = null;
+  }
+}
+
+final cashDrawerFeedProvider =
+    NotifierProvider<CashDrawerFeedNotifier, CashDrawerFeedState>(
+        CashDrawerFeedNotifier.new);
+
+class _CashDrawerScreenState extends ConsumerState<CashDrawerScreen> {
+  bool _showHistory = false;
+
+  CashDrawerFeedState get _feed => ref.read(cashDrawerFeedProvider);
+
+  // Feed-backed read model (build() watches the provider; these read the
+  // same snapshot in the helpers below).
+  DashboardStats? get _stats => _feed.stats;
+  CashDrawerState? get _drawer => _feed.drawer;
+  List<DrawerSession> get _history => _feed.history;
+  List<ShiftLogEntry> get _shiftLog => _feed.shiftLog;
+  bool get _loading => _feed.loading;
+  Object? get _error => _feed.error;
+
+  Future<void> _reload() => ref.read(cashDrawerFeedProvider.notifier).refresh();
 
   // ── Drawer operations ─────────────────────────────────────────────────────
 
@@ -101,7 +187,7 @@ class _CashDrawerScreenState extends ConsumerState<CashDrawerScreen> {
       await app.api.openDrawer(amount);
       showInfoOn(messenger, 'Drawer opened with ${money(amount)} float');
       app.refreshTill(); // the whole app's service gates flip with the till
-      await _load(quiet: true);
+      await _reload();
     } catch (e) {
       showErrorOn(messenger, e);
     }
@@ -121,7 +207,7 @@ class _CashDrawerScreenState extends ConsumerState<CashDrawerScreen> {
       app.refreshTill(); // ordering and settlement gates close with it
       // Z-report right after close, like the web's flow.
       await _showZReport(active.id);
-      await _load(quiet: true);
+      await _reload();
     } on ApiError catch (e) {
       if (e.isAuthError && mounted) {
         await app.sessionExpired();
@@ -147,7 +233,7 @@ class _CashDrawerScreenState extends ConsumerState<CashDrawerScreen> {
       }
       showInfoOn(messenger,
           '${kind == 'in' ? 'Paid in' : 'Paid out'} ${money(amount)} — $reason');
-      await _load(quiet: true);
+      await _reload();
     } catch (e) {
       showErrorOn(messenger, e);
     }
@@ -161,7 +247,7 @@ class _CashDrawerScreenState extends ConsumerState<CashDrawerScreen> {
     try {
       await app.api.popDrawer(reason);
       showInfoOn(messenger, 'Drawer popped');
-      await _load(quiet: true);
+      await _reload();
     } catch (e) {
       showErrorOn(messenger, e);
     }
@@ -677,9 +763,10 @@ class _CashDrawerScreenState extends ConsumerState<CashDrawerScreen> {
 
   @override
   Widget build(BuildContext context) {
+    ref.watch(cashDrawerFeedProvider);
     if (_loading && _stats == null) return const DashboardSkeleton();
     if (_error != null && _stats == null) {
-      return LoadError(error: _error!, onRetry: () => _load());
+      return LoadError(error: _error!, onRetry: () => _reload());
     }
     final s = _stats;
     final pal = Pal.of(context);
@@ -701,7 +788,7 @@ class _CashDrawerScreenState extends ConsumerState<CashDrawerScreen> {
     final closedVar = closedToday.fold<double>(0, (s, d) => s + d.variance);
 
     return RefreshIndicator(
-      onRefresh: () => _load(quiet: true),
+      onRefresh: _reload,
       child: ListView(
         padding: const EdgeInsets.all(14),
         children: [
@@ -1059,56 +1146,43 @@ class _CashDrawerScreenState extends ConsumerState<CashDrawerScreen> {
 
   Widget _recentPayments() {
     final pal = Pal.of(context);
-    final app = ref.read(appStateProvider);
-    final paid = app.roleKey == 'cashier' || app.roleKey == 'manager';
+    final paid = ref.watch(roleProvider) == 'cashier' ||
+        ref.watch(roleProvider) == 'manager';
     if (!paid) return const SizedBox.shrink();
-    return FutureBuilder<List<FufutOrder>>(
-      future: app.api.orders(),
-      builder: (context, snap) {
-        final paidOrders =
-            (snap.data ?? const <FufutOrder>[]).where((o) => o.isPaid).toList();
-        return SectionCard(
-          title: 'Recent Payments',
-          trailing: TextButton(
-            onPressed: () => widget.onNavigate?.call(NavKey.openChecks),
-            style: TextButton.styleFrom(
-                visualDensity: VisualDensity.compact,
-                padding: const EdgeInsets.symmetric(horizontal: 6)),
-            child: const Text('Open checks'),
-          ),
-          children: [
-            if (snap.connectionState != ConnectionState.done)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 12),
-                child: Center(
-                  child: SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2)),
-                ),
-              )
-            else if (paidOrders.isEmpty)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 12),
-                child: Center(
-                  child: Text('No payments recorded yet today',
-                      style: TextStyle(
-                          fontFamily: kFontBody,
-                          fontSize: 11.5,
-                          color: pal.faint)),
-                ),
-              )
-            else
-              for (final o in paidOrders.take(6))
-                ListRow(
-                  head: '${shortId(o.id)} · ${o.customer ?? 'Walk-in'}',
-                  rest: o.payment,
-                  trailing: money(o.total),
-                  trailingColor: pal.success,
-                ),
-          ],
-        );
-      },
+    // The feed's own snapshot — no inline FutureBuilder future here: the
+    // old one was re-created on every rebuild and refetched the whole
+    // order book each time.
+    final paidOrders = _feed.recentPayments;
+    return SectionCard(
+      title: 'Recent Payments',
+      trailing: TextButton(
+        onPressed: () => widget.onNavigate?.call(NavKey.openChecks),
+        style: TextButton.styleFrom(
+            visualDensity: VisualDensity.compact,
+            padding: const EdgeInsets.symmetric(horizontal: 6)),
+        child: const Text('Open checks'),
+      ),
+      children: [
+        if (paidOrders.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            child: Center(
+              child: Text('No payments recorded yet today',
+                  style: TextStyle(
+                      fontFamily: kFontBody,
+                      fontSize: 11.5,
+                      color: pal.faint)),
+            ),
+          )
+        else
+          for (final o in paidOrders.take(6))
+            ListRow(
+              head: '${shortId(o.id)} · ${o.customer ?? 'Walk-in'}',
+              rest: o.payment,
+              trailing: money(o.total),
+              trailingColor: pal.success,
+            ),
+      ],
     );
   }
 
