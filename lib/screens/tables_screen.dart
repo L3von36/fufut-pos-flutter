@@ -501,6 +501,7 @@ class _TablesScreenState extends ConsumerState<TablesScreen> {
           canOrder: canTakeTableOrders(app.roleKey),
           canEditTable: canEditTable(app.roleKey),
           canFree: canFreeTable(app.roleKey),
+          canServe: canMarkServed(app.roleKey),
           servers: _assignableServers(),
           // The web's openDetail fetch: this table's open checks only.
           onLoadOrders: () async {
@@ -533,8 +534,34 @@ class _TablesScreenState extends ConsumerState<TablesScreen> {
           onNewOrder: () => _newOrderForTable(t),
           onGoToCheckout: () => _goToCheckout(t),
           onShowQr: () => _generateQr(t),
+          onServeOrder: _serveOrder,
         ),
     );
+  }
+
+  /// The waiter's handoff word — fulfilled → served, from the table's own
+  /// detail sheet. Server law 3 refuses the write for roles without the
+  /// grant; the button only shows where the app already knows it is allowed.
+  /// Refreshes the floor + pending feeds so the badge and the pending panel
+  /// move the moment the tap lands.
+  Future<bool> _serveOrder(FufutOrder o) async {
+    final app = ref.read(appStateProvider);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await app.api.updateStatus(o, 'served');
+      showInfoOn(messenger, 'Order ${shortId(o.id)} served');
+      await ref.read(tablesFeedProvider.notifier).refreshTables();
+      await ref.read(tablesFeedProvider.notifier).refreshOrders();
+      ref.read(pendingOrdersProvider.notifier).refresh();
+      return true;
+    } on ApiError catch (e) {
+      if (e.isAuthError) await app.sessionExpired();
+      showErrorOn(messenger, e);
+      return false;
+    } catch (e) {
+      showErrorOn(messenger, e);
+      return false;
+    }
   }
 
   /// Roster of who can be assigned: active head-waiters, so the name stored
@@ -1840,7 +1867,6 @@ class _EmptyState extends StatelessWidget {
 
 class _DetailSheet extends StatefulWidget {
   final CafeTable table;
-
   /// The whole floor, so the hold banner reads the LIVE row the SSE keeps
   /// fresh rather than the copy the sheet was opened with (the web's
   /// detailHold computed).
@@ -1873,6 +1899,14 @@ class _DetailSheet extends StatefulWidget {
   final VoidCallback onGoToCheckout;
   final VoidCallback onShowQr;
 
+  /// Mark Served — the floor's moment (owner's flow, 2026-09): the kitchen
+  /// hands off with "picked up" (fulfilled) and the WAITER says "served".
+  /// Rendered on fulfilled checks right in the table's detail sheet, so the
+  /// waiter never has to hunt for the Orders screen to say it. Empty set
+  /// means this role cannot serve (server law 3 refuses anyway).
+  final bool canServe;
+  final Future<bool> Function(FufutOrder order) onServeOrder;
+
   const _DetailSheet({
     required this.table,
     required this.tables,
@@ -1894,6 +1928,8 @@ class _DetailSheet extends StatefulWidget {
     required this.onNewOrder,
     required this.onGoToCheckout,
     required this.onShowQr,
+    required this.canServe,
+    required this.onServeOrder,
   });
 
   @override
@@ -2316,6 +2352,12 @@ class _DetailSheetState extends State<_DetailSheet> {
                     payment: t.payment,
                     billRequestedAt: _billRequestedAt,
                     billRequestedBy: t.billRequestedBy,
+                    canServe: widget.canServe,
+                    onServe: (o) async {
+                      final ok = await widget.onServeOrder(o);
+                      if (ok && mounted) _loadOrders();
+                      return ok;
+                    },
                   ),
                 ),
               ],
@@ -2816,11 +2858,18 @@ class _DetailOrders extends StatelessWidget {
   final String billRequestedAt;
   final String? billRequestedBy;
 
+  /// Mark Served on fulfilled checks — the waiter's action, right where the
+  /// check is read. Null callback / false canServe hides it entirely.
+  final bool canServe;
+  final Future<bool> Function(FufutOrder order) onServe;
+
   const _DetailOrders({
     required this.orders,
     required this.payment,
     required this.billRequestedAt,
     required this.billRequestedBy,
+    required this.canServe,
+    required this.onServe,
   });
 
   @override
@@ -2951,6 +3000,21 @@ class _DetailOrders extends StatelessWidget {
                       ),
                     ],
                   ]),
+                  // The floor's handoff word: the kitchen already said
+                  // "picked up" (fulfilled) — this is where the waiter says
+                  // "served" without leaving the table they are standing at.
+                  if (canServe &&
+                      o.status.toLowerCase() == 'fulfilled' &&
+                      (o.paymentStatus ?? '').toLowerCase() != 'paid')
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: AsyncButton(
+                        onPressed: () => onServe(o),
+                        icon: Icons.room_service_rounded,
+                        label: 'Mark Served',
+                        height: 38,
+                      ),
+                    ),
                 ],
               ),
             ),

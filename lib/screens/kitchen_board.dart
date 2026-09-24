@@ -203,6 +203,23 @@ class _KitchenBoardState extends ConsumerState<KitchenBoard> {
     await ref.read(kitchenFeedProvider.notifier).refresh();
   }
 
+  /// Keep the acted ticket UNDER THE OWNER'S EYES. On a narrow board one
+  /// lane shows at a time; when a ticket advances it leaves the lane the
+  /// user is looking at, and "where did my ticket go" reads as "the wrong
+  /// ticket moved" — several identical Table-N tickets on the pass make it
+  /// worse. After any successful action, follow the ticket to the lane it
+  /// now lives in. Wide boards show all three lanes; the follow is a no-op
+  /// there. (Owner's report, 2026-09-24.)
+  void _followTicket(String orderId) {
+    if (!mounted) return;
+    for (final t in _tickets) {
+      if (t.order.id != orderId) continue;
+      final lane = _laneOf(t);
+      if (lane != _lane) setState(() => _lane = lane);
+      return;
+    }
+  }
+
   /// The station's lines of one ticket — FOOD only on the kitchen pass,
   /// DRINKS only on the bar board. Category first (menu lookup), name as
   /// the fallback for pre-category rows; the same rule the Orders screen
@@ -340,6 +357,7 @@ class _KitchenBoardState extends ConsumerState<KitchenBoard> {
       }
       showInfoOn(messenger, '${line.name} → $to');
       await _reload();
+      _followTicket(t.order.id);
     } catch (e) {
       showErrorOn(messenger, e);
     } finally {
@@ -439,6 +457,7 @@ class _KitchenBoardState extends ConsumerState<KitchenBoard> {
         HapticFeedback.mediumImpact();
         showInfoOn(messenger, 'Ticket ${shortId(t.order.id)} → $to');
         await _reload();
+        _followTicket(t.order.id);
       } catch (e) {
         showErrorOn(messenger, e);
         await _reload();
@@ -467,6 +486,7 @@ class _KitchenBoardState extends ConsumerState<KitchenBoard> {
         });
       }
       await _reload();
+      _followTicket(t.order.id);
     } catch (e) {
       showErrorOn(messenger, e);
       await _reload(); // wholesale revert to server truth
@@ -1062,14 +1082,16 @@ class _TicketCard extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   // Header: destination FIRST (what the pass scans for),
-                  // elapsed as a filled pill top-right.
+                  // then the ticket's own id — several identical Table-N
+                  // tickets ride the pass at once, and "which card did I
+                  // just tap" needs an answer at a glance. Elapsed as a
+                  // filled pill top-right.
                   Row(
                     children: [
                       Expanded(
                         child: Text(
-                          o.tableNum?.isNotEmpty == true
-                              ? 'Table ${o.tableNum}'
-                              : (o.customer ?? 'Walk-in'),
+                          '${o.tableNum?.isNotEmpty == true ? 'Table ${o.tableNum}' : (o.customer ?? 'Walk-in')}'
+                          '  ·  #${shortId(o.id)}',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
@@ -1102,16 +1124,11 @@ class _TicketCard extends StatelessWidget {
                     ],
                   ),
                   const SizedBox(height: 3),
-                  // Row two: id · line count · (bar) drinks-only marker.
+                  // Row two: line count · (bar) drinks-only marker. The id
+                  // moved into the header where the eye already is.
                   Row(
                     children: [
-                      Text(shortId(o.id),
-                          style: TextStyle(
-                              fontFamily: kFontMono,
-                              fontSize: 10,
-                              fontWeight: FontWeight.w600,
-                              color: pal.faint)),
-                      Text('  ·  $total item${total == 1 ? '' : 's'}',
+                      Text('$total item${total == 1 ? '' : 's'}',
                           style: TextStyle(
                               fontFamily: kFontBody,
                               fontSize: 10.5,

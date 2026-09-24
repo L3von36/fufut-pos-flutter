@@ -1520,6 +1520,11 @@ class OrderDetailSheet extends ConsumerWidget {
       await app.api.settleOrder(order, line.method, line,
           tip: result.tip, breakdown: result.breakdown);
       onChanged?.call(); // the settled tab leaves the list behind the sheet
+      // Money moved on THIS device — flip every surface now instead of
+      // waiting for the push: the floor's pay badge, the pending panel and
+      // the kitchen feed all read the payment state.
+      ref.read(tablesFeedProvider.notifier).refreshTables();
+      ref.read(pendingOrdersProvider.notifier).refresh();
       navigator.pop();
       showInfoOn(
           messenger, 'Tab settled — ${money(line.amount)} via ${line.method}');
