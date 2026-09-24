@@ -1,6 +1,12 @@
 /// Customers — the web `CustomersView.vue` (route-only there, a manager tool
 /// here): loyalty profiles with points, visits, lifetime spend; add
 /// customer and adjust-points flows.
+///
+/// The Tier-2 pattern, as done here: the screen's fetch lives in a
+/// screen-scoped FutureProvider keyed by its filter (the search text);
+/// mutations and pull-to-refresh invalidate; the session is READ inside the
+/// provider, never watched (the fetch must not rebuild on its own session
+/// echo — see the Riverpod migration notes in worklog).
 library;
 
 import 'package:flutter/material.dart';
@@ -14,6 +20,17 @@ import '../widgets/backoffice.dart';
 import '../widgets/common.dart';
 import '../widgets/dashboard.dart';
 
+final customersProvider =
+    FutureProvider.family<List<Customer>, String>((ref, query) async {
+  final app = ref.read(appStateProvider);
+  try {
+    return await app.api.customers(query: query);
+  } on ApiError catch (e) {
+    if (e.isAuthError) await app.sessionExpired();
+    rethrow;
+  }
+});
+
 class CustomersScreen extends ConsumerStatefulWidget {
   const CustomersScreen({super.key});
 
@@ -22,16 +39,7 @@ class CustomersScreen extends ConsumerStatefulWidget {
 }
 
 class _CustomersScreenState extends ConsumerState<CustomersScreen> {
-  List<Customer> _rows = [];
-  bool _loading = true;
-  Object? _error;
   final _search = TextEditingController();
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
 
   @override
   void dispose() {
@@ -39,22 +47,7 @@ class _CustomersScreenState extends ConsumerState<CustomersScreen> {
     super.dispose();
   }
 
-  Future<void> _load({bool quiet = false}) async {
-    final app = ref.read(appStateProvider);
-    if (!quiet) setState(() { _loading = true; _error = null; });
-    try {
-      final rows = await app.api.customers(query: _search.text.trim());
-      if (!mounted) return;
-      setState(() { _rows = rows; _loading = false; });
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) { await app.sessionExpired(); return; }
-      setState(() { _loading = false; _error = e; });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _error = e; });
-    }
-  }
+  void _reload() => ref.invalidate(customersProvider(_search.text.trim()));
 
   Future<void> _add() async {
     final messenger = ScaffoldMessenger.of(context);
@@ -84,7 +77,7 @@ class _CustomersScreenState extends ConsumerState<CustomersScreen> {
               name: nameC.text, phone: phoneC.text,
               email: emailC.text, notes: notesC.text);
           showInfoOn(messenger, 'Customer added');
-          await _load(quiet: true);
+          _reload();
         } catch (e) {
           showErrorOn(messenger, e);
           rethrow;
@@ -125,7 +118,7 @@ class _CustomersScreenState extends ConsumerState<CustomersScreen> {
               c.id, pts, reasonC.text);
           showInfoOn(messenger, balance != null
               ? 'New balance: $balance pts' : 'Points adjusted');
-          await _load(quiet: true);
+          _reload();
         } catch (e) {
           showErrorOn(messenger, e);
           rethrow;
@@ -136,16 +129,18 @@ class _CustomersScreenState extends ConsumerState<CustomersScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading && _rows.isEmpty) {
+    final rowsAsync = ref.watch(customersProvider(_search.text.trim()));
+    final rows = rowsAsync.value ?? const <Customer>[];
+    if (rowsAsync.isLoading && rows.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (_error != null && _rows.isEmpty) {
-      return LoadError(error: _error!, onRetry: () => _load());
+    if (rowsAsync.hasError && rows.isEmpty) {
+      return LoadError(error: rowsAsync.error!, onRetry: _reload);
     }
     final pal = Pal.of(context);
 
     return RefreshIndicator(
-      onRefresh: () => _load(quiet: true),
+      onRefresh: () async => _reload(),
       child: ListView(
         padding: const EdgeInsets.all(14),
         children: [
@@ -154,12 +149,12 @@ class _CustomersScreenState extends ConsumerState<CustomersScreen> {
           Row(children: [
             Expanded(
                 child: KpiCard(label: 'Customers',
-                    value: '${_rows.length}', icon: Icons.group_outlined)),
+                    value: '${rows.length}', icon: Icons.group_outlined)),
             const SizedBox(width: 8),
             Expanded(
               child: KpiCard(
                   label: 'Points out',
-                  value: '${_rows.fold<int>(0, (s, c) => s + c.points)}',
+                  value: '${rows.fold<int>(0, (s, c) => s + c.points)}',
                   icon: Icons.stars_outlined),
             ),
           ]),
@@ -170,7 +165,7 @@ class _CustomersScreenState extends ConsumerState<CustomersScreen> {
                   controller: _search,
                   hint: 'Search name or phone, then Enter…',
                   onChanged: (_) {},
-                  onSubmitted: () => _load(quiet: true)),
+                  onSubmitted: () => _reload()),
             ),
             const SizedBox(width: 8),
             RowAction('+ Add', () => _add()),
@@ -179,7 +174,7 @@ class _CustomersScreenState extends ConsumerState<CustomersScreen> {
           SectionCard(
             title: 'Directory',
             children: [
-              for (final c in _rows.take(200))
+              for (final c in rows.take(200))
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 7),
                   child: Row(
@@ -226,7 +221,7 @@ class _CustomersScreenState extends ConsumerState<CustomersScreen> {
                     ],
                   ),
                 ),
-              if (_rows.isEmpty)
+              if (rows.isEmpty)
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 14),
                   child: Center(
