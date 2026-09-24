@@ -179,4 +179,54 @@ void main() {
       expect(emptyOrdersHint('manager'), contains('No orders match'));
     });
   });
+
+  group('the JSON-array summary the server stores since per-line tracking', () {
+    // The /api/orders rows and SSE snapshots carry NO orderItems — the lines
+    // must come from the summary string. Since the tracking migration the
+    // server stores it as a JSON array, and a summary the boards could not
+    // parse hid every newly-fired ticket from every board (found live on the
+    // local box, 2026-09-24).
+    const jsonMixed =
+        '[{"id":"MI-1","name":"Latte","qty":1,"price":60},{"id":"MI-2","name":"Firfir","qty":2,"price":140}]';
+
+    test('structuredLinesFromRaw parses the array into full lines', () {
+      final lines = structuredLinesFromRaw(jsonMixed);
+      expect(lines, isNotNull);
+      expect(lines!.length, 2);
+      expect(lines[0].name, 'Latte');
+      expect(lines[0].qty, 1);
+      expect(lines[1].name, 'Firfir');
+      expect(lines[1].qty, 2);
+    });
+
+    test('boardLines renders the ticket from the JSON summary', () {
+      final lines = boardLines(_order(itemsRaw: jsonMixed));
+      expect(lines.length, 2);
+      expect(lines.map((l) => l.name), containsAll(['Latte', 'Firfir']));
+    });
+
+    test('scopedLines routes a JSON-summary mixed ticket per station', () {
+      final kitchen = scopedLines(_order(itemsRaw: jsonMixed), 'kitchen');
+      expect(kitchen!.map((l) => l.name), ['Firfir']);
+      final bar = scopedLines(_order(itemsRaw: jsonMixed), 'bar');
+      expect(bar!.map((l) => l.name), ['Latte']);
+    });
+
+    test('a JSON summary that is all the other station hides the ticket', () {
+      const drinksOnly =
+          '[{"name":"Latte","qty":1,"price":60},{"name":"Espresso","qty":1,"price":45}]';
+      expect(scopedLines(_order(itemsRaw: drinksOnly), 'kitchen'), isEmpty);
+    });
+
+    test('a malformed JSON string fails OPEN, never silent', () {
+      expect(
+          scopedLines(_order(itemsRaw: '[{"name":"Latte"'), 'kitchen'), isNull);
+    });
+
+    test('the legacy flat summary still parses — old rows keep rendering', () {
+      final lines = boardLines(_order(itemsRaw: '2x Latte, 1x Firfir'));
+      expect(lines.length, 2);
+      expect(lines[0].qty, 2);
+    });
+  });
 }

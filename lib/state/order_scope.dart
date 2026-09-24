@@ -22,6 +22,8 @@ library;
 import '../models/models.dart';
 import 'roles.dart';
 
+import 'dart:convert' show jsonDecode;
+
 /// One parsed line of a legacy flat summary — enough to classify a ticket
 /// when the structured lines are absent.
 class _FlatLine {
@@ -69,11 +71,17 @@ bool lineIsDrinkOf(String? category, String name) {
 /// The board's renderable lines of a ticket: the structured lines when the
 /// order row carries them, the legacy flat summary parsed back into lines
 /// otherwise. The /api/orders rows (and the SSE snapshots built from them)
-/// carry NO `orderItems` — just the flat "2x Latte, 1xDish" string the
-/// server stores on the order — so without this fallback every pushed
-/// ticket parsed line-less and the board filtered it into silence.
+/// carry NO `orderItems` — just the summary string the server stores on the
+/// order: a JSON array since per-line tracking, the flat "2x Latte, 1xDish"
+/// text before it — so without both fallbacks every pushed ticket parsed
+/// line-less and the board filtered it into silence.
 List<OrderItemLine> boardLines(FufutOrder order) {
   if (order.items.isNotEmpty) return order.items;
+  // The summary string since per-line tracking is a JSON array — parse it
+  // into full lines (qty survives; notes/modifiers live on the tracked rows
+  // the boards read alongside). Legacy flat summaries fall through.
+  final structured = structuredLinesFromRaw(order.itemsRaw);
+  if (structured != null && structured.isNotEmpty) return structured;
   return [
     for (final f in _parseFlatItems(order.itemsRaw))
       OrderItemLine(
@@ -84,6 +92,48 @@ List<OrderItemLine> boardLines(FufutOrder order) {
         lineTotal: 0,
       ),
   ];
+}
+
+/// Parse an order row's `items` summary string when it is a JSON array —
+/// the shape the server has stored since per-line tracking landed
+/// (`[{"name":"Latte","qty":1,"price":60}, ...]`). Returns null when the
+/// string is not JSON (the legacy flat "2x Latte, 1xDish" summary), so the
+/// caller can fall back to the flat parser.
+///
+/// Mirror of the server's normaliseLines input handling (fufut-api
+/// src/lib/timing.js — JSON first, flat fallback) and the web POS's
+/// orderScope.js. Missing this branch made every newly-fired ticket parse
+/// line-less, and the boards' fail-open left it holding empty lines — the
+/// ticket rendered nowhere (found live on the local box, 2026-09-24).
+List<OrderItemLine>? structuredLinesFromRaw(String raw) {
+  final text = raw.trim();
+  if (!text.startsWith('[')) return null;
+  final Object? decoded;
+  try {
+    decoded = jsonDecode(text);
+  } catch (_) {
+    return null;
+  }
+  if (decoded is! List) return null;
+  final out = <OrderItemLine>[];
+  for (final row in decoded) {
+    if (row is! Map) continue;
+    final m = Map<String, dynamic>.from(row);
+    final name = (m['name'] ?? '').toString().trim();
+    if (name.isEmpty) continue;
+    final qtyRaw = m['qty'];
+    final qty = qtyRaw is int
+        ? qtyRaw
+        : int.tryParse('$qtyRaw') ?? 1;
+    out.add(OrderItemLine(
+      menuItemId: m['id']?.toString(),
+      name: name,
+      basePrice: 0,
+      qty: qty,
+      lineTotal: 0,
+    ));
+  }
+  return out;
 }
 
 /// The station's own lines of a ticket. [station] is 'bar' (drinks) or
@@ -102,6 +152,16 @@ List<OrderItemLine>? scopedLines(
       lineIsDrinkOf(catByName?[name.toLowerCase()], name);
   if (order.items.isNotEmpty) {
     return order.items.where((l) => isDrink(l.name) == wantDrink).toList();
+  }
+  // Structured summary (JSON array string) — classify each line by the same
+  // rule the tracked rows ride.
+  final structured = structuredLinesFromRaw(order.itemsRaw);
+  if (structured != null && structured.isNotEmpty) {
+    final mine = structured.where((l) => isDrink(l.name) == wantDrink).toList();
+    if (mine.isNotEmpty) return mine;
+    // Every structured line belongs to the other station — the summary
+    // PROVES this ticket is not ours, so hide it (same as the flat path).
+    return const [];
   }
   // Legacy flat summary: reconstruct just enough line shape to classify.
   final flats = _parseFlatItems(order.itemsRaw);

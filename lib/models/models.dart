@@ -6,6 +6,8 @@
 /// take down the screen that renders it.
 library;
 
+import 'dart:convert' show jsonDecode;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Menu
 // ─────────────────────────────────────────────────────────────────────────────
@@ -260,9 +262,18 @@ class FufutOrder {
     this.itemsRaw = '',
   });
 
-  bool get isPaid =>
-      (paymentStatus ?? '').toLowerCase() == 'paid' ||
-      (payment ?? '').toLowerCase() != 'unpaid';
+  // An order is paid only when the server SAYS so — payment_status 'paid' —
+  // or, for legacy rows written before payment_status existed, an actual
+  // payment label on `payment`. `payment` being null means nothing was taken,
+  // NOT paid: the old `'' != 'unpaid'` fallback made every fresh order read
+  // paid, which unlit the UNPAID KPI, emptied open checks and unlocked
+  // settlement on tickets nobody had charged (found live, 2026-09-24).
+  bool get isPaid {
+    final ps = (paymentStatus ?? '').toLowerCase();
+    if (ps.isNotEmpty) return ps == 'paid';
+    final pay = (payment ?? '').toLowerCase();
+    return pay.isNotEmpty && pay != 'unpaid';
+  }
 
   bool get isClosed {
     final s = status.toLowerCase();
@@ -277,11 +288,18 @@ class FufutOrder {
     final raw = j['items'];
     if (raw is String) itemsRaw = raw;
     if (raw is List) {
-      itemsRaw = raw
-          .whereType<Map>()
-          .map((m) => Map<String, dynamic>.from(m))
-          .map((m) => '${_asInt(m['qty'])}x ${m['name'] ?? ''}')
-          .join(', ');
+      itemsRaw = _summaryFromRows(raw);
+    } else if (raw is String && raw.trim().startsWith('[')) {
+      // Since per-line tracking the server stores the summary as a JSON
+      // array string — unreadable on every screen that renders it verbatim.
+      // Normalise it to the same human text a List would have produced
+      // ("1x Latte, 1x Firfir"); the flat parser downstream still reads it.
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is List) itemsRaw = _summaryFromRows(decoded);
+      } catch (_) {
+        // Not JSON — keep the original string (a legacy flat summary).
+      }
     }
 
     final lines = <OrderItemLine>[];
@@ -2019,6 +2037,16 @@ const List<Map<String, String>> kAlertRules = [
 /// or too short to hold one. Screens render '—' for ''; they never throw.
 String dayKey(String? stamp) =>
     stamp == null || stamp.length < 10 ? '' : stamp.substring(0, 10);
+
+/// Human summary text from structured line rows — "1x Latte, 2x Firfir".
+/// Used both for List items and, via FufutOrder.fromJson, for the JSON-array
+/// summary string the server stores since per-line tracking (which used to
+/// render as raw JSON on every screen that showed the order).
+String _summaryFromRows(List rows) => rows
+    .whereType<Map>()
+    .map((m) => Map<String, dynamic>.from(m))
+    .map((m) => '${_asInt(m['qty'])}x ${m['name'] ?? ''}')
+    .join(', ');
 
 double _asDouble(dynamic v) {
   if (v is num) return v.toDouble();

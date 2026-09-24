@@ -579,6 +579,24 @@ class _KitchenBoardState extends State<KitchenBoard>
     return t.order.status.toLowerCase();
   }
 
+  /// The line's note, read off the TRACKED row when the ticket's summary
+  /// lines carry none of their own — the summary string the server stores
+  /// (name/qty/price) never carries notes or allergens; the tracked rows
+  /// the boards already match by name do. Without this the amber note line
+  /// never rendered on a live ticket.
+  String? _notesFor(_Ticket t, OrderItemLine line) {
+    if (line.notes != null && line.notes!.trim().isNotEmpty) return line.notes;
+    final itemId = _itemIdFor(t.order, line);
+    if (itemId == null) return null;
+    for (final it in _activeItems[t.order.id] ?? const <ActiveOrderItem>[]) {
+      if (it.id == itemId) {
+        final n = it.notes?.trim() ?? '';
+        return n.isEmpty ? null : n;
+      }
+    }
+    return null;
+  }
+
   /// Bulk advance every line sitting at [from] to the next step — parallel
   /// per-line PUTs, wholesale revert on failure, and an undo toast on Start
   /// All. Lines stop at ready: the handoff is the ticket-level pickup.
@@ -742,6 +760,7 @@ class _KitchenBoardState extends State<KitchenBoard>
                               tickets: lanes[_kLanes[i].key]!,
                               baristaMode: barista,
                               statusOfLine: _statusOfLine,
+                              notesOf: _notesFor,
                               busyLineKeys: _busyLines,
                               busyTicketId: _busyTicket,
                               onAdvanceLine: _advanceLine,
@@ -760,6 +779,7 @@ class _KitchenBoardState extends State<KitchenBoard>
                       tickets: lanes[_lane]!,
                       baristaMode: barista,
                       statusOfLine: _statusOfLine,
+                      notesOf: _notesFor,
                       busyLineKeys: _busyLines,
                       busyTicketId: _busyTicket,
                       onAdvanceLine: _advanceLine,
@@ -987,6 +1007,7 @@ class _LaneColumn extends StatelessWidget {
   final List<_Ticket> tickets;
   final bool baristaMode;
   final String Function(_Ticket, OrderItemLine) statusOfLine;
+  final String? Function(_Ticket, OrderItemLine) notesOf;
   final Set<String> busyLineKeys;
   final String? busyTicketId;
   final Future<void> Function(_Ticket, OrderItemLine, String) onAdvanceLine;
@@ -998,6 +1019,7 @@ class _LaneColumn extends StatelessWidget {
     required this.tickets,
     required this.baristaMode,
     required this.statusOfLine,
+    required this.notesOf,
     required this.busyLineKeys,
     required this.busyTicketId,
     required this.onAdvanceLine,
@@ -1078,6 +1100,7 @@ class _LaneColumn extends StatelessWidget {
                     lane: meta.key,
                     baristaMode: baristaMode,
                     statusOfLine: statusOfLine,
+                    notesOf: notesOf,
                     busyLineKeys: busyLineKeys,
                     busyTicketId: busyTicketId,
                     onAdvanceLine: onAdvanceLine,
@@ -1130,6 +1153,7 @@ class _TicketCard extends StatelessWidget {
   final String lane;
   final bool baristaMode;
   final String Function(_Ticket, OrderItemLine) statusOfLine;
+  final String? Function(_Ticket, OrderItemLine) notesOf;
   final Set<String> busyLineKeys;
   final String? busyTicketId;
   final Future<void> Function(_Ticket, OrderItemLine, String) onAdvanceLine;
@@ -1141,6 +1165,7 @@ class _TicketCard extends StatelessWidget {
     required this.lane,
     required this.baristaMode,
     required this.statusOfLine,
+    required this.notesOf,
     required this.busyLineKeys,
     required this.busyTicketId,
     required this.onAdvanceLine,
@@ -1317,6 +1342,7 @@ class _TicketCard extends StatelessWidget {
                     _LineRow(
                       line: l,
                       status: statusOfLine(ticket, l),
+                      note: notesOf(ticket, l),
                       busy: _busy ||
                           busyLineKeys.contains(
                               '${ticket.order.id}/${l.name}/${l.qty}'),
@@ -1408,6 +1434,7 @@ class _TicketCard extends StatelessWidget {
 class _LineRow extends StatelessWidget {
   final OrderItemLine line;
   final String status;
+  final String? note;
   final VoidCallback onTap;
   final bool busy;
 
@@ -1415,6 +1442,7 @@ class _LineRow extends StatelessWidget {
     required this.line,
     required this.status,
     required this.onTap,
+    this.note,
     this.busy = false,
   });
 
@@ -1436,7 +1464,7 @@ class _LineRow extends StatelessWidget {
     }
     final done = status == 'ready' || status == 'served' || status == 'fulfilled';
     final tappable = status == 'new' || status == 'preparing';
-    final hasNote = line.notes != null && line.notes!.trim().isNotEmpty;
+    final hasNote = note != null && note!.trim().isNotEmpty;
 
     final content = Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1508,7 +1536,7 @@ class _LineRow extends StatelessWidget {
                   size: 10, color: pal.warning),
               const SizedBox(width: 3),
               Expanded(
-                child: Text(line.notes!,
+                child: Text(note!,
                     style: TextStyle(
                         fontFamily: kFontBody,
                         fontSize: 10.5,

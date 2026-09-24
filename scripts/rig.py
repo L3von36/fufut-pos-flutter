@@ -17,7 +17,9 @@ import urllib.request
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8090
 WEB = os.path.join(os.path.dirname(__file__), '..', 'build', 'web')
-API = 'https://fufut-api.fufutcoffee.workers.dev'
+# FUFUT_RIG_API overrides the upstream — point it at a local box
+# (http://127.0.0.1:8787) to rehearse without touching production.
+API = os.environ.get('FUFUT_RIG_API', 'https://fufut-api.fufutcoffee.workers.dev')
 
 HOP = {'connection', 'keep-alive', 'transfer-encoding', 'te', 'trailer',
        'proxy-authenticate', 'proxy-authorization', 'upgrade',
