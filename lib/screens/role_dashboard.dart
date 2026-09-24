@@ -22,10 +22,13 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../api/api_client.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
+import '../state/catalog_providers.dart';
+import '../state/clock.dart';
+import '../state/live_feeds.dart';
 import '../state/roles.dart';
+import 'cashdrawer_screen.dart' show cashDrawerFeedProvider;
 import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/dashboard.dart';
@@ -95,60 +98,34 @@ class WaiterDashboard extends ConsumerStatefulWidget {
 }
 
 class _WaiterDashboardState extends ConsumerState<WaiterDashboard> {
-  List<FufutOrder> _orders = [];
-  List<CafeTable> _tables = [];
-  List<Reservation> _reservations = [];
-  bool _loading = true;
-  Object? _error;
-  Timer? _poll;
+  // Live feeds: the floor's orders (shared kitchen feed) and tables (shared
+  // tables feed) — this dashboard used to poll three endpoints on its own
+  // 45s clock; now the feeds push and only the reservations tile refreshes
+  // on the shared minute cadence.
+  List<FufutOrder> get _orders => ref.read(kitchenFeedProvider).orders;
+  List<CafeTable> get _tables => ref.read(tablesFeedProvider).tables;
+  List<Reservation> get _reservations =>
+      ref.read(reservationsProvider).value ?? const <Reservation>[];
 
-  @override
-  void initState() {
-    super.initState();
-    _load();
-    _poll = Timer.periodic(const Duration(seconds: 45), (_) => _load(quiet: true));
-  }
-
-  @override
-  void dispose() {
-    _poll?.cancel();
-    super.dispose();
-  }
-
-  Future<void> _load({bool quiet = false}) async {
-    final app = ref.read(appStateProvider);
-    if (!quiet) setState(() { _loading = true; _error = null; });
-    try {
-      final results = await Future.wait([
-        app.api.orders(),
-        app.api.tables(),
-        app.api.reservations(),
-      ]);
-      if (!mounted) return;
-      setState(() {
-        _orders = results[0] as List<FufutOrder>;
-        _tables = results[1] as List<CafeTable>;
-        _reservations = results[2] as List<Reservation>;
-        _loading = false;
-      });
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) {
-        await app.sessionExpired();
-        return;
-      }
-      setState(() { _loading = false; _error = e; });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _error = e; });
-    }
+  void _refresh() {
+    ref.invalidate(reservationsProvider);
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_loading && _orders.isEmpty) return const DashboardSkeleton();
-    if (_error != null && _orders.isEmpty) {
-      return LoadError(error: _error!, onRetry: () => _load());
+    final feedOrders = ref.watch(kitchenFeedProvider);
+    final feedTables = ref.watch(tablesFeedProvider);
+    final reservationsAsync = ref.watch(reservationsProvider);
+    ref.listen(minuteClockProvider, (_, __) => _refresh());
+    final loading = feedOrders.loading || feedTables.loading;
+    final error = reservationsAsync.hasError
+        ? reservationsAsync.error
+        : (feedOrders.error ?? feedTables.error);
+    if (loading && _orders.isEmpty && _tables.isEmpty) {
+      return const DashboardSkeleton();
+    }
+    if (error != null && _orders.isEmpty) {
+      return LoadError(error: error, onRetry: () => _refresh());
     }
     final pal = Pal.of(context);
     final today = _today();
@@ -172,7 +149,7 @@ class _WaiterDashboardState extends ConsumerState<WaiterDashboard> {
         .toList();
 
     return RefreshIndicator(
-      onRefresh: () => _load(quiet: true),
+      onRefresh: () async => _refresh(),
       child: ListView(
         padding: const EdgeInsets.all(14),
         children: [
@@ -323,49 +300,19 @@ class ChefDashboard extends ConsumerStatefulWidget {
 }
 
 class _ChefDashboardState extends ConsumerState<ChefDashboard> {
-  List<FufutOrder> _orders = [];
-  bool _loading = true;
-  Object? _error;
-  Timer? _poll;
+  // The shared kitchen feed IS the data — live push instead of the 45s poll.
+  List<FufutOrder> get _orders => ref.read(kitchenFeedProvider).orders;
 
-  @override
-  void initState() {
-    super.initState();
-    _load();
-    _poll = Timer.periodic(const Duration(seconds: 45), (_) => _load(quiet: true));
-  }
-
-  @override
-  void dispose() {
-    _poll?.cancel();
-    super.dispose();
-  }
-
-  Future<void> _load({bool quiet = false}) async {
-    final app = ref.read(appStateProvider);
-    if (!quiet) setState(() { _loading = true; _error = null; });
-    try {
-      final rows = await app.api.orders();
-      if (!mounted) return;
-      setState(() { _orders = rows; _loading = false; });
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) {
-        await app.sessionExpired();
-        return;
-      }
-      setState(() { _loading = false; _error = e; });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _error = e; });
-    }
-  }
+  Future<void> _refresh() async {} // live feed — nothing to invalidate
 
   @override
   Widget build(BuildContext context) {
-    if (_loading && _orders.isEmpty) return const DashboardSkeleton();
-    if (_error != null && _orders.isEmpty) {
-      return LoadError(error: _error!, onRetry: () => _load());
+    final feed = ref.watch(kitchenFeedProvider);
+    final loading = feed.loading;
+    final error = feed.error;
+    if (loading && _orders.isEmpty) return const DashboardSkeleton();
+    if (error != null && _orders.isEmpty) {
+      return LoadError(error: error, onRetry: () {});
     }
     final pal = Pal.of(context);
     final today = _today();
@@ -388,7 +335,7 @@ class _ChefDashboardState extends ConsumerState<ChefDashboard> {
         .toList();
 
     return RefreshIndicator(
-      onRefresh: () => _load(quiet: true),
+      onRefresh: () async => _refresh(),
       child: ListView(
         padding: const EdgeInsets.all(14),
         children: [
@@ -526,64 +473,29 @@ class CashierDashboard extends ConsumerStatefulWidget {
 }
 
 class _CashierDashboardState extends ConsumerState<CashierDashboard> {
-  DashboardStats? _stats;
-  CashDrawerState? _drawer;
-  List<CafeTable> _tables = [];
-  bool _loading = true;
-  Object? _error;
-  Timer? _poll;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-    // The web cashier dashboard polls every 30s; so does this one.
-    _poll = Timer.periodic(const Duration(seconds: 30), (_) => _load(quiet: true));
-  }
-
-  @override
-  void dispose() {
-    _poll?.cancel();
-    super.dispose();
-  }
-
-  Future<void> _load({bool quiet = false}) async {
-    final app = ref.read(appStateProvider);
-    if (!quiet) setState(() { _loading = true; _error = null; });
-    try {
-      final results = await Future.wait([
-        app.api.reportsDashboard(),
-        app.api.cashdrawer(),
-        app.api.tables(),
-      ]);
-      if (!mounted) return;
-      setState(() {
-        _stats = results[0] as DashboardStats;
-        _drawer = results[1] as CashDrawerState;
-        _tables = results[2] as List<CafeTable>;
-        _loading = false;
-      });
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) {
-        await app.sessionExpired();
-        return;
-      }
-      setState(() { _loading = false; _error = e; });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _error = e; });
-    }
-  }
+  // The till feed (shared with the Cash Drawer screen) carries the stats
+  // and the live float; the shared tables feed carries the bill requests.
+  // The dashboard's own 30s poll is gone — the till feed already polls.
+  DashboardStats? get _stats => ref.read(cashDrawerFeedProvider).stats;
+  CashDrawerState? get _drawer => ref.read(cashDrawerFeedProvider).drawer;
+  List<CafeTable> get _tables => ref.read(tablesFeedProvider).tables;
 
   List<CafeTable> get _billRequests =>
       _tables.where((t) => t.billRequested).toList();
 
+  Future<void> _refresh() async =>
+      ref.invalidate(cashDrawerFeedProvider);
   @override
   Widget build(BuildContext context) {
-    if (_loading && _stats == null) return const DashboardSkeleton();
-    if (_error != null && _stats == null) {
-      return LoadError(error: _error!, onRetry: () => _load());
+    final till = ref.watch(cashDrawerFeedProvider);
+    final floor = ref.watch(tablesFeedProvider);
+    final loading = till.loading || floor.loading;
+    final error = till.error ?? floor.error;
+    if (loading && _stats == null && _tables.isEmpty) {
+      return const DashboardSkeleton();
+    }
+    if (error != null && _stats == null) {
+      return LoadError(error: error, onRetry: () {});
     }
     final app = ref.read(appStateProvider);
     final s = _stats;
@@ -600,7 +512,7 @@ class _CashierDashboardState extends ConsumerState<CashierDashboard> {
     }
 
     return RefreshIndicator(
-      onRefresh: () => _load(quiet: true),
+      onRefresh: () async => _refresh(),
       child: ListView(
         padding: const EdgeInsets.all(14),
         children: [
@@ -832,7 +744,7 @@ class _CashierDashboardState extends ConsumerState<CashierDashboard> {
                           await app.api.cancelBillRequest(t.id);
                           showInfoOn(messenger,
                               'Bill request for table ${t.number} dismissed');
-                          await _load(quiet: true);
+                          await ref.read(cashDrawerFeedProvider.notifier).refresh();
                         } catch (e) {
                           showErrorOn(messenger, e);
                         }
@@ -896,49 +808,23 @@ class DriverDashboard extends ConsumerStatefulWidget {
 }
 
 class _DriverDashboardState extends ConsumerState<DriverDashboard> {
-  List<DeliveryJob> _jobs = [];
-  bool _loading = true;
-  Object? _error;
-  Timer? _poll;
+  // The shared deliveries feed — one fetch for the dashboard AND the run
+  // list screen. The 45s poll becomes a refresh on the shared minute clock.
+  List<DeliveryJob> get _jobs =>
+      ref.read(deliveriesProvider).value ?? const <DeliveryJob>[];
 
-  @override
-  void initState() {
-    super.initState();
-    _load();
-    _poll = Timer.periodic(const Duration(seconds: 45), (_) => _load(quiet: true));
-  }
-
-  @override
-  void dispose() {
-    _poll?.cancel();
-    super.dispose();
-  }
-
-  Future<void> _load({bool quiet = false}) async {
-    final app = ref.read(appStateProvider);
-    if (!quiet) setState(() { _loading = true; _error = null; });
-    try {
-      final rows = await app.api.deliveries();
-      if (!mounted) return;
-      setState(() { _jobs = rows; _loading = false; });
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) {
-        await app.sessionExpired();
-        return;
-      }
-      setState(() { _loading = false; _error = e; });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _error = e; });
-    }
-  }
+  Future<void> _refresh() async => ref.invalidate(deliveriesProvider);
 
   @override
   Widget build(BuildContext context) {
-    if (_loading && _jobs.isEmpty) return const DashboardSkeleton();
-    if (_error != null && _jobs.isEmpty) {
-      return LoadError(error: _error!, onRetry: () => _load());
+    final jobsAsync = ref.watch(deliveriesProvider);
+    ref.listen(minuteClockProvider,
+        (_, __) => ref.invalidate(deliveriesProvider));
+    final loading = jobsAsync.isLoading;
+    final error = jobsAsync.hasError ? jobsAsync.error : null;
+    if (loading && _jobs.isEmpty) return const DashboardSkeleton();
+    if (error != null && _jobs.isEmpty) {
+      return LoadError(error: error, onRetry: () {});
     }
     final pal = Pal.of(context);
 
@@ -958,7 +844,7 @@ class _DriverDashboardState extends ConsumerState<DriverDashboard> {
         .toList();
 
     return RefreshIndicator(
-      onRefresh: () => _load(quiet: true),
+      onRefresh: () async => _refresh(),
       child: ListView(
         padding: const EdgeInsets.all(14),
         children: [
@@ -1070,59 +956,27 @@ class CleanerDashboard extends ConsumerStatefulWidget {
 }
 
 class _CleanerDashboardState extends ConsumerState<CleanerDashboard> {
-  List<CafeTable> _tables = [];
-  List<WasteEntry> _waste = [];
-  bool _loading = true;
-  Object? _error;
-  Timer? _poll;
+  // Shared tables feed (live) + shared waste log (minute refresh) — the
+  // dashboard and the Waste screen read the same providers now.
+  List<CafeTable> get _tables => ref.read(tablesFeedProvider).tables;
+  List<WasteEntry> get _waste =>
+      ref.read(wasteLogProvider).value ?? const <WasteEntry>[];
 
-  @override
-  void initState() {
-    super.initState();
-    _load();
-    _poll = Timer.periodic(const Duration(minutes: 1), (_) => _load(quiet: true));
-  }
-
-  @override
-  void dispose() {
-    _poll?.cancel();
-    super.dispose();
-  }
-
-  Future<void> _load({bool quiet = false}) async {
-    final app = ref.read(appStateProvider);
-    if (!quiet) setState(() { _loading = true; _error = null; });
-    try {
-      final results = await Future.wait([
-        app.api.tables(),
-        app.api.wasteLog(),
-      ]);
-      if (!mounted) return;
-      setState(() {
-        _tables = results[0] as List<CafeTable>;
-        _waste = results[1] as List<WasteEntry>;
-        _loading = false;
-      });
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) {
-        await app.sessionExpired();
-        return;
-      }
-      setState(() { _loading = false; _error = e; });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _error = e; });
-    }
-  }
+  Future<void> _refresh() async => ref.invalidate(wasteLogProvider);
 
   @override
   Widget build(BuildContext context) {
-    if (_loading && _tables.isEmpty && _waste.isEmpty) {
+    final floor = ref.watch(tablesFeedProvider);
+    final wasteAsync = ref.watch(wasteLogProvider);
+    ref.listen(minuteClockProvider,
+        (_, __) => ref.invalidate(wasteLogProvider));
+    final loading = floor.loading || wasteAsync.isLoading;
+    final error = wasteAsync.hasError ? wasteAsync.error : null;
+    if (loading && _tables.isEmpty && _waste.isEmpty) {
       return const DashboardSkeleton();
     }
-    if (_error != null && _tables.isEmpty && _waste.isEmpty) {
-      return LoadError(error: _error!, onRetry: () => _load());
+    if (error != null && _tables.isEmpty && _waste.isEmpty) {
+      return LoadError(error: error, onRetry: () {});
     }
     final pal = Pal.of(context);
     final today = _today();
@@ -1138,7 +992,7 @@ class _CleanerDashboardState extends ConsumerState<CleanerDashboard> {
     final last = _waste.isEmpty ? null : _waste.first;
 
     return RefreshIndicator(
-      onRefresh: () => _load(quiet: true),
+      onRefresh: () async => _refresh(),
       child: ListView(
         padding: const EdgeInsets.all(14),
         children: [

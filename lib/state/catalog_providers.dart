@@ -97,3 +97,40 @@ final catByNameProvider = Provider<Map<String, String>>((ref) {
   }
   return {for (final m in menu) m.name.toLowerCase(): m.category};
 });
+
+// ── Venue-ops reads shared by dashboards and their full screens ─────────────
+
+/// Delivery runs — shared by the Delivery screen and the driver's
+/// dashboard (each used to fetch its own copy).
+final deliveriesProvider = FutureProvider<List<DeliveryJob>>((ref) async {
+  final app = ref.read(appStateProvider);
+  try {
+    return await app.api.deliveries();
+  } on ApiError catch (e) {
+    if (e.isAuthError) await app.sessionExpired();
+    rethrow;
+  }
+});
+
+/// The waste log — shared by the Waste screen and the cleaner's dashboard.
+final wasteLogProvider = FutureProvider<List<WasteEntry>>((ref) async {
+  final app = ref.read(appStateProvider);
+  try {
+    return await app.api.wasteLog();
+  } on ApiError catch (e) {
+    if (e.isAuthError) await app.sessionExpired();
+    rethrow;
+  }
+});
+
+/// Reservations — the head-waiter's dashboard tile (and the Reservations
+/// screen's list in C7).
+final reservationsProvider = FutureProvider<List<Reservation>>((ref) async {
+  final app = ref.read(appStateProvider);
+  try {
+    return await app.api.reservations();
+  } on ApiError catch (e) {
+    if (e.isAuthError) await app.sessionExpired();
+    rethrow;
+  }
+});
