@@ -77,15 +77,6 @@ class _HomeShellState extends ConsumerState<HomeShell>
   /// calls) at sign-in; this stays lazy without losing scroll position.
   final Map<NavKey, Widget> _built = {};
 
-  /// The tab broadcast. The shell DECIDES the tab (role defaults, guards,
-  /// taps) with its own setState; [activeTabProvider] is the read-side —
-  /// keep-alive screens watch it to know they are on stage. The mirror
-  /// runs post-frame (never during build — provider writes are illegal
-  /// while the tree builds, the old code's one side effect).
-  /// [_tablesBridge] carries the same value to the one screen not yet on
-  /// the provider; both go away when tables migrates (C4).
-  final ValueNotifier<NavKey> _tablesBridge = ValueNotifier(NavKey.dashboard);
-
   @override
   void initState() {
     super.initState();
@@ -172,8 +163,7 @@ class _HomeShellState extends ConsumerState<HomeShell>
         case NavKey.barista:
           return const KitchenBoard(baristaMode: true, self: NavKey.barista);
         case NavKey.tables:
-          return TablesScreen(
-              onNavigate: _select, activeTab: _tablesBridge, self: NavKey.tables);
+          return TablesScreen(onNavigate: _select, self: NavKey.tables);
         case NavKey.tableHistory:
           return const TablesHistoryScreen();
         case NavKey.menuView:
@@ -242,12 +232,12 @@ class _HomeShellState extends ConsumerState<HomeShell>
     final width = MediaQuery.sizeOf(context).width;
     final wide = width >= 900;
     final dark = Theme.of(context).brightness == Brightness.dark;
-    // Mirror the tab to its listeners AFTER the frame — never during
-    // build. Covers every _tab mutation path (init/_sync/_guard/_select);
-    // both notifiers no-op on equal values, so this never loops.
+    // Mirror the tab to [activeTabProvider]'s listeners AFTER the frame —
+    // never during build (provider writes are illegal while the tree
+    // builds). Covers every _tab mutation path (init/_sync/_guard/_select);
+    // the notifier no-ops on equal values, so this never loops.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      if (_tablesBridge.value != _tab) _tablesBridge.value = _tab;
       if (ref.read(activeTabProvider) != _tab) {
         ref.read(activeTabProvider.notifier).go(_tab);
       }

@@ -37,6 +37,7 @@ import '../api/sse/sse_channel.dart';
 import '../models/models.dart';
 import '../services/kitchen_live.dart';
 import 'app_state.dart';
+import 'floor_plan.dart' show defaultSections, mergeSections;
 import 'session_providers.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -515,3 +516,342 @@ class OpsAlertsFeedNotifier extends Notifier<OpsAlertsFeedState> {
 final opsAlertsFeedProvider =
     NotifierProvider<OpsAlertsFeedNotifier, OpsAlertsFeedState>(
         OpsAlertsFeedNotifier.new);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tables feed — the floor plan's live board ('tables' channel).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One immutable snapshot of the floor: the tables, the orders the floor
+/// still cares about, the merged section list, and the channel state.
+class TablesFeedState {
+  final List<CafeTable> tables;
+
+  /// Kitchen-flow tickets whatever their payment state, plus
+  /// served-but-unpaid tabs (the web's floor filter — a fulfilled ticket
+  /// that HAS been paid is history). See [_isFloorRelevant].
+  final List<FufutOrder> orders;
+
+  /// Server sections merged over the shipped defaults.
+  final List<String> sections;
+
+  /// True while the `tables` stream is connected (the Live/Offline chip).
+  final bool connected;
+
+  final bool loading;
+  final Object? error;
+
+  const TablesFeedState({
+    this.tables = const [],
+    this.orders = const [],
+    this.sections = defaultSections,
+    this.connected = false,
+    this.loading = true,
+    this.error,
+  });
+
+  TablesFeedState copyWith({
+    List<CafeTable>? tables,
+    List<FufutOrder>? orders,
+    List<String>? sections,
+    bool? connected,
+    bool? loading,
+    Object? error,
+    bool clearError = false,
+  }) {
+    return TablesFeedState(
+      tables: tables ?? this.tables,
+      orders: orders ?? this.orders,
+      sections: sections ?? this.sections,
+      connected: connected ?? this.connected,
+      loading: loading ?? this.loading,
+      error: clearError ? null : (error ?? this.error),
+    );
+  }
+}
+
+/// Orders the floor plan still cares about: kitchen-flow tickets whatever
+/// their payment state, plus served-but-unpaid tabs. A fulfilled ticket
+/// that HAS been paid is history and stays off the board. Filtering
+/// 'fulfilled' outright — what the screen once did — is what hid unpaid
+/// tabs from "Add Round", the open-tab badge and the detail dialog.
+bool _isFloorRelevant(FufutOrder o) {
+  final status = o.status.toLowerCase();
+  if (status == 'completed' || status == 'cancelled') return false;
+  final terminal = status == 'fulfilled' || status == 'served';
+  return !(terminal && (o.paymentStatus ?? '').toLowerCase() == 'paid');
+}
+
+class TablesFeedNotifier extends Notifier<TablesFeedState> {
+  SseChannel? _channel;
+  StreamSubscription<SseEvent>? _sub;
+  Timer? _poll;
+  bool _appPaused = false;
+
+  /// The web's toggle chip: the floor can hang up the live stream itself.
+  /// False = channel disconnected on purpose (the poll carries updates).
+  bool _live = true;
+
+  static const _pollInterval = Duration(seconds: 15);
+
+  @override
+  TablesFeedState build() {
+    ref.onDispose(_teardown);
+    _bootstrap();
+    return const TablesFeedState();
+  }
+
+  // ── Bootstrap (the web's onMounted: three feeds, then the channel) ────
+
+  Future<void> _bootstrap() async {
+    await Future.wait([_fetchTables(), _fetchOrders()]);
+    if (!ref.mounted) return;
+    await _fetchSections();
+    if (!ref.mounted) return;
+    _connect();
+  }
+
+  // ── Connection ────────────────────────────────────────────────────────
+
+  void _connect() {
+    if (!_live) return;
+    final app = ref.read(appStateProvider);
+    _teardownChannel();
+    final ch = SseChannel(
+      baseUrl: app.baseUrl,
+      channel: 'tables',
+      sessionToken: app.client.sessionToken,
+    );
+    _channel = ch;
+    ch.connected.addListener(_syncConn);
+    ch.quotaMode.addListener(_syncConn);
+    _sub = ch.stream.listen(_onEvent);
+    ch.connect();
+  }
+
+  void _syncConn() {
+    final ch = _channel;
+    if (ch == null) return;
+    state = state.copyWith(connected: ch.connected.value);
+    if (ch.connected.value) {
+      _cancelPoll();
+    } else {
+      _ensurePoll();
+    }
+  }
+
+  void _onEvent(SseEvent event) {
+    // The web registers table_update → loadTables, new_order/order_update →
+    // loadOrders. It refetches rather than applying the payload, so the
+    // render is always built from the same GET the web would make.
+    switch (event.event) {
+      case 'table_update':
+        _fetchTables();
+        break;
+      case 'new_order':
+      case 'order_update':
+        _fetchOrders();
+        break;
+    }
+  }
+
+  // ── Fetches (each catches its own failures, like the web) ─────────────
+
+  Future<void> _fetchTables() async {
+    final app = ref.read(appStateProvider);
+    try {
+      final rows = await app.api.tables();
+      if (!ref.mounted) return;
+      state = state.copyWith(tables: rows, clearError: true);
+    } on ApiError catch (e) {
+      if (!ref.mounted) return;
+      if (e.isAuthError) {
+        await app.sessionExpired();
+        return;
+      }
+      state = state.copyWith(loading: false, error: e);
+    } catch (e) {
+      if (!ref.mounted) return;
+      state = state.copyWith(loading: false, error: e);
+    }
+  }
+
+  Future<void> _fetchOrders() async {
+    final app = ref.read(appStateProvider);
+    try {
+      final all = await app.api.orders();
+      if (!ref.mounted) return;
+      state = state.copyWith(
+          orders: all.where(_isFloorRelevant).toList());
+    } on ApiError catch (e) {
+      if (e.isAuthError) await app.sessionExpired();
+      // The badges are allowed to fail on their own — the floor still renders.
+    } catch (_) {}
+  }
+
+  Future<void> _fetchSections() async {
+    final app = ref.read(appStateProvider);
+    try {
+      final serverList = await app.api.tableSections();
+      if (!ref.mounted) return;
+      final merged = mergeSections(serverList, state.tables);
+      if (merged.isNotEmpty) state = state.copyWith(sections: merged);
+    } catch (_) {
+      // A failed read — the till is offline, the request timed out — is not
+      // an error: the last known list (or the defaults) keeps the floor
+      // working (the web's loadSections catch).
+    }
+  }
+
+  // ── Poll fallback ─────────────────────────────────────────────────────
+
+  void _ensurePoll() {
+    if (_poll != null || _appPaused) return;
+    _poll = Timer.periodic(_pollInterval, (_) {
+      if (!state.connected) {
+        _fetchTables();
+        _fetchOrders();
+      }
+    });
+  }
+
+  void _cancelPoll() {
+    _poll?.cancel();
+    _poll = null;
+  }
+
+  /// The optimistic bill-request stamp — patch one row locally, server
+  /// truth follows on the next push/refresh.
+  void patchTableLocal(CafeTable patched) {
+    state = state.copyWith(tables: [
+      for (final t in state.tables)
+        if (t.id == patched.id) patched else t,
+    ]);
+  }
+
+  // ── Public surface ────────────────────────────────────────────────────
+
+  Future<void> refreshTables() => _fetchTables();
+  Future<void> refreshOrders() => _fetchOrders();
+  Future<void> refreshSections() => _fetchSections();
+
+  /// Pull-to-refresh: tables + orders + sections, one pass.
+  Future<void> refreshAll() async {
+    await Future.wait([_fetchTables(), _fetchOrders()]);
+    if (!ref.mounted) return;
+    await _fetchSections();
+  }
+
+  /// The Live/Offline chip: hang up (or re-open) the tables stream. The
+  /// poll carries updates while offline — the web's toggleSSE, minus the
+  /// kitchen channel (the ready chime now rides the shared kitchen feed).
+  void setLive(bool on) {
+    _live = on;
+    if (on) {
+      _connect();
+    } else {
+      _teardownChannel();
+      _ensurePoll();
+      state = state.copyWith(connected: false);
+    }
+  }
+
+  void appPaused() {
+    _appPaused = true;
+    _cancelPoll();
+    _channel?.suspend();
+  }
+
+  void appResumed() {
+    _appPaused = false;
+    _channel?.resume();
+    _fetchTables();
+    _fetchOrders();
+  }
+
+  void _teardown() {
+    _cancelPoll();
+    _teardownChannel();
+  }
+
+  void _teardownChannel() {
+    _sub?.cancel();
+    _sub = null;
+    final ch = _channel;
+    if (ch != null) {
+      ch.connected.removeListener(_syncConn);
+      ch.quotaMode.removeListener(_syncConn);
+      ch.disconnect();
+      _channel = null;
+    }
+  }
+}
+
+final tablesFeedProvider =
+    NotifierProvider<TablesFeedNotifier, TablesFeedState>(
+        TablesFeedNotifier.new);
+
+// ── Guest QR orders waiting for a floor Accept ──────────────────────────────
+
+/// The pending strip's list — a 30s poll, no SSE (guest orders are rare and
+/// the strip is deliberately loud when one lands). On error the list
+/// empties quietly and the next poll retries (the web's loadPending catch).
+class PendingOrdersNotifier extends Notifier<List<FufutOrder>> {
+  Timer? _poll;
+  bool _appPaused = false;
+
+  static const _interval = Duration(seconds: 30);
+
+  @override
+  List<FufutOrder> build() {
+    ref.onDispose(_teardown);
+    _poll = Timer.periodic(_interval, (_) {
+      if (!_appPaused) _fetch();
+    });
+    _fetch();
+    return const [];
+  }
+
+  Future<void> _fetch() async {
+    final app = ref.read(appStateProvider);
+    try {
+      final rows = await app.api.pendingOrders();
+      if (!ref.mounted) return;
+      state = rows;
+    } catch (_) {
+      // A waiter cannot act on this failing, and the floor plan itself is
+      // the important thing on this screen — stay quiet, retry on the next
+      // poll (the web's loadPending catch).
+      if (!ref.mounted) return;
+      state = const [];
+    }
+  }
+
+  Future<void> refresh() => _fetch();
+
+  /// Drop one immediately rather than waiting for the reload: the waiter
+  /// has just tapped it and needs to see that it went (the web's comment).
+  void removeLocal(String orderId) =>
+      state = state.where((o) => o.id != orderId).toList();
+
+  void appPaused() {
+    _appPaused = true;
+    _poll?.cancel();
+  }
+
+  void appResumed() {
+    _appPaused = false;
+    _poll = Timer.periodic(_interval, (_) {
+      if (!_appPaused) _fetch();
+    });
+    _fetch();
+  }
+
+  void _teardown() {
+    _poll?.cancel();
+    _poll = null;
+  }
+}
+
+final pendingOrdersProvider =
+    NotifierProvider<PendingOrdersNotifier, List<FufutOrder>>(
+        PendingOrdersNotifier.new);

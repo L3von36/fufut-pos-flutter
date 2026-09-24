@@ -45,13 +45,16 @@ import 'package:printing/printing.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
-import '../api/sse/sse_channel.dart';
 import '../models/models.dart';
 import '../services/audio_alerts.dart';
 import '../state/app_state.dart';
 import '../state/cart.dart';
+import '../state/clock.dart';
 import '../state/floor_plan.dart';
+import '../state/live_feeds.dart';
+import '../state/nav.dart';
 import '../state/roles.dart';
+import '../state/session_providers.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/dashboard.dart' show LoadError;
@@ -61,181 +64,45 @@ import 'orders_screen.dart' show OrderDetailSheet;
 class TablesScreen extends ConsumerStatefulWidget {
   final ValueChanged<NavKey>? onNavigate;
 
-  /// The shell's active-tab notifier — the keep-alive contract. An offstage
-  /// floor must not pin two Worker connections.
-  final ValueNotifier<NavKey>? activeTab;
+  /// Which shell tab this floor lives on — the ready chime speaks only
+  /// while the floor is on stage (null = always on stage, the tests' bare
+  /// constructor). The live feeds themselves never sleep while the screen
+  /// is mounted; there is no connection left to gate.
   final NavKey? self;
 
-  const TablesScreen({super.key, this.onNavigate, this.activeTab, this.self});
+  const TablesScreen({super.key, this.onNavigate, this.self});
 
   @override
   ConsumerState<TablesScreen> createState() => _TablesScreenState();
 }
 
-class _TablesScreenState extends ConsumerState<TablesScreen>
-    with WidgetsBindingObserver {
-  List<CafeTable> _tables = [];
-  List<FufutOrder> _orders = []; // floor-relevant orders (the web's filter)
-  List<FufutOrder> _pending = []; // guest QR orders waiting for Accept
-  List<String> _sections = [...defaultSections];
-  List<StaffMember> _staffServers = [];
-  bool _loading = true;
-  Object? _error;
-
+class _TablesScreenState extends ConsumerState<TablesScreen> {
   String _activeSection = 'All';
   String _statusFilter = '';
 
-  // Reactive tick for the occupancy timers — the web's 10s `tick` counter.
-  Timer? _tickTimer;
-  int _tick = 0;
-
-  // Guest-order poll — the web's 30s `pendingInterval`.
-  Timer? _pendingTimer;
-
-  // Disconnected safety net — only runs while the tables stream is down
-  // (the kitchen board's gate; the web relies on manual refresh here, a
-  // native app on a flaky mobile link gets the poll instead).
-  Timer? _poll;
-
-  // Two independent SSE channels, exactly the web's pair:
-  //   1. `tables` — every table row, pushed when status/assignment changes.
-  //   2. `kitchen` — every active order, diffed for the ready chime.
-  SseChannel? _tablesSse;
-  StreamSubscription<SseEvent>? _tablesSub;
-  SseChannel? _kitchenSse;
-  StreamSubscription<SseEvent>? _kitchenSub;
-
-  // Same two gates as the kitchen board: app foregrounded AND this screen
-  // the shell's active tab (Offstage keep-alive).
-  bool _lifecycleUp = true;
-  bool _tabUp = true;
-
   String? _accepting; // pending order currently being accepted
 
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addObserver(this);
-    AudioAlerts.instance.load();
-    _tabUp = widget.self == null || widget.activeTab?.value == widget.self;
-    widget.activeTab?.addListener(_onTabChanged);
-    _bootstrap();
-  }
+  /// Roster cache for the assignment dropdown — fetched once per screen
+  /// life (ephemeral UI support, not app state).
+  List<StaffMember> _staffServers = [];
 
-  Future<void> _bootstrap() async {
-    // The web's onMounted: all three feeds in parallel, zones merged after
-    // the tables land, then the channels open and the clocks start.
-    await Future.wait([_loadTables(), _loadOrders(), _loadPending()]);
-    if (!mounted) return;
-    await _loadSections();
-    if (!mounted) return;
-    setState(() {
-      _loading = false;
-      _error = _tables.isEmpty ? _error : null;
-    });
-    if (_tabUp) _connectSse();
-    _tickTimer = Timer.periodic(const Duration(seconds: 10), (_) {
-      if (!_tabUp || !_lifecycleUp) return;
-      if (mounted) setState(() => _tick++);
-    });
-    _pendingTimer = Timer.periodic(const Duration(seconds: 30), (_) {
-      if (!_tabUp || !_lifecycleUp) return;
-      _loadPending();
-    });
-    _poll = Timer.periodic(const Duration(seconds: 15), (_) {
-      if (!_tabUp || !_lifecycleUp) return;
-      final sse = _tablesSse;
-      if (sse == null || !sse.connected.value) {
-        _loadTables(quiet: true);
-        _loadOrders(quiet: true);
-      }
-    });
-  }
+  // Previous status per order id, used to detect a transition INTO ready.
+  // Without this, every feed tick that finds a ready order would re-chime —
+  // the waiter would hear it over and over until the order is served, which
+  // is worse than no notification at all (the web's prevOrderStatuses).
+  Map<String, String> _prevOrderStatuses = {};
 
-  // ── Data loading (each feed catches its own failures, like the web) ──────
+  TablesFeedState get _feed => ref.read(tablesFeedProvider);
 
-  Future<void> _loadTables({bool quiet = false}) async {
-    final app = ref.read(appStateProvider);
-    if (!quiet) setState(() => _loading = true);
-    try {
-      final rows = await app.api.tables();
-      if (!mounted) return;
-      setState(() {
-        _tables = rows;
-        _error = null;
-        if (!quiet) _loading = false;
-      });
-    } on ApiError catch (e) {
-      if (!mounted) return;
-      if (e.isAuthError) {
-        await app.sessionExpired();
-        return;
-      }
-      if (!quiet) setState(() { _loading = false; _error = e; });
-    } catch (e) {
-      if (!mounted) return;
-      if (!quiet) setState(() { _loading = false; _error = e; });
-    }
-  }
+  bool get _onStage =>
+      widget.self == null || ref.read(activeTabProvider) == widget.self;
 
-  /// Orders the floor plan still cares about: kitchen-flow tickets whatever
-  /// their payment state, plus served-but-unpaid tabs. A fulfilled ticket
-  /// that HAS been paid is history and stays off the board. Filtering
-  /// 'fulfilled' outright — what this screen once did — is what hid unpaid
-  /// tabs from "Add Round", the open-tab badge and the detail dialog.
-  static bool _floorRelevant(FufutOrder o) {
-    final status = o.status.toLowerCase();
-    if (status == 'completed' || status == 'cancelled') return false;
-    final terminal = status == 'fulfilled' || status == 'served';
-    return !(terminal && (o.paymentStatus ?? '').toLowerCase() == 'paid');
-  }
+  // ── Data (build() watches the feeds; these read the same snapshot) ────────
 
-  Future<void> _loadOrders({bool quiet = true}) async {
-    final app = ref.read(appStateProvider);
-    try {
-      final all = await app.api.orders();
-      if (!mounted) return;
-      setState(() => _orders = all.where(_floorRelevant).toList());
-    } on ApiError catch (e) {
-      if (e.isAuthError) await app.sessionExpired();
-      // The badges are allowed to fail on their own — the floor still renders.
-    } catch (_) {}
-  }
-
-  Future<void> _loadPending() async {
-    final app = ref.read(appStateProvider);
-    try {
-      final rows = await app.api.pendingOrders();
-      if (!mounted) return;
-      setState(() => _pending = rows);
-    } catch (_) {
-      // A waiter cannot act on this failing, and the floor plan itself is
-      // the important thing on this screen — stay quiet, retry on the next
-      // poll (the web's loadPending catch).
-      if (!mounted) return;
-      setState(() => _pending = const []);
-    }
-  }
-
-  Future<void> _loadSections() async {
-    final app = ref.read(appStateProvider);
-    try {
-      final serverList = await app.api.tableSections();
-      if (!mounted) return;
-      final merged = mergeSections(serverList, _tables);
-      if (merged.isNotEmpty) setState(() => _sections = merged);
-    } catch (_) {
-      // A failed read — the till is offline, the request timed out — is not
-      // an error: the last known list (or the defaults) keeps the floor
-      // working (the web's loadSections catch).
-    }
-  }
-
-  Future<void> _refreshAll() async {
-    await Future.wait([_loadTables(quiet: true), _loadOrders(), _loadPending()]);
-    if (!mounted) return;
-    showInfoOn(ScaffoldMessenger.of(context), 'Refreshed');
-  }
+  List<CafeTable> get _tables => _feed.tables;
+  List<FufutOrder> get _orders => _feed.orders;
+  List<FufutOrder> get _pending => ref.read(pendingOrdersProvider);
+  List<String> get _sections => _feed.sections;
 
   // ── Derived (the web's computed properties) ──────────────────────────────
 
@@ -318,121 +185,30 @@ class _TablesScreenState extends ConsumerState<TablesScreen>
   static int _createdMs(FufutOrder o) =>
       DateTime.tryParse(o.created ?? '')?.toUtc().millisecondsSinceEpoch ?? -1;
 
-  bool get _isManager => ref.read(appStateProvider).roleKey == 'manager';
+  bool get _isManager => ref.watch(roleProvider) == 'manager';
 
-  // ── Keep-alive / lifecycle ────────────────────────────────────────────────
+  // ── Feed listeners (registered in build) ─────────────────────────────────
 
-  void _onTabChanged() {
-    if (!mounted) return;
-    final up = widget.activeTab?.value == widget.self;
-    if (up == _tabUp) return;
-    _tabUp = up;
-    _syncSse();
-    if (up) {
-      // Back on stage: the floor may have moved while we were dark.
-      _loadTables(quiet: true);
-      _loadOrders();
-      _loadPending();
-    }
+  /// Back on stage: the floor may have moved while we were dark.
+  void _onTabChanged(NavKey? prev, NavKey next) {
+    if (!mounted || next != widget.self) return;
+    ref.read(tablesFeedProvider.notifier).refreshTables();
+    ref.read(tablesFeedProvider.notifier).refreshOrders();
+    ref.read(pendingOrdersProvider.notifier).refresh();
   }
 
-  void _syncSse() {
-    final up = _lifecycleUp && _tabUp;
-    for (final sse in [_tablesSse, _kitchenSse]) {
-      if (sse == null) continue;
-      if (up) {
-        sse.resume(); // no-op when already up
-      } else {
-        sse.suspend();
-      }
-    }
-  }
+  /// The ready chime — table-scoped, diffed against the previous snapshot.
+  /// The shared kitchen feed carries every order; this screen only speaks
+  /// for orders sitting on ITS tables, and only while on stage.
+  void _onKitchenFeed(KitchenFeedState? prev, KitchenFeedState next) {
+    if (prev == null || !mounted) return;
+    if (identical(prev.orders, next.orders)) return;
+    if (!_onStage) return; // chime only while on stage
 
-  void _connectSse() {
-    final app = ref.read(appStateProvider);
-    _tablesSub?.cancel();
-    _tablesSse?.disconnect();
-    _kitchenSub?.cancel();
-    _kitchenSse?.disconnect();
-
-    final tablesSse = SseChannel(
-      baseUrl: app.baseUrl,
-      channel: 'tables',
-      sessionToken: app.client.sessionToken,
-    );
-    _tablesSse = tablesSse;
-    _tablesSub = tablesSse.stream.listen(_onTablesEvent);
-    tablesSse.connect();
-
-    final kitchenSse = SseChannel(
-      baseUrl: app.baseUrl,
-      channel: 'kitchen',
-      sessionToken: app.client.sessionToken,
-    );
-    _kitchenSse = kitchenSse;
-    _kitchenSub = kitchenSse.stream.listen(_onKitchenEvent);
-    kitchenSse.connect();
-
-    // The web's toggle chip controls the tables channel; the kitchen channel
-    // follows the same switch (its only consumer is the ready chime).
-  }
-
-  void _toggleSse() {
-    final up = _tablesSse?.connected.value ?? false;
-    if (up) {
-      _tablesSse?.disconnect();
-      _kitchenSse?.disconnect();
-      if (mounted) setState(() {});
-    } else {
-      _connectSse();
-    }
-  }
-
-  void _onTablesEvent(SseEvent event) {
-    if (!mounted) return;
-    // The web registers table_update → loadTables, new_order/order_update →
-    // loadOrders. It refetches rather than applying the payload, so the
-    // render is always built from the same GET the web would make.
-    switch (event.event) {
-      case 'table_update':
-        _loadTables(quiet: true);
-        break;
-      case 'new_order':
-      case 'order_update':
-        _loadOrders();
-        break;
-    }
-  }
-
-  // Previous status per order id, used to detect a transition INTO ready.
-  // Without this, every SSE tick that finds a ready order would re-chime —
-  // the waiter would hear it every 10s until the order is served, which is
-  // worse than no notification at all. Snapshot BEFORE applying, compare,
-  // then replace (the web's prevOrderStatuses).
-  Map<String, String> _prevOrderStatuses = {};
-
-  void _onKitchenEvent(SseEvent event) {
-    // Both event names carry the full board snapshot now: the server emits
-    // `new_order` only when a ticket genuinely lands, and `order_update` for
-    // every other move (a serve, a station handoff). The ready chime reads
-    // the transition either way — trusting the event NAME was the bug that
-    // announced "new order" on mark-served.
-    if (event.event != 'new_order' && event.event != 'order_update') return;
-    final data = event.tryDecodeJson();
-    final raw = data?['orders'];
-    if (raw is! List) return;
-    if (!_tabUp || !_lifecycleUp) return; // chime only while on stage
-
-    final next = <FufutOrder>[];
-    for (final row in raw.whereType<Map>()) {
-      try {
-        next.add(FufutOrder.fromJson(Map<String, dynamic>.from(row)));
-      } catch (_) {}
-    }
     final myTables = _tables.map((t) => t.id).toSet();
-    final prev = _prevOrderStatuses;
+    final prevStatuses = _prevOrderStatuses;
     final nextStatuses = <String, String>{
-      for (final o in next) o.id: o.status,
+      for (final o in next.orders) o.id: o.status,
     };
     if (myTables.isEmpty) {
       // No tables loaded yet — keep the map fresh so the first real
@@ -442,15 +218,17 @@ class _TablesScreenState extends ConsumerState<TablesScreen>
       return;
     }
     final newlyReady = <FufutOrder>[];
-    for (final o in next) {
+    for (final o in next.orders) {
       final tid = o.tableNum ?? '';
       if (tid.isEmpty || !myTables.contains(tid)) continue;
-      if (o.status == 'ready' && prev[o.id] != 'ready') newlyReady.add(o);
+      if (o.status == 'ready' && prevStatuses[o.id] != 'ready') {
+        newlyReady.add(o);
+      }
     }
     _prevOrderStatuses = nextStatuses;
     // Sound + toast per newly-ready order. Cap at 3 so a chef hitting
     // "Mark all ready" on a 10-top board does not chime ten times in a tick.
-    if (newlyReady.isEmpty || !mounted) return;
+    if (newlyReady.isEmpty) return;
     final messenger = ScaffoldMessenger.of(context);
     for (final o in newlyReady.take(3)) {
       AudioAlerts.instance.play(AlertSound.orderReady);
@@ -459,34 +237,12 @@ class _TablesScreenState extends ConsumerState<TablesScreen>
     }
   }
 
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    super.didChangeAppLifecycleState(state);
-    // Web visibilitychange parity: hidden screens pause the streams so a
-    // locked tablet never pins Worker connections it cannot read.
-    if (state == AppLifecycleState.hidden ||
-        state == AppLifecycleState.paused) {
-      _lifecycleUp = false;
-    } else if (state == AppLifecycleState.resumed) {
-      _lifecycleUp = true;
-    } else {
-      return; // inactive/detached: transient, leave the gates as they are
-    }
-    _syncSse();
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    widget.activeTab?.removeListener(_onTabChanged);
-    _tickTimer?.cancel();
-    _pendingTimer?.cancel();
-    _poll?.cancel();
-    _tablesSub?.cancel();
-    _tablesSse?.disconnect();
-    _kitchenSub?.cancel();
-    _kitchenSse?.disconnect();
-    super.dispose();
+  /// Pull-to-refresh.
+  Future<void> _refreshAll() async {
+    await ref.read(tablesFeedProvider.notifier).refreshAll();
+    await ref.read(pendingOrdersProvider.notifier).refresh();
+    if (!mounted) return;
+    showInfoOn(ScaffoldMessenger.of(context), 'Refreshed');
   }
 
   // ── Floor actions ────────────────────────────────────────────────────────
@@ -502,13 +258,11 @@ class _TablesScreenState extends ConsumerState<TablesScreen>
       // Drop it immediately rather than waiting for the reload: the waiter
       // has just tapped it and needs to see that it went (the web's comment).
       if (!mounted) return;
-      setState(() {
-        _pending = _pending.where((o) => o.id != order.id).toList();
-      });
+      ref.read(pendingOrdersProvider.notifier).removeLocal(order.id);
       AudioAlerts.instance.play(AlertSound.newOrder);
       showInfoOn(messenger,
           'Sent to the kitchen — ${tableLabel(order.tableNum)}');
-      await _loadOrders();
+      await ref.read(tablesFeedProvider.notifier).refreshOrders();
     } on ApiError catch (e) {
       if (e.isAuthError) await app.sessionExpired();
       if (!mounted) return;
@@ -584,8 +338,8 @@ class _TablesScreenState extends ConsumerState<TablesScreen>
           tip: result.tip, breakdown: result.breakdown);
       showInfoOn(messenger,
           'Tab settled — ${money(line.amount)} via ${line.method}');
-      await _loadTables(quiet: true);
-      await _loadOrders();
+      await ref.read(tablesFeedProvider.notifier).refreshTables();
+      await ref.read(tablesFeedProvider.notifier).refreshOrders();
     } on ApiError catch (e) {
       if (e.isAuthError) await app.sessionExpired();
       showErrorOn(messenger, e);
@@ -632,12 +386,13 @@ class _TablesScreenState extends ConsumerState<TablesScreen>
   }
 
   void _patchRow(String id, {required String billRequestedAt}) {
-    setState(() {
-      _tables = [
-        for (final t in _tables)
-          if (t.id == id) t.copyWith(billRequestedAt: billRequestedAt) else t,
-      ];
-    });
+    for (final t in _tables) {
+      if (t.id == id) {
+        ref.read(tablesFeedProvider.notifier).patchTableLocal(
+            t.copyWith(billRequestedAt: billRequestedAt));
+        return;
+      }
+    }
   }
 
   /// Quick-status side effects live in the detail sheet; this is the PUT.
@@ -649,16 +404,16 @@ class _TablesScreenState extends ConsumerState<TablesScreen>
     try {
       await app.api.updateTable(id, payload);
       showInfoOn(messenger, 'Table updated');
-      await _loadTables(quiet: true);
+      await ref.read(tablesFeedProvider.notifier).refreshTables();
       return null;
     } on ApiError catch (e) {
       if (e.isAuthError) await app.sessionExpired();
       // The server refuses seating a held table with an explanation;
       // surfacing it is the difference between an explanation and a wall.
-      await _loadTables(quiet: true);
+      await ref.read(tablesFeedProvider.notifier).refreshTables();
       return e.message;
     } catch (e) {
-      await _loadTables(quiet: true);
+      await ref.read(tablesFeedProvider.notifier).refreshTables();
       return e.toString();
     }
   }
@@ -674,14 +429,14 @@ class _TablesScreenState extends ConsumerState<TablesScreen>
     try {
       await app.api.freeTable(id);
       showInfoOn(messenger, 'Table freed');
-      await _loadTables(quiet: true);
+      await ref.read(tablesFeedProvider.notifier).refreshTables();
       return null;
     } on ApiError catch (e) {
       if (e.isAuthError) await app.sessionExpired();
-      await _loadTables(quiet: true);
+      await ref.read(tablesFeedProvider.notifier).refreshTables();
       return e.message;
     } catch (e) {
-      await _loadTables(quiet: true);
+      await ref.read(tablesFeedProvider.notifier).refreshTables();
       return e.toString();
     }
   }
@@ -692,7 +447,7 @@ class _TablesScreenState extends ConsumerState<TablesScreen>
     try {
       await app.api.deleteTable(t.id);
       showInfoOn(messenger, 'Table deleted');
-      await _loadTables(quiet: true);
+      await ref.read(tablesFeedProvider.notifier).refreshTables();
       return true;
     } on ApiError catch (e) {
       if (e.isAuthError) await app.sessionExpired();
@@ -710,7 +465,7 @@ class _TablesScreenState extends ConsumerState<TablesScreen>
     try {
       await app.api.releaseReservation(hold.id);
       showInfoOn(messenger, 'Table released');
-      await _loadTables(quiet: true);
+      await ref.read(tablesFeedProvider.notifier).refreshTables();
       return true;
     } on ApiError catch (e) {
       if (e.isAuthError) await app.sessionExpired();
@@ -862,18 +617,40 @@ class _TablesScreenState extends ConsumerState<TablesScreen>
         },
       ),
     );
-    await _loadTables(quiet: true);
+    await ref.read(tablesFeedProvider.notifier).refreshTables();
+  }
+
+  /// The web's toggleSSE — hang up (or re-open) the tables stream. The
+  /// ready chime now rides the shared kitchen feed, so only the tables
+  /// channel follows this switch.
+  void _toggleSse() {
+    final up = ref.read(tablesFeedProvider).connected;
+    ref.read(tablesFeedProvider.notifier).setLive(!up);
+    if (mounted) setState(() {});
   }
 
   // ── Build ────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
-    if (_loading && _tables.isEmpty && _error == null) {
+    // Watched data: the floor feed, the pending strip, and the clocks —
+    // minute ticks re-tint the occupancy colours, kitchen-feed transitions
+    // drive the ready chime, and the active-tab switch refreshes on return.
+    final feed = ref.watch(tablesFeedProvider);
+    ref.watch(pendingOrdersProvider);
+    ref.listen(minuteClockProvider, (_, __) {
+      if (mounted && _onStage) setState(() {}); // occupancy re-tint
+    });
+    ref.listen(activeTabProvider, _onTabChanged);
+    ref.listen(kitchenFeedProvider, _onKitchenFeed);
+
+    if (feed.loading && feed.tables.isEmpty && feed.error == null) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (_error != null && _tables.isEmpty) {
-      return LoadError(error: _error!, onRetry: _bootstrap);
+    if (feed.error != null && feed.tables.isEmpty) {
+      return LoadError(
+          error: feed.error!,
+          onRetry: () => ref.read(tablesFeedProvider.notifier).refreshAll());
     }
     final pal = Pal.of(context);
     final manager = _isManager;
@@ -906,7 +683,7 @@ class _TablesScreenState extends ConsumerState<TablesScreen>
           _Toolbar(
             tableCount: _tables.length,
             occupancyPercent: _occupancyPercent,
-            connected: _tablesSse?.connected,
+            connected: feed.connected,
             onToggleSse: _toggleSse,
             manager: manager,
             onAddTable: _openAddTable,
@@ -988,7 +765,7 @@ class _TablesScreenState extends ConsumerState<TablesScreen>
 class _Toolbar extends StatelessWidget {
   final int tableCount;
   final int occupancyPercent;
-  final ValueNotifier<bool>? connected;
+  final bool connected;
   final VoidCallback onToggleSse;
   final bool manager;
   final VoidCallback onAddTable;
@@ -1059,7 +836,7 @@ class _Toolbar extends StatelessWidget {
 /// up, a dim Offline chip while the poll carries the floor. Tapping toggles
 /// the connection (the web's toggleSSE).
 class _LiveChip extends StatelessWidget {
-  final ValueNotifier<bool>? connected;
+  final bool connected;
   final VoidCallback onToggle;
 
   const _LiveChip({required this.connected, required this.onToggle});
@@ -1067,12 +844,7 @@ class _LiveChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final pal = Pal.of(context);
-    final listenable = connected;
-    if (listenable == null) return _chip(pal, false);
-    return ValueListenableBuilder<bool>(
-      valueListenable: listenable,
-      builder: (context, up, _) => _chip(pal, up),
-    );
+    return _chip(pal, connected);
   }
 
   Widget _chip(Pal pal, bool up) {
