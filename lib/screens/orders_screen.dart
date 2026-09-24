@@ -1,7 +1,11 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../api/api_client.dart';
+import '../api/sse/sse_channel.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
 import '../state/order_scope.dart';
@@ -23,13 +27,20 @@ import 'order_history_screen.dart';
 /// then ticket cards whose left accent bar carries the status color.
 class OrdersScreen extends StatefulWidget {
   final bool openOnlyDefault;
-  const OrdersScreen({super.key, this.openOnlyDefault = false});
+
+  /// Shell keep-alive wiring (same contract as the boards): when the screen
+  /// is built under [Offstage], SSE suspends offstage and resumes on stage.
+  final ValueListenable? activeTab;
+  final Object? self;
+
+  const OrdersScreen({super.key, this.openOnlyDefault = false, this.activeTab, this.self});
 
   @override
   State<OrdersScreen> createState() => _OrdersScreenState();
 }
 
-class _OrdersScreenState extends State<OrdersScreen> {
+class _OrdersScreenState extends State<OrdersScreen>
+    with WidgetsBindingObserver {
   List<FufutOrder> _orders = [];
   bool _loading = true;
   late bool _openOnly = widget.openOnlyDefault;
@@ -38,6 +49,17 @@ class _OrdersScreenState extends State<OrdersScreen> {
   String? _error;
   bool _showOlder = false;
   final _search = TextEditingController();
+
+  // Live push — the owner's "state management on every screen" rule: a
+  // settle on the till, a serve on the floor or a new ticket from a menu
+  // view repaints this list within seconds, no manual refresh. The board
+  // payload covers every active order, so the kitchen channel is the
+  // cheapest honest feed.
+  SseChannel? _sse;
+  StreamSubscription? _sseSub;
+  Timer? _debounce;
+  bool _lifecycleUp = true;
+  bool _tabUp = true;
 
   static const _statuses = [
     'all', 'new', 'preparing', 'ready', 'served', 'fulfilled', 'cancelled'
@@ -69,15 +91,93 @@ class _OrdersScreenState extends State<OrdersScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _tabUp = widget.activeTab?.value == widget.self;
+    widget.activeTab?.addListener(_onTabChanged);
     _load();
+    _connectSse();
   }
 
-  Future<void> _load() async {
+  void _onTabChanged() {
+    if (!mounted) return;
+    final up = widget.activeTab?.value == widget.self;
+    if (up == _tabUp) return;
+    _tabUp = up;
+    _syncSse();
+    if (up) _load(quiet: true); // server truth may have moved while dark
+  }
+
+  void _syncSse() {
+    final sse = _sse;
+    if (sse == null) return;
+    if (_lifecycleUp && _tabUp) {
+      sse.resume();
+    } else {
+      sse.suspend();
+    }
+  }
+
+  void _connectSse() {
     final app = context.read<AppState>();
-    setState(() {
-      _loading = true;
-      _error = null;
+    _sseSub?.cancel();
+    _sse?.disconnect();
+    final sse = SseChannel(
+      baseUrl: app.baseUrl,
+      channel: 'kitchen',
+      sessionToken: app.client.sessionToken,
+    );
+    _sse = sse;
+    _sseSub = sse.stream.listen(_onSseEvent);
+    sse.connect();
+  }
+
+  void _onSseEvent(SseEvent event) {
+    if (!mounted || !_tabUp || !_lifecycleUp) return;
+    if (event.event != 'new_order' && event.event != 'order_update') return;
+    // Debounced quiet reload — the payload refreshes the boards directly;
+    // this screen rebuilds from its own scoped GET (role scoping, day
+    // window and search stay in one place).
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 400), () {
+      if (mounted) _load(quiet: true);
     });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.paused) {
+      _lifecycleUp = false;
+    } else if (state == AppLifecycleState.resumed) {
+      _lifecycleUp = true;
+    } else {
+      return;
+    }
+    _syncSse();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    widget.activeTab?.removeListener(_onTabChanged);
+    _debounce?.cancel();
+    _sseSub?.cancel();
+    _sse?.disconnect();
+    super.dispose();
+  }
+
+  Future<void> _load({bool quiet = false}) async {
+    final app = context.read<AppState>();
+    if (!quiet) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
+    // The till gate renders from live state — refresh it alongside the list
+    // (cheap public read) so an open/close elsewhere flips this screen too.
+    app.refreshTill();
     try {
       // Role scoping runs before the status/search filters, exactly like the
       // web OrdersView: a barista filtering "new" must not conjure the
@@ -188,11 +288,18 @@ class _OrdersScreenState extends State<OrdersScreen> {
   @override
   Widget build(BuildContext context) {
     final pal = Pal.of(context);
-    final roleKey = context.watch<AppState>().roleKey;
+    final app = context.watch<AppState>();
+    final roleKey = app.roleKey;
     final rows = _filtered;
     // Previous-day open checks surface only in Open Checks mode; in Orders
     // mode the day window already cut everything older.
     final older = _openOnly ? _olderOrders : const <FufutOrder>[];
+    // Service law 2 — the till owns the money. A cashier looking at orders
+    // with the drawer closed sees the WHY, not a queue they cannot act on;
+    // the manager still sees the list with a banner (they can open the till
+    // themselves and keep working).
+    final tillClosed = app.tillOpen == false;
+    final cashierBlocked = tillClosed && roleKey == 'cashier';
     return Scaffold(
       backgroundColor: pal.bg,
       body: Column(
@@ -299,79 +406,136 @@ class _OrdersScreenState extends State<OrdersScreen> {
             ),
           // ── List ─────────────────────────────────────────────────────────
           Expanded(
-            child: _loading
-                ? const Center(child: CircularProgressIndicator())
-                : _error != null
-                    ? _ErrorPane(message: _error!, onRetry: _load)
-                    : (rows.isEmpty && older.isEmpty)
-                        ? EmptyState(
-                            icon: Icons.receipt_long,
-                            title: 'No orders yet',
-                            hint: emptyOrdersHint(roleKey),
-                          )
-                        : RefreshIndicator(
-                            onRefresh: _load,
-                            child: ListView(
-                              physics: const AlwaysScrollableScrollPhysics(),
-                              padding:
-                                  const EdgeInsets.fromLTRB(12, 6, 12, 20),
-                              children: [
-                                if (rows.isEmpty && older.isNotEmpty)
-                                  Padding(
-                                    padding: const EdgeInsets.only(bottom: 6),
-                                    child: Text(
-                                      'No checks opened today — '
-                                      '${older.length} older unpaid below.',
-                                      style: TextStyle(
-                                          fontSize: 12, color: pal.muted),
-                                    ),
-                                  ),
-                                for (final o in rows)
-                                  Padding(
-                                    padding: const EdgeInsets.only(bottom: 8),
-                                    child: _OrderTile(
-                                      order: o,
-                                      accent: _accentFor(context, o.status),
-                                      showCheckActions:
-                                          _openOnly && _isActionable(o),
-                                      onSplit: () => _splitFlow(o),
-                                      onMove: () => _moveFlow(o),
-                                      onMerge: () => _mergeFlow(o),
-                                    ),
-                                  ),
-                                // ── Previous-day open checks (Open Checks
-                                // mode): grouped under the day's work, one
-                                // tap away — never unreachable. An unpaid
-                                // tab is money owed whatever day it was run
-                                // up.
-                                if (older.isNotEmpty)
-                                  Padding(
-                                    padding: const EdgeInsets.only(top: 4),
-                                    child: _OlderGroupHeader(
-                                      count: older.length,
-                                      expanded: _showOlder,
-                                      onTap: () => setState(
-                                          () => _showOlder = !_showOlder),
-                                    ),
-                                  ),
-                                if (older.isNotEmpty && _showOlder)
-                                  for (final o in older)
-                                    Padding(
-                                      padding:
-                                          const EdgeInsets.only(bottom: 8),
-                                      child: _OrderTile(
-                                        order: o,
-                                        accent: _accentFor(context, o.status),
-                                        showCheckActions: _isActionable(o),
-                                        onSplit: () => _splitFlow(o),
-                                        onMove: () => _moveFlow(o),
-                                        onMerge: () => _mergeFlow(o),
-                                        olderThanToday: true,
-                                      ),
-                                    ),
-                              ],
+            child: cashierBlocked
+                ? ListView(children: [
+                    const SizedBox(height: 60),
+                    const Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 18),
+                      child: InfoBanner(
+                        'The till is closed — orders come back the moment '
+                        'the drawer opens. Open the till from the Cash '
+                        'Drawer screen to start settling.',
+                        severity: InfoSeverity.warning,
+                        icon: Icons.lock_outline_rounded,
+                      ),
+                    ),
+                    const SizedBox(height: 18),
+                    const EmptyState(
+                      icon: Icons.lock_outline_rounded,
+                      title: 'Till closed',
+                      hint: 'The cashier\'s settle queue unlocks when the '
+                          'till opens.',
+                    ),
+                  ])
+                : tillClosed && canCheckout(roleKey)
+                    ? ListView(children: [
+                        const Padding(
+                          padding: EdgeInsets.fromLTRB(12, 6, 12, 0),
+                          child: InfoBanner(
+                            'The till is closed — settlements are refused '
+                            'until the drawer opens.',
+                            severity: InfoSeverity.warning,
+                            icon: Icons.lock_outline_rounded,
+                          ),
+                        ),
+                        for (final o in rows)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 8),
+                            child: _OrderTile(
+                              order: o,
+                              accent: _accentFor(context, o.status),
+                              showCheckActions: _openOnly && _isActionable(o),
+                              onSplit: () => _splitFlow(o),
+                              onMove: () => _moveFlow(o),
+                              onMerge: () => _mergeFlow(o),
+                              onChanged: _load,
                             ),
                           ),
+                      ])
+                    : _loading
+                        ? const Center(child: CircularProgressIndicator())
+                        : _error != null
+                            ? _ErrorPane(message: _error!, onRetry: _load)
+                            : (rows.isEmpty && older.isEmpty)
+                                ? EmptyState(
+                                    icon: Icons.receipt_long,
+                                    title: 'No orders yet',
+                                    hint: emptyOrdersHint(roleKey),
+                                  )
+                                : RefreshIndicator(
+                                    onRefresh: _load,
+                                    child: ListView(
+                                      physics:
+                                          const AlwaysScrollableScrollPhysics(),
+                                      padding: const EdgeInsets.fromLTRB(
+                                          12, 6, 12, 20),
+                                      children: [
+                                        if (rows.isEmpty && older.isNotEmpty)
+                                          Padding(
+                                            padding:
+                                                const EdgeInsets.only(bottom: 6),
+                                            child: Text(
+                                              'No checks opened today — '
+                                              '${older.length} older unpaid below.',
+                                              style: TextStyle(
+                                                  fontSize: 12,
+                                                  color: pal.muted),
+                                            ),
+                                          ),
+                                        for (final o in rows)
+                                          Padding(
+                                            padding:
+                                                const EdgeInsets.only(bottom: 8),
+                                            child: _OrderTile(
+                                              order: o,
+                                              accent:
+                                                  _accentFor(context, o.status),
+                                              showCheckActions: _openOnly &&
+                                                  _isActionable(o),
+                                              onSplit: () => _splitFlow(o),
+                                              onMove: () => _moveFlow(o),
+                                              onMerge: () => _mergeFlow(o),
+                                              onChanged: _load,
+                                            ),
+                                          ),
+                                        // ── Previous-day open checks (Open
+                                        // Checks mode): grouped under the
+                                        // day's work, one tap away — never
+                                        // unreachable. An unpaid tab is
+                                        // money owed whatever day it was run
+                                        // up.
+                                        if (older.isNotEmpty)
+                                          Padding(
+                                            padding:
+                                                const EdgeInsets.only(top: 4),
+                                            child: _OlderGroupHeader(
+                                              count: older.length,
+                                              expanded: _showOlder,
+                                              onTap: () => setState(() =>
+                                                  _showOlder = !_showOlder),
+                                            ),
+                                          ),
+                                        if (older.isNotEmpty && _showOlder)
+                                          for (final o in older)
+                                            Padding(
+                                              padding: const EdgeInsets.only(
+                                                  bottom: 8),
+                                              child: _OrderTile(
+                                                order: o,
+                                                accent: _accentFor(
+                                                    context, o.status),
+                                                showCheckActions:
+                                                    _isActionable(o),
+                                                onSplit: () => _splitFlow(o),
+                                                onMove: () => _moveFlow(o),
+                                                onMerge: () => _mergeFlow(o),
+                                                olderThanToday: true,
+                                                onChanged: _load,
+                                              ),
+                                            ),
+                                      ],
+                                    ),
+                                  ),
           ),
         ],
       ),
@@ -854,6 +1018,11 @@ class _OrderTile extends StatelessWidget {
   final VoidCallback? onMove;
   final VoidCallback? onMerge;
 
+  /// Called after the detail sheet mutates the order (advance, settle) —
+  /// the list repaints from the server instead of waiting for a manual
+  /// refresh (the owner's stale-settle report, 2026-09).
+  final VoidCallback? onChanged;
+
   /// True inside the previous-day open-checks group: renders an amber left
   /// bar (the web's `.oc-check.is-older`) so an aged tab reads as aged.
   final bool olderThanToday;
@@ -865,6 +1034,7 @@ class _OrderTile extends StatelessWidget {
     this.onSplit,
     this.onMove,
     this.onMerge,
+    this.onChanged,
     this.olderThanToday = false,
   });
 
@@ -1072,7 +1242,7 @@ class _OrderTile extends StatelessWidget {
           maxHeight: MediaQuery.sizeOf(context).height * 0.85),
       builder: (_) => ChangeNotifierProvider.value(
         value: context.read<AppState>(),
-        child: OrderDetailSheet(order: order),
+        child: OrderDetailSheet(order: order, onChanged: onChanged),
       ),
     );
   }
@@ -1106,7 +1276,11 @@ class _Tag extends StatelessWidget {
 
 class OrderDetailSheet extends StatelessWidget {
   final FufutOrder order;
-  const OrderDetailSheet({super.key, required this.order});
+
+  /// Parent refresh hook — fired after every successful mutation so the
+  /// list behind the sheet is already new when the sheet closes.
+  final VoidCallback? onChanged;
+  const OrderDetailSheet({super.key, required this.order, this.onChanged});
 
   /// The kitchen pipeline's prep stages — the web's row actions, and the
   /// web's gate with them: OrdersView shows "Start Prep" (new → preparing)
@@ -1140,9 +1314,12 @@ class OrderDetailSheet extends StatelessWidget {
         canMarkServed(app.roleKey) && status == 'fulfilled' ? 'served' : null;
     // Money moves only with the checkout grant (manager, cashier) — and only
     // when the order has actually been served (owner's rule, 2026-09): a
-    // ticket nobody has cooked, let alone served, cannot be settled.
-    final maySettle =
-        canCheckout(app.roleKey) && !order.isPaid && status == 'served';
+    // ticket nobody has cooked, let alone served, cannot be settled. Service
+    // law 2 adds the till: a closed drawer refuses settlement outright.
+    final maySettle = canCheckout(app.roleKey) &&
+        !order.isPaid &&
+        status == 'served' &&
+        app.tillOpen != false;
     // Station roles read only their own lines — barista the drinks, chefs
     // the food; null shows the ticket unchanged.
     final scoped = orderLinesForRole(order, app.roleKey,
@@ -1297,33 +1474,35 @@ class OrderDetailSheet extends StatelessWidget {
             ),
             const SizedBox(height: 18),
             if (maySettle)
-              FilledButton.icon(
+              AsyncButton(
                 onPressed: () => _settle(context),
-                icon: const Icon(Icons.payments_outlined, size: 19),
-                label: const Text('Settle — take payment'),
+                icon: Icons.payments_outlined,
+                label: 'Settle — take payment',
               ),
             if (prep != null) ...[
               const SizedBox(height: 9),
-              OutlinedButton.icon(
+              AsyncButton(
                 onPressed: () => _advance(context, prep),
-                icon: const Icon(Icons.arrow_forward_rounded, size: 18),
-                label: Text('Mark ${_title(prep)}'),
+                icon: Icons.arrow_forward_rounded,
+                label: 'Mark ${_title(prep)}',
+                outlined: true,
               ),
             ],
             if (pickup != null) ...[
               const SizedBox(height: 9),
-              OutlinedButton.icon(
+              AsyncButton(
                 onPressed: () => _advance(context, pickup),
-                icon: const Icon(Icons.outbox_rounded, size: 18),
-                label: const Text('Picked up by waiter'),
+                icon: Icons.outbox_rounded,
+                label: 'Picked up by waiter',
+                outlined: true,
               ),
             ],
             if (serve != null) ...[
               const SizedBox(height: 9),
-              FilledButton.icon(
+              AsyncButton(
                 onPressed: () => _advance(context, serve),
-                icon: const Icon(Icons.room_service_rounded, size: 18),
-                label: const Text('Mark served'),
+                icon: Icons.room_service_rounded,
+                label: 'Mark served',
               ),
             ],
             if (!maySettle &&
@@ -1336,7 +1515,9 @@ class OrderDetailSheet extends StatelessWidget {
                     ? 'This check is settled.'
                     : status != 'served' && canCheckout(app.roleKey)
                         ? 'Settle opens once the order is served.'
-                        : 'No actions for your role on this stage.',
+                        : app.tillOpen == false && canCheckout(app.roleKey)
+                            ? 'The till is closed — open the till to settle.'
+                            : 'No actions for your role on this stage.',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                     fontFamily: kFontBody, fontSize: 11.5, color: pal.faint),
@@ -1394,7 +1575,13 @@ class OrderDetailSheet extends StatelessWidget {
     final navigator = Navigator.of(context);
     final messenger = ScaffoldMessenger.of(context);
     try {
-      await app.api.updateStatus(order, status);
+      // Service law 4 — the kitchen's buttons move the kitchen's lines: prep
+      // and pickup from this sheet are scoped to the food (drinks have their
+      // own board and their own handoff). The floor's "Mark served" stays
+      // whole-ticket by design.
+      final station = canAdvancePrep(app.roleKey) ? 'kitchen' : null;
+      await app.api.updateStatus(order, status, station: station);
+      onChanged?.call();
       navigator.pop();
       showInfoOn(messenger, 'Marked $status');
     } on ApiError catch (e) {
@@ -1427,9 +1614,14 @@ class OrderDetailSheet extends StatelessWidget {
     final line = result.primary;
     final messenger = ScaffoldMessenger.of(context);
     final navigator = Navigator.of(context);
+    // The payment sheet is gone; the PUT is still in flight — the processing
+    // barrier is the button's busy state, carried past the pop.
+    final hideOverlay =
+        await showProcessingOverlay(context, 'Taking the payment…');
     try {
       await app.api.settleOrder(order, line.method, line,
           tip: result.tip, breakdown: result.breakdown);
+      onChanged?.call(); // the settled tab leaves the list behind the sheet
       navigator.pop();
       showInfoOn(
           messenger, 'Tab settled — ${money(line.amount)} via ${line.method}');
@@ -1440,6 +1632,8 @@ class OrderDetailSheet extends StatelessWidget {
       showErrorOn(messenger, e);
     } catch (e) {
       showErrorOn(messenger, e);
+    } finally {
+      await hideOverlay();
     }
   }
 }

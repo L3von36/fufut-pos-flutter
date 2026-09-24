@@ -67,6 +67,29 @@ class AppState extends ChangeNotifier {
 
   bool get isLoggedIn => user != null;
 
+  // ── The service laws' shared state: is the till open? ────────────────────
+  // Ordering (cart → Send) and settlement (checkout, the settle sheet) are
+  // refused by the server while the drawer is closed; this cached read lets
+  // every screen show the WHY up front without holding a cashdrawer grant
+  // (GET /api/venue/status carries till_open for any signed-in role).
+  // Null = unknown (probe failed or never ran): screens then allow the
+  // action and let the server's law speak if it must — fail-open, the same
+  // direction the server probe takes on its own errors.
+  bool? _tillOpen;
+  bool? get tillOpen => _tillOpen;
+
+  /// Re-read the till state from the server and repaint every listener.
+  /// Called on shell focus, after drawer open/close, and before gates render.
+  Future<void> refreshTill() async {
+    try {
+      final v = await api.venueStatus();
+      _tillOpen = v.tillOpen;
+    } catch (_) {
+      // Unreachable or refused: keep the last known value.
+    }
+    notifyListeners();
+  }
+
   SharedPreferences? _prefs;
 
   static const _kBaseUrl = 'fufut.pos.baseUrl';
@@ -107,6 +130,8 @@ class AppState extends ChangeNotifier {
     }
     _booted = true;
     notifyListeners();
+    // The till gate needs a fresh answer for the shell's screens.
+    if (savedSession != null) refreshTill();
   }
 
   Future<void> _revalidateSession() async {
@@ -158,6 +183,7 @@ class AppState extends ChangeNotifier {
       await _prefs?.setString(_kSession, token);
     }
     _rememberIdentity();
+    refreshTill(); // the shell's gates read this
     notifyListeners();
   }
 
@@ -176,6 +202,7 @@ class AppState extends ChangeNotifier {
     roleKey = null;
     mustChangePassword = false;
     offlineIdentity = false;
+    _tillOpen = null;
     client.sessionToken = null;
     await _prefs?.remove(_kSession);
     await _prefs?.remove(_kIdentity);

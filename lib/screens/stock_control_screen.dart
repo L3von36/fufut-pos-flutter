@@ -536,15 +536,13 @@ class _StockControlScreenState extends State<StockControlScreen> {
                 style: TextStyle(
                     fontFamily: kFontMono, fontSize: 11.5, color: pal.muted)),
           ),
-          FilledButton.icon(
-            onPressed: _postCount,
-            icon: const Icon(Icons.check, size: 15),
-            label: const Text('Post count'),
-            style: FilledButton.styleFrom(
-                minimumSize: const Size(0, 34),
-                textStyle: const TextStyle(
-                    fontFamily: kFontBody,
-                    fontSize: 11.5, fontWeight: FontWeight.w700)),
+          SizedBox(
+            height: 34,
+            child: AsyncButton(
+              onPressed: _postCount,
+              icon: Icons.check,
+              label: 'Post count',
+            ),
           ),
         ]),
       ],

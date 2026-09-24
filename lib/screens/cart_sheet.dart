@@ -158,6 +158,12 @@ class _CartPanelState extends State<CartPanel> {
     // design." So the floor's cart only ever fires the kitchen; the till
     // settles when the guest is done.
     final mayCheckout = canCheckout(app.roleKey);
+    // Service law 1 — the till opens the day: with the drawer closed the
+    // server refuses every new order, so the cart says so before the tap.
+    // Null (probe failed / never ran) stays open-handed: the server's law is
+    // the backstop and its message is exact.
+    final tillClosed = app.tillOpen == false;
+    final tillGate = tillClosed && _sending == false;
 
     return Padding(
       // Docked = inside the register body (host SafeArea handles insets).
@@ -307,11 +313,21 @@ class _CartPanelState extends State<CartPanel> {
               ),
             ),
             const SizedBox(height: 10),
+            if (tillGate)
+              const Padding(
+                padding: EdgeInsets.only(bottom: 8),
+                child: InfoBanner(
+                  'The till is closed — open the till (Cash Drawer) before '
+                  'sending orders.',
+                  severity: InfoSeverity.warning,
+                  icon: Icons.lock_outline_rounded,
+                ),
+              ),
             // Dine-in: kitchen first, then checkout (checkout roles only).
             // Takeaway/delivery without the grant: kitchen only — the tab
             // lands unpaid and the cashier takes the money.
             FilledButton.icon(
-              onPressed: _sending
+              onPressed: _sending || tillGate
                   ? null
                   : (dineIn || !mayCheckout ? _sendToKitchen : _openReview),
               style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(44)),
@@ -327,8 +343,9 @@ class _CartPanelState extends State<CartPanel> {
             if (mayCheckout) ...[
               const SizedBox(height: 7),
               OutlinedButton.icon(
-                onPressed:
-                    _sending ? null : (dineIn ? _openReview : _sendToKitchen),
+                onPressed: _sending || tillGate
+                    ? null
+                    : (dineIn ? _openReview : _sendToKitchen),
                 style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(44)),
                 icon: Icon(
                     dineIn

@@ -272,14 +272,14 @@ class _PipelineScreenState extends State<PipelineScreen> {
               children: [
                 for (final (status, label, _) in _lanes)
                   if (status != o.status)
-                    RowAction(label, () {
+                    AsyncRowAction(label, () async {
                       Navigator.pop(ctx);
-                      _advance(o, status);
+                      await _advance(o, status);
                     }),
                 if (_canCancel)
-                  RowAction('Cancel', () {
+                  AsyncRowAction('Cancel', () async {
                     Navigator.pop(ctx);
-                    _advance(o, 'cancelled');
+                    await _advance(o, 'cancelled');
                   }, color: pal.danger),
               ],
             ),

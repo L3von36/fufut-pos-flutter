@@ -288,8 +288,28 @@ class FufutApi {
   }
 
   /// Advance an order through the pipeline (new → preparing → ready → …).
-  Future<void> updateStatus(FufutOrder order, String status) async {
-    await client.put('orders/${order.id}', {'id': order.id, 'status': status});
+  ///
+  /// [station] scopes the write to one station's lines ('kitchen' | 'bar') —
+  /// service law 4 (owner's 2026-09): a bar pickup may never move the
+  /// kitchen's food and the other way round. The server ALSO forces the
+  /// station roles into their own scope, so this is belt-and-braces.
+  Future<void> updateStatus(FufutOrder order, String status,
+      {String? station}) async {
+    await client.put('orders/${order.id}', {
+      'id': order.id,
+      'status': status,
+      if (station != null) 'station': station,
+    });
+  }
+
+  /// `GET /api/venue/status` — is the venue taking orders, and is the till
+  /// open? The service laws hang off this read: ordering and settlement are
+  /// refused while the drawer is closed, and the floor needs to know WHY
+  /// without holding a cashdrawer grant.
+  Future<({bool? tillOpen})> venueStatus() async {
+    final res = await client.get('venue/status');
+    final v = res is Map ? res['till_open'] : null;
+    return (tillOpen: v is bool ? v : null);
   }
 
   /// Add a round to an open tab — `PATCH /api/orders/:id/items`. The lines

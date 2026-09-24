@@ -311,21 +311,21 @@ class _ReservationsScreenState extends State<ReservationsScreen> {
                       const SizedBox(width: 6),
                       ...[
                         if (r.status == 'new') ...[
-                          RowAction('Confirm',
+                          AsyncRowAction('Confirm',
                               () => _setStatus(r, 'confirmed'),
                               color: pal.success),
                           const SizedBox(width: 4),
                         ],
                         if (r.status == 'confirmed') ...[
-                          RowAction('Complete',
+                          AsyncRowAction('Complete',
                               () => _setStatus(r, 'completed')),
                           const SizedBox(width: 4),
-                          RowAction('No-show', () => _release(r),
+                          AsyncRowAction('No-show', () => _release(r),
                               color: pal.warning),
                           const SizedBox(width: 4),
                         ],
                         if (r.status != 'cancelled' && r.status != 'completed')
-                          RowAction('Cancel',
+                          AsyncRowAction('Cancel',
                               () => _setStatus(r, 'cancelled'),
                               color: pal.danger),
                       ],

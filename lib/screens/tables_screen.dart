@@ -412,7 +412,12 @@ class _TablesScreenState extends State<TablesScreen>
   Map<String, String> _prevOrderStatuses = {};
 
   void _onKitchenEvent(SseEvent event) {
-    if (event.event != 'new_order') return; // historical name = "snapshot"
+    // Both event names carry the full board snapshot now: the server emits
+    // `new_order` only when a ticket genuinely lands, and `order_update` for
+    // every other move (a serve, a station handoff). The ready chime reads
+    // the transition either way — trusting the event NAME was the bug that
+    // announced "new order" on mark-served.
+    if (event.event != 'new_order' && event.event != 'order_update') return;
     final data = event.tryDecodeJson();
     final raw = data?['orders'];
     if (raw is! List) return;

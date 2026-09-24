@@ -342,7 +342,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
                         RowAction('Edit', () => _form(edit: i)),
                         if (_canDelete) ...[
                           const SizedBox(width: 4),
-                          RowAction('Del', () => _delete(i), color: pal.danger),
+                          AsyncRowAction('Del', () => _delete(i), color: pal.danger),
                         ],
                       ],
                     ],

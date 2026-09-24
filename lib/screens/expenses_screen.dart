@@ -342,7 +342,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                           const SizedBox(width: 8),
                           RowAction('Edit', () => _form(edit: e)),
                           const SizedBox(width: 4),
-                          RowAction('Del', () => _delete(e),
+                          AsyncRowAction('Del', () => _delete(e),
                               color: pal.danger),
                         ],
                       ],

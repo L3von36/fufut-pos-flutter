@@ -256,7 +256,7 @@ class _AlertsDashboardScreenState extends State<AlertsDashboardScreen> {
                         ),
                       ),
                       if (_canAck)
-                        RowAction('Ack', () => _ack(a), color: pal.primary),
+                        AsyncRowAction('Ack', () => _ack(a), color: pal.primary),
                     ],
                   ),
                 ),

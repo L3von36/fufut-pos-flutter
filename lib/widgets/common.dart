@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../theme.dart';
@@ -11,6 +13,201 @@ import '../theme.dart';
 const Color _toastSuccess = Color(0xF5227845);
 const Color _toastError = Color(0xF5C62828);
 const Color _toastWarn = Color(0xF5C8690A);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AsyncButton — every network-writing button in the app, stateful.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Owner's rule (2026-09): EVERY button that does work over the network
+/// carries its own state — idle, busy (spinner + disabled), success (check,
+/// briefly) — on every screen, for every role. A tap that is in flight can
+/// never fire twice, a slow link never leaves the staff wondering whether
+/// the tap landed, and a finished action visibly confirms before the sheet
+/// pops or the list refreshes.
+///
+/// Errors are NOT the button's business: the action's own handler surfaces
+/// them (the showErrorOn/showInfoOn helpers) — the widget reverts to idle on
+/// failure and never rethrows, so no tap can turn into an unhandled future.
+class AsyncButton extends StatefulWidget {
+  /// The action to run. Resolve = success beat; throw = revert to idle.
+  final Future<void> Function() onPressed;
+  final String label;
+  final IconData? icon;
+
+  /// Filled by default; true renders the outlined variant.
+  final bool outlined;
+
+  /// Filled variant colors — defaults to the theme's primary button.
+  final Color? background;
+  final Color? foreground;
+
+  final double height;
+  final EdgeInsetsGeometry? padding;
+
+  /// Terminal actions stay on the success beat a beat longer (settle, send).
+  final Duration successHold;
+
+  const AsyncButton({
+    super.key,
+    required this.onPressed,
+    required this.label,
+    this.icon,
+    this.outlined = false,
+    this.background,
+    this.foreground,
+    this.height = 42,
+    this.padding,
+    this.successHold = const Duration(milliseconds: 800),
+  });
+
+  @override
+  State<AsyncButton> createState() => _AsyncButtonState();
+}
+
+class _AsyncButtonState extends State<AsyncButton> {
+  bool _busy = false;
+  bool _success = false;
+  Timer? _hold;
+
+  Future<void> _run() async {
+    if (_busy || _success) return;
+    setState(() => _busy = true);
+    try {
+      await widget.onPressed();
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _success = true;
+      });
+      // A cancellable timer, not a delayed future: a disposed button (a sheet
+      // that popped on success) must not leave a pending timer behind.
+      _hold?.cancel();
+      _hold = Timer(widget.successHold, () {
+        if (mounted) setState(() => _success = false);
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _busy = false);
+      // The handler already surfaced the refusal; the button just reverts.
+    }
+  }
+
+  @override
+  void dispose() {
+    _hold?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = Pal.of(context);
+    final Widget lead;
+    if (_busy) {
+      lead = SizedBox(
+        width: 15,
+        height: 15,
+        child: CircularProgressIndicator(
+          strokeWidth: 2.2,
+          valueColor: AlwaysStoppedAnimation(
+              widget.outlined ? (widget.foreground ?? pal.primary) : Colors.white),
+        ),
+      );
+    } else if (_success) {
+      lead = const Icon(Icons.check_rounded, size: 18);
+    } else if (widget.icon != null) {
+      lead = Icon(widget.icon, size: 18);
+    } else {
+      lead = const SizedBox(width: 18);
+    }
+
+    const labelStyle = TextStyle(
+        fontFamily: kFontBody, fontSize: 12.5, fontWeight: FontWeight.w800);
+
+    final onPressed = (_busy || _success) ? null : _run;
+
+    if (widget.outlined) {
+      return SizedBox(
+        width: double.infinity,
+        height: widget.height,
+        child: OutlinedButton.icon(
+          onPressed: onPressed,
+          style: OutlinedButton.styleFrom(
+            foregroundColor: widget.foreground ?? pal.primary,
+            padding: widget.padding,
+            textStyle: labelStyle,
+          ),
+          icon: lead,
+          label: Text(_busy ? 'Working…' : widget.label),
+        ),
+      );
+    }
+    return SizedBox(
+      width: double.infinity,
+      height: widget.height,
+      child: FilledButton.icon(
+        onPressed: onPressed,
+        style: FilledButton.styleFrom(
+          backgroundColor: _success ? pal.success : (widget.background ?? pal.primary),
+          padding: widget.padding,
+          textStyle: labelStyle,
+        ),
+        icon: lead,
+        label: Text(_busy ? 'Working…' : widget.label),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Toasts
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A non-dismissible "working" barrier for actions whose button has already
+/// left the screen — the settle sheet pops before the network call runs, so
+/// the button's own busy state is gone exactly when it matters most. Returns
+/// a hide callback; always call it (in `finally` too).
+Future<Future<void> Function()> showProcessingOverlay(
+    BuildContext context, String label) async {
+  final pal = Pal.of(context);
+  final navigator = Navigator.of(context, rootNavigator: true);
+  navigator.push(PageRouteBuilder(
+    opaque: false,
+    barrierDismissible: false,
+    barrierColor: pal.overlay,
+    pageBuilder: (_, __, ___) => PopScope(
+      canPop: false,
+      child: Center(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 16),
+          decoration: BoxDecoration(
+            color: pal.surface,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: pal.border),
+          ),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            const SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2.4),
+            ),
+            const SizedBox(width: 12),
+            Text(label,
+                style: TextStyle(
+                    fontFamily: kFontBody,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: pal.heading)),
+          ]),
+        ),
+      ),
+    ),
+    transitionsBuilder: (_, anim, __, child) =>
+        FadeTransition(opacity: anim, child: child),
+  ));
+  return () async {
+    if (navigator.canPop()) navigator.pop();
+  };
+}
 
 /// One toast at a time, always.
 ///

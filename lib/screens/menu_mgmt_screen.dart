@@ -335,7 +335,7 @@ class _MenuMgmtScreenState extends State<MenuMgmtScreen> {
                         const SizedBox(width: 6),
                         RowAction('Edit', () => _form(edit: m)),
                         const SizedBox(width: 4),
-                        RowAction('Del', () => _delete(m), color: pal.danger),
+                        AsyncRowAction('Del', () => _delete(m), color: pal.danger),
                       ],
                     ],
                   ),

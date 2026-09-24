@@ -242,17 +242,16 @@ class _TimeClockScreenState extends State<TimeClockScreen> {
                   child: SizedBox(
                     height: 38,
                     child: onShift
-                        ? FilledButton.icon(
+                        ? AsyncButton(
                             onPressed: () => _clockOut(),
-                            style: FilledButton.styleFrom(
-                                backgroundColor: pal.danger),
-                            icon: const Icon(Icons.logout, size: 17),
-                            label: const Text('Clock Out'),
+                            background: pal.danger,
+                            icon: Icons.logout,
+                            label: 'Clock Out',
                           )
-                        : FilledButton.icon(
+                        : AsyncButton(
                             onPressed: _clockIn,
-                            icon: const Icon(Icons.login, size: 17),
-                            label: const Text('Clock In'),
+                            icon: Icons.login,
+                            label: 'Clock In',
                           ),
                   ),
                 ),

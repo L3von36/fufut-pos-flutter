@@ -373,7 +373,7 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
                       RowAction('Lines', () => _lines(p)),
                       if (_canWrite && p.owing > 0.5) ...[
                         const SizedBox(width: 4),
-                        RowAction('Pay', () => _pay(p), color: pal.primary),
+                        AsyncRowAction('Pay', () => _pay(p), color: pal.primary),
                       ],
                     ],
                   ),

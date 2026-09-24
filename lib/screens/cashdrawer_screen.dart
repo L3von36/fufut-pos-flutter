@@ -100,6 +100,7 @@ class _CashDrawerScreenState extends State<CashDrawerScreen> {
     try {
       await app.api.openDrawer(amount);
       showInfoOn(messenger, 'Drawer opened with ${money(amount)} float');
+      app.refreshTill(); // the whole app's service gates flip with the till
       await _load(quiet: true);
     } catch (e) {
       showErrorOn(messenger, e);
@@ -117,6 +118,7 @@ class _CashDrawerScreenState extends State<CashDrawerScreen> {
       final variance = closingBal - active.expected;
       showInfoOn(messenger,
           'Drawer closed — counted ${money(closingBal)}, variance ${money(variance)}');
+      app.refreshTill(); // ordering and settlement gates close with it
       // Z-report right after close, like the web's flow.
       await _showZReport(active.id);
       await _load(quiet: true);

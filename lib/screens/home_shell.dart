@@ -143,9 +143,10 @@ class _HomeShellState extends State<HomeShell> {
         case NavKey.menuMgmt:
           return const MenuMgmtScreen();
         case NavKey.orders:
-          return const OrdersScreen();
+          return OrdersScreen(activeTab: activeTab, self: NavKey.orders);
         case NavKey.openChecks:
-          return const OrdersScreen(openOnlyDefault: true);
+          return OrdersScreen(
+              openOnlyDefault: true, activeTab: activeTab, self: NavKey.openChecks);
         case NavKey.pipeline:
           return PipelineScreen(activeTab: activeTab, self: NavKey.pipeline);
         case NavKey.reservations:

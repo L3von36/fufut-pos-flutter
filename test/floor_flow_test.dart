@@ -226,6 +226,10 @@ void main() {
           r.path == '/orders/O-ready' &&
           (r.body ?? '').contains('fulfilled'));
       expect(put, isNotNull);
+      // Service law 4 (owner, 2026-09): the handoff is scoped to the
+      // kitchen's lines — a food pickup must never touch the bar's drinks
+      // on a mixed ticket (the server re-derives the order status).
+      expect(put.body, contains('"station":"kitchen"'));
     });
 
     testWidgets('the waiter marks a picked-up order served',

@@ -165,7 +165,7 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
 
 class _JobCard extends StatelessWidget {
   final DeliveryJob job;
-  final VoidCallback? onAdvance;
+  final Future<void> Function()? onAdvance;
 
   const _JobCard({required this.job, required this.onAdvance});
 
@@ -249,15 +249,9 @@ class _JobCard extends StatelessWidget {
             SizedBox(
               width: double.infinity,
               height: 32,
-              child: FilledButton(
-                onPressed: onAdvance,
-                style: FilledButton.styleFrom(
-                  textStyle: const TextStyle(
-                      fontFamily: kFontBody,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700),
-                ),
-                child: Text(_nextLabel(s)),
+              child: AsyncButton(
+                onPressed: onAdvance!,
+                label: _nextLabel(s),
               ),
             ),
           ],

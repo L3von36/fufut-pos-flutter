@@ -276,7 +276,7 @@ class _ShiftsScreenState extends State<ShiftsScreen> {
                         const SizedBox(width: 6),
                         RowAction('Edit', () => _form(edit: s)),
                         const SizedBox(width: 4),
-                        RowAction('Del', () => _delete(s), color: pal.danger),
+                        AsyncRowAction('Del', () => _delete(s), color: pal.danger),
                       ],
                     ],
                   ),

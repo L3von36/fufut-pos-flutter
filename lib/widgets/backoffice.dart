@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../theme.dart';
+import 'common.dart';
 
 /// Open a standardized form bottom sheet: drag handle, bold title, body,
 /// Save / Cancel row. Returns when the sheet closes; [onSave] runs first and
@@ -79,21 +80,17 @@ Future<void> showFormSheet(
               Expanded(
                 child: SizedBox(
                   height: 36,
-                  child: FilledButton(
-                    style: destructive
-                        ? FilledButton.styleFrom(
-                            backgroundColor: Pal.of(sheetCtx).danger)
-                        : null,
+                  child: AsyncButton(
+                    label: saveLabel,
+                    height: 36,
+                    background: destructive ? Pal.of(sheetCtx).danger : null,
                     onPressed: () async {
-                      try {
-                        await onSave();
-                        if (sheetCtx.mounted) Navigator.pop(sheetCtx);
-                      } catch (_) {
-                        // The error toast is shown by onSave; keep the sheet
-                        // open so the input is not lost.
-                      }
+                      // Throw propagates past the pop: a refused save keeps
+                      // the sheet open so the input is not lost (the error
+                      // toast is shown by onSave).
+                      await onSave();
+                      if (sheetCtx.mounted) Navigator.pop(sheetCtx);
                     },
-                    child: Text(saveLabel),
                   ),
                 ),
               ),
@@ -434,6 +431,78 @@ class RowAction extends StatelessWidget {
                     fontSize: 10.5,
                     fontWeight: FontWeight.w700,
                     color: color ?? pal.body)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The row action for WORK OVER THE NETWORK — delete, pay, acknowledge: same
+/// look as [RowAction] while idle, a spinner and a self-disable while the
+/// action is in flight. One tap fires once; errors belong to the handler's
+/// toast.
+class AsyncRowAction extends StatefulWidget {
+  final String label;
+  final Future<void> Function() onTap;
+  final Color? color;
+  final IconData? icon;
+
+  const AsyncRowAction(this.label, this.onTap, {super.key, this.color, this.icon});
+
+  @override
+  State<AsyncRowAction> createState() => _AsyncRowActionState();
+}
+
+class _AsyncRowActionState extends State<AsyncRowAction> {
+  bool _busy = false;
+
+  Future<void> _run() async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      await widget.onTap();
+    } catch (_) {
+      // surfaced by the handler's toast
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = Pal.of(context);
+    return InkWell(
+      onTap: _busy ? null : _run,
+      borderRadius: BorderRadius.circular(6),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: widget.color ?? pal.border),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (_busy)
+              SizedBox(
+                width: 11,
+                height: 11,
+                child: CircularProgressIndicator(
+                    strokeWidth: 1.8,
+                    valueColor: AlwaysStoppedAnimation(
+                        widget.color ?? pal.body)),
+              )
+            else if (widget.icon != null) ...[
+              Icon(widget.icon, size: 11, color: widget.color ?? pal.body),
+              const SizedBox(width: 3),
+            ],
+            Text(widget.label,
+                style: TextStyle(
+                    fontFamily: kFontBody,
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w700,
+                    color: widget.color ?? pal.body)),
           ],
         ),
       ),
