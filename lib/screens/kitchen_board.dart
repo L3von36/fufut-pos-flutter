@@ -36,6 +36,10 @@
 /// actions per card: "Start Cooking" (undoable) and "All Ready" — both
 /// per-line PUTs under the hood.
 ///
+/// **Fired by** — every card shows the waiter whose day the ticket belongs
+/// to (the server's `created_by_name`): several identical Table-N tickets
+/// ride the pass at once, and the floor should see whose questions to answer.
+///
 /// **Today only** — the board is the service day's work surface. Open
 /// tickets stamped before today drop off; a count of the hidden earlier
 /// tickets shows so nothing silently vanishes.
@@ -1038,6 +1042,11 @@ class _TicketCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final pal = Pal.of(context);
     final o = ticket.order;
+    // Who fired this ticket — the floor's created_by_name, stamped by the
+    // server at POST time. Null keeps the card exactly as before.
+    final firedBy = (o.createdByName ?? '').trim().isEmpty
+        ? null
+        : (o.createdByName ?? '').trim();
     final inReady = lane == 'ready';
     // Cooking lanes clock from creation; the READY lane clocks from the
     // moment the ticket crossed (ready_at) — that is time under the lamp,
@@ -1145,8 +1154,13 @@ class _TicketCard extends StatelessWidget {
                     ],
                   ),
                   const SizedBox(height: 3),
-                  // Row two: line count · (bar) drinks-only marker. The id
-                  // moved into the header where the eye already is.
+                  // Row two: line count · (bar) drinks-only marker · the
+                  // WAITER who fired the ticket (owner's 2026-09-25 ask —
+                  // "which waiter fired each ticket"). The floor reads the
+                  // name before it walks over with questions; several
+                  // identical Table-N tickets are disambiguated by whose
+                  // day each belongs to. Anchored right, so the item text
+                  // never shifts; long names ellipsize inside the chip.
                   Row(
                     children: [
                       Text('$total item${total == 1 ? '' : 's'}',
@@ -1161,6 +1175,36 @@ class _TicketCard extends StatelessWidget {
                                 fontSize: 10.5,
                                 fontStyle: FontStyle.italic,
                                 color: pal.faint)),
+                      const Spacer(),
+                      if (firedBy != null)
+                        Flexible(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 7, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: pal.tintBg,
+                              borderRadius: BorderRadius.circular(99),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.person_rounded,
+                                    size: 11, color: pal.primary),
+                                const SizedBox(width: 3),
+                                Flexible(
+                                  child: Text(firedBy,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                          fontFamily: kFontBody,
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.w700,
+                                          color: pal.primary)),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
                     ],
                   ),
                   const SizedBox(height: 9),

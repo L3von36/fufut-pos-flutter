@@ -7,6 +7,7 @@ import '../state/app_state.dart';
 import '../state/app_time.dart' show fmtDay, fmtDayClock;
 import '../state/order_scope.dart';
 import '../theme.dart';
+import '../widgets/backoffice.dart' show ChipSelect;
 import '../widgets/common.dart';
 import '../widgets/dashboard.dart';
 
@@ -28,6 +29,13 @@ import '../widgets/dashboard.dart';
 /// progress — status changes belong to today's board where they can be acted
 /// on. The money line follows REAL_ORDERS (voided and cancelled excluded),
 /// mirroring the web's isRealOrder and reports.js.
+///
+/// **Whose day** (owner's 2026-09-25 ask): when the loaded window carries
+/// tickets from two or more staff, a filter row appears — 'All staff' plus
+/// one chip per name — and one tap isolates a waiter's tickets. Client-side
+/// on the loaded pages (the same shape as the order log's staff filter); a
+/// filter id the current window doesn't know falls back to the whole window
+/// rather than an empty screen.
 
 const _orderHistoryPageSize = 100;
 
@@ -113,6 +121,11 @@ class _OrderHistoryScreenState extends ConsumerState<OrderHistoryScreen> {
   bool _loadingMore = false;
   String _query = '';
   String _statusFilter = 'all';
+
+  /// The staff filter (owner's 2026-09-25 ask): created_by id of the one
+  /// waiter whose tickets the list isolates, null = whole window. Same
+  /// client-side shape as the order log's staff filter.
+  String? _waiterFilter;
   final _search = TextEditingController();
 
   static const _statuses = [
@@ -218,6 +231,30 @@ class _OrderHistoryScreenState extends ConsumerState<OrderHistoryScreen> {
     }).toList();
   }
 
+  /// The staff dimension of the loaded window: created_by id → display
+  /// name, most useful when the window carries several people's days. A
+  /// filter id the window doesn't know (preset switched, page still
+  /// loading) falls back to the whole window — never an empty screen.
+  Map<String, String> _staffOf(List<FufutOrder> orders) {
+    final staff = <String, String>{};
+    for (final o in orders) {
+      final id = o.createdById ?? '';
+      final name = (o.createdByName ?? '').trim();
+      if (id.isEmpty || name.isEmpty) continue;
+      staff[id] = name;
+    }
+    return staff;
+  }
+
+  List<FufutOrder> _byWaiter(List<FufutOrder> orders, Set<String> staffIds) {
+    if (_waiterFilter == null || !staffIds.contains(_waiterFilter)) {
+      return orders;
+    }
+    return orders
+        .where((o) => (o.createdById ?? '') == _waiterFilter)
+        .toList();
+  }
+
   /// Page money over REAL orders — voided_at / cancelled excluded, the same
   /// rule reports use. Labelled "in view" because the pager may not have
   /// pulled the whole window yet.
@@ -275,13 +312,17 @@ class _OrderHistoryScreenState extends ConsumerState<OrderHistoryScreen> {
         ref.watch(orderHistoryPageProvider((from: _from, to: _to)));
     final page = pageAsync.value?.rows ?? const <FufutOrder>[];
     final all = [...page, ..._extra];
+    // The staff dimension first: a waiter filter narrows what the status
+    // chips count and what the search/status/money line read below.
+    final staff = _staffOf(all);
+    final staffAll = _byWaiter(all, staff.keys.toSet());
     // "Load more" visibility: before any manual paging it follows the first
     // page's fullness (raw rows — a scoped-but-full page still has more);
     // after, the last fetch's.
     final hasMore = _extra.isEmpty
         ? (pageAsync.value?.rawCount ?? 0) == _orderHistoryPageSize
         : _lastPageFull;
-    final rows = _filtered(all);
+    final rows = _filtered(staffAll);
     return Scaffold(
       backgroundColor: pal.bg,
       body: SafeArea(
@@ -385,8 +426,8 @@ class _OrderHistoryScreenState extends ConsumerState<OrderHistoryScreen> {
                       child: _HistoryChip(
                         label: s == 'all' ? 'All' : _cap(s),
                         count: s == 'all'
-                            ? all.length
-                            : all
+                            ? staffAll.length
+                            : staffAll
                                 .where((o) =>
                                     o.status.toLowerCase() == s.toLowerCase())
                                 .length,
@@ -397,6 +438,24 @@ class _OrderHistoryScreenState extends ConsumerState<OrderHistoryScreen> {
                 ],
               ),
             ),
+            // ── Staff filter — 'All staff' + one chip per name the loaded
+            // window carries (from two staff up; a single-name window needs
+            // no filter). Same shape as the order log's manager filter.
+            if (staff.length >= 2)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
+                child: ChipSelect(
+                  value: _waiterFilter ?? '',
+                  options: [
+                    ('', 'All staff'),
+                    for (final e in staff.entries.toList()
+                      ..sort((a, b) => a.value.compareTo(b.value)))
+                      (e.key, e.value),
+                  ],
+                  onChanged: (v) =>
+                      setState(() => _waiterFilter = v.isEmpty ? null : v),
+                ),
+              ),
             // ── Money line ──────────────────────────────────────────────
             if (!pageAsync.isLoading && !pageAsync.hasError)
               Padding(
@@ -429,13 +488,18 @@ class _OrderHistoryScreenState extends ConsumerState<OrderHistoryScreen> {
                   : pageAsync.hasError && all.isEmpty
                       ? LoadError(error: pageAsync.error!, onRetry: _reload)
                       : rows.isEmpty
-                          ? const EmptyState(
+                          ? EmptyState(
                               icon: Icons.history_rounded,
                               title: 'No orders in this window',
-                              hint:
-                                  'Pick another day or range above — history '
-                                  'keeps every ticket the live screens have '
-                                  'moved on from.',
+                              hint: _waiterFilter != null &&
+                                      staff.containsKey(_waiterFilter)
+                                  ? 'No tickets by '
+                                      '${staff[_waiterFilter]} in this window '
+                                      'or view — clear the staff filter or '
+                                      'pick another range.'
+                                  : 'Pick another day or range above — history '
+                                      'keeps every ticket the live screens have '
+                                      'moved on from.',
                             )
                           : ListView(
                               padding:
@@ -708,6 +772,34 @@ class _HistoryTile extends StatelessWidget {
                                   fontFamily: kFontMono,
                                   fontSize: 10.5,
                                   color: pal.muted)),
+                          // Whose day the ticket belongs to — the same
+                          // 'by {name}' attribution the log card and the
+                          // pass carry, and what the staff filter chips
+                          // above name.
+                          if ((order.createdByName ?? '').trim().isNotEmpty)
+                            Flexible(
+                              child: Padding(
+                                padding: const EdgeInsets.only(left: 8),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.person_rounded,
+                                        size: 11, color: pal.faint),
+                                    const SizedBox(width: 3),
+                                    Flexible(
+                                      child: Text(
+                                          'by ${order.createdByName!.trim()}',
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                              fontFamily: kFontBody,
+                                              fontSize: 10.5,
+                                              color: pal.muted)),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
                           const Spacer(),
                           if ((order.voidedAt ?? '').isNotEmpty)
                             Text('voided',

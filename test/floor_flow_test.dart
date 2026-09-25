@@ -11,6 +11,7 @@ import 'package:fufut_pos/api/api_client.dart';
 import 'package:fufut_pos/api/fufut_api.dart';
 import 'package:fufut_pos/models/models.dart';
 import 'package:fufut_pos/screens/kitchen_board.dart';
+import 'package:fufut_pos/screens/order_history_screen.dart';
 import 'package:fufut_pos/screens/order_log_screen.dart';
 import 'package:fufut_pos/screens/orders_screen.dart';
 import 'package:fufut_pos/state/app_state.dart';
@@ -665,6 +666,104 @@ void main() {
       await tester.tap(find.text('All staff'));
       await settle(tester);
       expect(find.text('3 orders'), findsOneWidget);
+    });
+  });
+
+  group('the pass knows whose ticket it is', () {
+    // The owner's 2026-09-25 follow-up: the board shows which waiter fired
+    // each ticket — several identical Table-N tickets ride the pass at
+    // once, and the floor should see whose questions to answer.
+    testWidgets('the card carries the fired-by chip when the ticket has a name',
+        (tester) async {
+      routes['GET /orders?open=1'] = (200, [
+        {
+          ..._orderJson('K-fire', 'new', created: '${_todayKey()} 09:55:00'),
+          'created_by': 'S6',
+          'created_by_name': 'Yonas Girmay',
+        },
+      ]);
+      routes['GET /orders/items/active'] = (200, []);
+
+      await pumpBoard(tester);
+      await settle(tester);
+
+      expect(find.textContaining('#fire'), findsOneWidget);
+      expect(find.text('Yonas Girmay'), findsOneWidget,
+          reason: 'the waiter who fired the ticket is on the card');
+    });
+
+    testWidgets('a nameless ticket renders without the chip', (tester) async {
+      routes['GET /orders?open=1'] = (200, [
+        _orderJson('K-anon', 'new', created: '${_todayKey()} 09:55:00'),
+      ]);
+      routes['GET /orders/items/active'] = (200, []);
+
+      await pumpBoard(tester);
+      await settle(tester);
+
+      expect(find.textContaining('#anon'), findsOneWidget);
+      expect(find.textContaining('by '), findsNothing);
+    });
+  });
+
+  group('order history — the staff filter', () {
+    // The owner's 2026-09-25 follow-up: the same isolation the manager's
+    // order log got, for the past-tense window. Two staff raise the filter
+    // row; one tap isolates a waiter's tickets, counts and money follow.
+    Map<String, Object?> historyOrder(String id, String byId, String byName) =>
+        {
+          ..._orderJson(id, 'completed',
+              created: '${_yesterdayKey()} 12:00:00'),
+          'created_by': byId,
+          'created_by_name': byName,
+        };
+
+    testWidgets('two staff raise the filter; a name chip isolates one',
+        (tester) async {
+      routes[
+          'GET /orders?from=${_yesterdayKey()}&to=${_yesterdayKey()}&limit=100&offset=0'] =
+          (200, [
+        historyOrder('H-1', 'S6', 'Yonas Girmay'),
+        historyOrder('H-2', 'S1', 'Amanuel Fekadu'),
+        historyOrder('H-3', 'S6', 'Yonas Girmay'),
+      ]);
+
+      tester.view.physicalSize = const Size(430, 2400);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            appStateProvider.overrideWith(() => AppStateNotifier(seed: app)),
+          ],
+          child: const MaterialApp(
+            home: Scaffold(body: OrderHistoryScreen()),
+          ),
+        ),
+      );
+      await settle(tester);
+
+      expect(find.text('3 in view'), findsOneWidget,
+          reason: 'All staff shows the whole window');
+      expect(find.text('All staff'), findsOneWidget);
+      expect(find.text('Yonas Girmay'), findsOneWidget,
+          reason: 'one chip per name — the tiles say "by Name"');
+      expect(find.text('by Yonas Girmay'), findsNWidgets(2));
+
+      // One tap — that waiter's tickets alone.
+      await tester.tap(find.text('Yonas Girmay'));
+      await settle(tester);
+
+      expect(find.text('2 in view'), findsOneWidget,
+          reason: 'the filter isolates one user without a refetch');
+      expect(find.text('by Amanuel Fekadu'), findsNothing);
+      expect(find.text('All staff'), findsOneWidget);
+
+      // Back to the whole window.
+      await tester.tap(find.text('All staff'));
+      await settle(tester);
+      expect(find.text('3 in view'), findsOneWidget);
+      expect(find.text('by Amanuel Fekadu'), findsOneWidget);
     });
   });
 }
