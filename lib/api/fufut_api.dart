@@ -12,6 +12,8 @@
 ///  * PATCH /api/orders/:id/items → add a round to an open tab
 library;
 
+import 'dart:convert';
+
 import 'api_client.dart';
 import '../models/models.dart';
 
@@ -667,15 +669,78 @@ class FufutApi {
     }
   }
 
-  /// `POST /api/tables/:id/request-bill` — the party wants the bill; it rides
-  /// to the cashier's dashboard as a bill request.
-  Future<void> requestBill(String tableId) async {
-    await client.post('tables/$tableId/request-bill', {});
+  /// `POST /api/tables/:id/request-bill` — the party wants the bill. The
+  /// [method] is what the GUEST says they will pay with (cash / telebirr /
+  /// cbe / bank / card / mobile / other) — it lands on the table's open
+  /// checks so the cashier knows whether to bring the card machine or open
+  /// the drawer before walking over, and the Order Log shows it as the
+  /// guest's plan.
+  Future<void> requestBill(String tableId, {String? method}) async {
+    final res = await client
+        .post('tables/$tableId/request-bill', {if (method != null) 'method': method});
+    if (res is Map && res['ok'] == false) {
+      throw ApiError((res['error'] as String?) ?? 'Could not request the bill');
+    }
   }
 
   /// `POST /api/tables/:id/cancel-bill-request`.
   Future<void> cancelBillRequest(String tableId) async {
     await client.post('tables/$tableId/cancel-bill-request', {});
+  }
+
+  /// `GET /api/payments?order_id=…` — the money rows on one check: method,
+  /// amount, reference, and the verification state ('verified' = seen by the
+  /// till; 'recorded' = a transfer the guest SAYS they sent, awaiting the
+  /// cashier's eyes). This is how the cashier answers "did the money go
+  /// through?" on a telebirr or bank transfer.
+  Future<List<FufutPayment>> paymentsForOrder(String orderId) async {
+    final res = await client.get('payments?order_id=$orderId');
+    return FufutPayment.listFrom(res);
+  }
+
+  /// `GET /api/payments?verified=false` — every transfer still sitting at
+  /// 'recorded': the cashier's verify queue. Newest first, capped at 500.
+  Future<List<FufutPayment>> paymentsToVerify() async {
+    final res = await client.get('payments?verified=false');
+    return FufutPayment.listFrom(res);
+  }
+
+  /// `POST /api/payments/:id/verify` — the cashier has SEEN the money land
+  /// (in the telebirr app, the bank statement) and confirms the transfer.
+  /// Cashier or manager only; the server refuses anyone else.
+  Future<void> verifyPayment(String paymentId) async {
+    final res = await client.post('payments/$paymentId/verify', {});
+    if (res is Map && res['ok'] == false) {
+      throw ApiError((res['error'] as String?) ?? 'Could not verify the payment');
+    }
+  }
+
+  /// `GET /api/settings` → `payments.channels` — the venue's receiving
+  /// accounts (telebirr number, CBE account, bank details). The bill-request
+  /// sheet shows them so the floor can tell the guest exactly where to send
+  /// the money. Channels with an empty account are hidden.
+  Future<List<PaymentChannel>> venuePaymentChannels() async {
+    try {
+      final res = await client.get('settings');
+      final List rows = res is Map ? (res['settings'] as List? ?? const []) : const [];
+      for (final row in rows.whereType<Map>()) {
+        if (row['key'] == 'payments.channels') {
+          final raw = row['value'];
+          final decoded = raw is String
+              ? (jsonDecode(raw) as List? ?? const [])
+              : (raw is List ? raw : const []);
+          return decoded
+              .whereType<Map>()
+              .map((c) => PaymentChannel.fromJson(Map<String, dynamic>.from(c)))
+              .where((c) => (c.account).isNotEmpty)
+              .toList();
+        }
+      }
+    } catch (_) {
+      // Settings unreadable — the sheet still works, just without the
+      // account hints.
+    }
+    return const [];
   }
 
   /// `POST /api/tables/:id/free` — clear the party off a table whose guests

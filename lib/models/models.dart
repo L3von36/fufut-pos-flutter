@@ -232,6 +232,10 @@ class FufutOrder {
   final String? readyAt; // first time the ticket reached ready — the pass clock
   final String? pickedUpAt; // first time the kitchen handed the ticket to the floor
   final String? servedAt; // first time the floor served the guests
+  final String? paidAt; // first time the money settled — the till's clock
+  final String? billRequestedAt; // when the guest asked for the bill (order-level)
+  final String? billMethod; // how the guest plans to pay — cash / telebirr / …
+  final String? clearedAt; // when the party left and the table was freed
   final String? voidedAt; // set when the ticket was voided — history money rule
   final String? createdByName;
   final String? createdById; // the web's created_by — order scoping reads it
@@ -260,6 +264,10 @@ class FufutOrder {
     this.readyAt,
     this.pickedUpAt,
     this.servedAt,
+    this.paidAt,
+    this.billRequestedAt,
+    this.billMethod,
+    this.clearedAt,
     this.voidedAt,
     this.createdByName,
     this.createdById,
@@ -327,6 +335,10 @@ class FufutOrder {
         readyAt: readyAt,
         pickedUpAt: pickedUpAt,
         servedAt: servedAt,
+        paidAt: paidAt,
+        billRequestedAt: billRequestedAt,
+        billMethod: billMethod,
+        clearedAt: clearedAt,
         voidedAt: voidedAt,
         createdByName: createdByName,
         createdById: createdById,
@@ -404,6 +416,12 @@ class FufutOrder {
       readyAt: (j['ready_at'] ?? j['readyAt']) as String?,
       pickedUpAt: (j['picked_up_at'] ?? j['pickedUpAt']) as String?,
       servedAt: (j['served_at'] ?? j['servedAt']) as String?,
+      paidAt: (j['paid_at'] ?? j['paidAt']) as String?,
+      billRequestedAt:
+          (j['bill_requested_at'] ?? j['billRequestedAt'])?.toString(),
+      billMethod:
+          (j['bill_method'] ?? j['billMethod'])?.toString(),
+      clearedAt: (j['cleared_at'] ?? j['clearedAt']) as String?,
       voidedAt: (j['voided_at'] ?? j['voidedAt']) as String?,
       createdByName: j['created_by_name'] as String?,
       createdById: (j['created_by'] ?? j['created_by_id'])?.toString(),
@@ -506,6 +524,7 @@ class CafeTable {
   final int? seats;
   final String? guests;
   final String? billRequestedAt; // when the party asked for the bill
+  final String? billMethod; // how the guest plans to pay — cash / telebirr / …
   final String? name;
   final String? shape; // round | square | long
   final String? server; // assigned staff display name
@@ -523,6 +542,7 @@ class CafeTable {
     this.seats,
     this.guests,
     this.billRequestedAt,
+    this.billMethod,
     this.name,
     this.shape,
     this.server,
@@ -571,6 +591,7 @@ class CafeTable {
         guests: j['guests']?.toString(),
         billRequestedAt:
             (j['bill_requested_at'] ?? j['billRequestedAt'])?.toString(),
+        billMethod: (j['bill_method'] ?? j['billMethod'])?.toString(),
         name: j['name']?.toString(),
         shape: j['shape']?.toString(),
         server: j['server']?.toString(),
@@ -595,6 +616,7 @@ class CafeTable {
     String? notes,
     String? payment,
     String? billRequestedAt,
+    String? billMethod,
   }) =>
       CafeTable(
         id: id,
@@ -604,6 +626,7 @@ class CafeTable {
         seats: seats,
         guests: guests ?? this.guests,
         billRequestedAt: billRequestedAt ?? this.billRequestedAt,
+        billMethod: billMethod ?? this.billMethod,
         name: name,
         shape: shape,
         server: server ?? this.server,
@@ -612,6 +635,105 @@ class CafeTable {
         payment: payment ?? this.payment,
         billRequestedBy: billRequestedBy,
         reservedHold: reservedHold,
+      );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Money — the payments the till records and the venue's receiving channels
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One tender recorded against a check (`GET /api/payments?order_id=…`).
+///
+/// The status is the answer to "did the money actually go through?":
+///   * `verified` — the till has SEEN it (cash in the drawer, or a transfer
+///     a cashier confirmed against their telebirr/bank app);
+///   * `recorded` — the guest SAYS they sent a transfer; it waits in the
+///     cashier's verify queue until somebody with the till confirms;
+///   * `rejected` / `refunded` — money that did not stick.
+class FufutPayment {
+  final String id;
+  final String orderId;
+  final String method;
+  final double amount;
+  final double? tendered;
+  final double? changeDue;
+  final String? reference; // the transfer message code / SMS reference
+  final String status; // verified | recorded | rejected | refunded
+  final String? collectedByName;
+  final String? verifiedByName;
+  final String? verifiedAt;
+  final String? createdAt;
+
+  const FufutPayment({
+    required this.id,
+    required this.orderId,
+    required this.method,
+    required this.amount,
+    this.tendered,
+    this.changeDue,
+    this.reference,
+    this.status = 'verified',
+    this.collectedByName,
+    this.verifiedByName,
+    this.verifiedAt,
+    this.createdAt,
+  });
+
+  bool get needsVerification => status == 'recorded';
+
+  factory FufutPayment.fromJson(Map<String, dynamic> j) => FufutPayment(
+        id: (j['id'] ?? '').toString(),
+        orderId: (j['order_id'] ?? j['orderId'] ?? '').toString(),
+        method: (j['method'] ?? 'cash').toString(),
+        amount: _asDouble(j['amount']),
+        tendered: j['tendered'] == null ? null : _asDouble(j['tendered']),
+        changeDue: j['change_due'] == null ? null : _asDouble(j['change_due']),
+        reference: j['reference']?.toString(),
+        status: (j['status'] ?? 'verified').toString(),
+        collectedByName:
+            (j['collected_by_name'] ?? j['collectedByName'])?.toString(),
+        verifiedByName:
+            (j['verified_by_name'] ?? j['verifiedByName'])?.toString(),
+        verifiedAt: (j['verified_at'] ?? j['verifiedAt'])?.toString(),
+        createdAt: (j['created_at'] ?? j['createdAt'])?.toString(),
+      );
+
+  static List<FufutPayment> listFrom(dynamic res) {
+    final List rows = res is List ? res : const [];
+    final out = <FufutPayment>[];
+    for (final r in rows.whereType<Map>()) {
+      try {
+        out.add(FufutPayment.fromJson(Map<String, dynamic>.from(r)));
+      } catch (_) {
+        // One bad row never sinks the list — skip it.
+      }
+    }
+    return out;
+  }
+}
+
+/// One of the venue's receiving accounts (settings key `payments.channels`):
+/// "telebirr 09xx xxx xxx — Fufut Coffee". Empty accounts are filtered at
+/// parse time — the floor shows only channels the guests can actually send
+/// money to.
+class PaymentChannel {
+  final String method;
+  final String label;
+  final String account;
+  final String holder;
+
+  const PaymentChannel({
+    required this.method,
+    required this.label,
+    required this.account,
+    this.holder = '',
+  });
+
+  factory PaymentChannel.fromJson(Map<String, dynamic> j) => PaymentChannel(
+        method: (j['method'] ?? '').toString(),
+        label: (j['label'] ?? j['method'] ?? '').toString(),
+        account: (j['account'] ?? '').toString(),
+        holder: (j['holder'] ?? '').toString(),
       );
 }
 

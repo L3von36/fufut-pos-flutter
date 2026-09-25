@@ -100,9 +100,17 @@ class OrderEvent {
 
 /// The singleton journal. All recording goes through [record]; reads are
 /// synchronous over the in-memory copy (loaded once at boot).
+///
+/// [revision] is the change bell: every successful [record] bumps it, and
+/// the Order Log listens so a stage stamped anywhere in the app (a pickup on
+/// the kitchen board, a settle at the till) repaints the timeline the moment
+/// it lands — the log is a live view, not a page you reload.
 class OrderJournal {
   OrderJournal._();
   static final OrderJournal instance = OrderJournal._();
+
+  /// Bumped on every recorded event — listeners rebuild their timelines.
+  final ValueNotifier<int> revision = ValueNotifier<int>(0);
 
   static const _kKey = 'fufut.pos.orderJournal.v1';
   static const _kTtl = Duration(days: 7);
@@ -197,6 +205,7 @@ class OrderJournal {
     }
     list.add(event);
     list.sort((a, b) => a.at.compareTo(b.at));
+    revision.value++; // the log screen's bell — repaint the timelines
     await _persist();
   }
 

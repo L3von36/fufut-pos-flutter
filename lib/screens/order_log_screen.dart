@@ -11,8 +11,18 @@
 ///     `picked_up_at` / `served_at` are first-time COALESCE stamps on the
 ///     order row itself, so every role sees every leg even when the action
 ///     happened on another device (the pending gap the owner reported,
-///     2026-09); plus `order.created` / `order.updated_at` and the table's
-///     `seated_at` / `bill_requested_at` / `guests`.
+///     2026-09); plus the bill legs the request-bill endpoint stamps on the
+///     ORDER row (migration 028: `bill_requested_at` / `bill_method` /
+///     `cleared_at`, and payments' `paid_at`) — the legs a table-only stamp
+///     used to lose the moment the party ended; plus `order.created` /
+///     `order.updated_at` and the table's `seated_at` / `guests`.
+///
+/// LIVE, not a page you reload (owner's report, 2026-09-25): the day list is
+/// a FutureProvider the shared feeds invalidate — an SSE push (a pickup on
+/// the pass, a settle at the till, a bill request on the floor) repaints the
+/// screen within seconds — and the journal's revision bell repaints the
+/// timelines the instant THIS device stamps something, even before the
+/// refetch lands.
 ///
 /// What the screen answers, per role:
 ///   * the floor  — what time each order was taken, when the bill was asked
@@ -30,13 +40,15 @@
 /// waiter's log is never polluted by a colleague's section.
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../api/api_client.dart';
 import '../models/models.dart';
 import '../services/order_journal.dart';
 import '../state/app_state.dart';
+import '../state/live_feeds.dart';
 import '../state/order_scope.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
@@ -53,11 +65,71 @@ class _StageStamp {
   bool get done => at != null;
 }
 
-/// A build of the screen's data for one role — scoped orders + tables.
+/// One build of the log — today's scoped orders + the floor tables.
 class _LogData {
   final List<FufutOrder> orders;
   final Map<String, CafeTable> tablesByNumber;
   const _LogData(this.orders, this.tablesByNumber);
+}
+
+/// The role's scoped, day-windowed slice of today's service, refetched
+/// whenever the shared feeds push. Same rules the Orders screen applies:
+/// role scoping first (a waiter sees only their tables and tickets), then
+/// the station split (chefs cook food, the barista pours drinks), then the
+/// day window — all in one place so the screen owns no fetch of its own.
+final _orderLogProvider = FutureProvider<_LogData>((ref) async {
+  // READ, never watch: AppState has a single notify bell and this fetch
+  // itself pings it — watching here would rebuild on the provider's echo.
+  final app = ref.read(appStateProvider);
+  final stationRole =
+      const {'barista', 'head-chef', 'assistant-chef'}.contains(app.roleKey);
+  if (stationRole) await app.ensureCategories();
+  final results = await Future.wait([
+    app.api.orders(
+      from: localTodayKey(),
+      to: localTodayKey(),
+    ),
+    // The floor feeds the timeline's table columns (party size, seated-at)
+    // for every role — best-effort: a role without a tables read still sees
+    // its log, just without the table columns.
+    app.api.tables().catchError((_) => const <CafeTable>[]),
+  ]);
+  final rows = results[0] as List<FufutOrder>;
+  final tables = results[1] as List<CafeTable>;
+  final myTables = {for (final t in tables) t.number.toString()};
+  final catByName = app.catByName;
+  final roleKey = app.roleKey;
+  final scoped = rows
+      .where((o) => orderVisibleToRole(o, roleKey,
+          myId: app.user?.id, myTables: myTables, catByName: catByName))
+      .where((o) => orderIsToday(o))
+      .where((o) => _orderBelongsToRole(o, roleKey, catByName))
+      .toList()
+    ..sort((a, b) => (b.created ?? '').compareTo(a.created ?? ''));
+  return _LogData(scoped, {for (final t in tables) t.number.toString(): t});
+});
+
+/// The role's slice of the day: chefs see food tickets, the barista drink
+/// tickets — the same strict station routing the boards use (category first
+/// when the menu carries it, name as the legacy fallback). Everyone else
+/// reads the whole scoped list (waiter isolation already applied above).
+bool _orderBelongsToRole(
+    FufutOrder o, String? roleKey, Map<String, String>? catByName) {
+  switch (roleKey) {
+    case 'head-chef':
+    case 'assistant-chef':
+      return _hasStationLines(o, false, catByName);
+    case 'barista':
+      return _hasStationLines(o, true, catByName);
+    default:
+      return true;
+  }
+}
+
+bool _hasStationLines(
+    FufutOrder o, bool drinks, Map<String, String>? catByName) {
+  final lines = scopedLines(o, drinks ? 'bar' : 'kitchen', catByName: catByName);
+  return lines == null || lines.isNotEmpty; // null = unclassifiable: show it
 }
 
 class OrderLogScreen extends ConsumerStatefulWidget {
@@ -68,109 +140,43 @@ class OrderLogScreen extends ConsumerStatefulWidget {
 }
 
 class _OrderLogScreenState extends ConsumerState<OrderLogScreen> {
-  List<FufutOrder> _orders = [];
-  Map<String, CafeTable> _tables = {};
-  bool _loading = true;
-  Object? _error;
-  int _reloadEpoch = 0;
+  /// Live push — the same pattern the Orders screen rides: a change on any
+  /// shared feed (a settle, a serve, a bill request, a new ticket anywhere
+  /// in the building) debounces an invalidate of this screen's scoped GET.
+  /// The screen owns no socket and no fetch; it just watches.
+  Timer? _debounce;
 
   @override
   void initState() {
     super.initState();
-    _load();
+    // The journal's bell is a ValueNotifier, not a provider — listen directly
+    // so a stage stamped on THIS device (a pickup on the board, a settle at
+    // the till) repaints the timelines the moment it lands.
+    OrderJournal.instance.revision.addListener(_onJournalTick);
   }
 
-  Future<void> _load() async {
-    final app = ref.read(appStateProvider);
-    setState(() {
-      _loading = true;
-      _error = null;
+  /// The journal reads synchronously in build, so a local stamp repaints
+  /// with a plain setState — no refetch, the timeline fills the same frame.
+  void _onJournalTick() {
+    if (mounted) setState(() {});
+  }
+
+  void _debouncedReload() {
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 250), () {
+      if (mounted) ref.invalidate(_orderLogProvider);
     });
-    final epoch = ++_reloadEpoch;
-    try {
-      // Waiter-class roles need the floor to know which tables are theirs —
-      // the same fetch the Orders screen scopes with. Every other role gets
-      // the floor too (party size, seated-at, bill-request stamps feed the
-      // timeline), best-effort: a role without a tables read still sees its
-      // log, just without the table columns.
-      final results = await Future.wait([
-        app.api.orders(),
-        app.api.tables().catchError((_) => const <CafeTable>[]),
-      ]);
-      if (!mounted || epoch != _reloadEpoch) return;
-      final rows = results[0] as List<FufutOrder>;
-      final tables = results[1] as List<CafeTable>;
-
-      final myTables = {for (final t in tables) t.number.toString()};
-      final scoped = rows
-          .where((o) => orderVisibleToRole(o, app.roleKey,
-              myId: app.user?.id, myTables: myTables, catByName: app.catByName))
-          .where(_orderIsToday)
-          .where(_orderBelongsToRole)
-          .toList()
-        ..sort((a, b) => (b.created ?? '').compareTo(a.created ?? ''));
-
-      setState(() {
-        _orders = scoped;
-        _tables = {for (final t in tables) t.number.toString(): t};
-        _loading = false;
-      });
-    } on ApiError catch (e) {
-      if (!mounted || epoch != _reloadEpoch) return;
-      if (e.isAuthError) {
-        await app.sessionExpired();
-        return;
-      }
-      setState(() {
-        _loading = false;
-        _error = e.message;
-      });
-    } catch (e) {
-      if (!mounted || epoch != _reloadEpoch) return;
-      setState(() {
-        _loading = false;
-        _error = '$e';
-      });
-    }
   }
 
-  /// Server stamps are local-time strings ("2026-08-06 01:55:46"); compare
-  /// against the local day, exactly how the boards reason about age.
-  bool _orderIsToday(FufutOrder o) {
-    final c = DateTime.tryParse(o.created ?? '');
-    if (c == null) return false;
-    final now = DateTime.now();
-    return c.year == now.year && c.month == now.month && c.day == now.day;
+  @override
+  void dispose() {
+    OrderJournal.instance.revision.removeListener(_onJournalTick);
+    _debounce?.cancel();
+    super.dispose();
   }
 
-  /// The role's slice of the day:
-  ///   chefs see food tickets, the barista drink tickets, everyone else the
-  ///   whole scoped list (waiter isolation already applied in _load).
-  bool _orderBelongsToRole(FufutOrder o) {
-    final app = ref.read(appStateProvider);
-    switch (app.roleKey) {
-      case 'head-chef':
-      case 'assistant-chef':
-        return _hasStationLines(o, false, app.catByName);
-      case 'barista':
-        return _hasStationLines(o, true, app.catByName);
-      default:
-        return true;
-    }
-  }
-
-  /// The role's slice of the day: chefs see food tickets, the barista drink
-  /// tickets — the same strict station routing the boards use (category
-  /// first when the menu carries it, name as the legacy fallback).
-  bool _hasStationLines(
-      FufutOrder o, bool drinks, Map<String, String>? catByName) {
-    final lines =
-        scopedLines(o, drinks ? 'bar' : 'kitchen', catByName: catByName);
-    return lines == null || lines.isNotEmpty; // null = unclassifiable: show it
-  }
-
-  CafeTable? _tableFor(FufutOrder o) =>
-      o.tableNum == null ? null : _tables[o.tableNum];
+  CafeTable? _tableFor(_LogData data, FufutOrder o) =>
+      o.tableNum == null ? null : data.tablesByNumber[o.tableNum];
 
   /// Server stamps come in two shapes: the order row's `created` is a local
   /// wall-clock string ("2026-08-06 01:55:46"), the stage columns are UTC ISO
@@ -185,19 +191,27 @@ class _OrderLogScreenState extends ConsumerState<OrderLogScreen> {
   /// When did [stage] happen on [o]? The journal's stamp first (this
   /// device's own action, or its echo), then the order row's own stage
   /// column — the server stamps preparing/ready/picked-up/served the first
-  /// time a ticket enters each state, so EVERY role sees every leg instead
-  /// of waiting on the one device that performed it (the pending gap the
-  /// owner reported, 2026-09).
-  DateTime? _stageAt(FufutOrder o, OrderStage stage) {
+  /// time a ticket enters each state, and (migration 028) the bill legs:
+  /// `bill_requested_at` / `bill_method` land on the OPEN CHECKS at request
+  /// time, `cleared_at` when the party ends, `paid_at` when the money
+  /// settles — so EVERY role sees every leg instead of waiting on the one
+  /// device that performed it (the pending gap the owner reported, 2026-09).
+  DateTime? _stageAt(_LogData data, FufutOrder o, OrderStage stage) {
     final journalAt =
         OrderJournal.instance.latestStageAtSync(o.id, stage);
     if (journalAt != null) return journalAt;
     switch (stage) {
       case OrderStage.billRequested:
-        final t = _tableFor(o);
+        // The order row's own stamp first — it survives the sitting; the
+        // table's stamp is only for a request still standing.
+        if ((o.billRequestedAt ?? '').isNotEmpty) {
+          return _serverStamp(o.billRequestedAt);
+        }
+        final t = _tableFor(data, o);
         return t != null && t.billRequested ? _serverStamp(t.billRequestedAt) : null;
       case OrderStage.tableCleared:
-        return null; // journal-only: freed on the floor, no server column
+        if ((o.clearedAt ?? '').isNotEmpty) return _serverStamp(o.clearedAt);
+        return null; // journal fallback: freed on the floor, legacy rows
       default:
         return _serverStamp(switch (stage) {
           OrderStage.created => o.created,
@@ -205,7 +219,8 @@ class _OrderLogScreenState extends ConsumerState<OrderLogScreen> {
           OrderStage.ready => o.readyAt,
           OrderStage.pickedUp => o.pickedUpAt,
           OrderStage.served => o.servedAt,
-          OrderStage.paid => o.isPaid ? o.updatedAt : null,
+          OrderStage.paid =>
+            o.isPaid ? (o.paidAt ?? o.updatedAt) : null,
           _ => null,
         });
     }
@@ -213,18 +228,18 @@ class _OrderLogScreenState extends ConsumerState<OrderLogScreen> {
 
   /// The order's pipeline timeline — every stage resolved through
   /// [_stageAt]. Only `paid` keeps an approximate flag: its server fallback
-  /// (`updated_at`) drifts with any later write, where the stage columns are
-  /// first-time COALESCE stamps.
-  List<_StageStamp> _timelineFor(FufutOrder o) {
+  /// (`updated_at`) drifts with any later write, where `paid_at` and the
+  /// stage columns are first-time COALESCE stamps.
+  List<_StageStamp> _timelineFor(_LogData data, FufutOrder o) {
     final journal = OrderJournal.instance;
     final paidJournal = journal.latestStageAtSync(o.id, OrderStage.paid);
-    final paidServer = o.isPaid ? _serverStamp(o.updatedAt) : null;
+    final paidServer = _serverStamp(o.isPaid ? (o.paidAt ?? o.updatedAt) : null);
     return [
       for (final s in OrderStage.values)
         s == OrderStage.paid
             ? _StageStamp(OrderStage.paid, paidJournal ?? paidServer,
                 approximate: paidJournal == null && paidServer != null)
-            : _StageStamp(s, _stageAt(o, s)),
+            : _StageStamp(s, _stageAt(data, o, s)),
     ];
   }
 
@@ -233,25 +248,38 @@ class _OrderLogScreenState extends ConsumerState<OrderLogScreen> {
     final pal = Pal.of(context);
     final app = ref.watch(appStateProvider);
     final roleKey = app.roleKey ?? '';
+    final logAsync = ref.watch(_orderLogProvider);
+    // Live push from every shared feed — the journal's own bell rides
+    // initState's listener above.
+    ref.listen(kitchenFeedProvider, (_, __) => _debouncedReload());
+    ref.listen(tablesFeedProvider, (_, __) => _debouncedReload());
 
-    final body = _loading && _orders.isEmpty
+    final data = logAsync.value ??
+        const _LogData([], {});
+    final body = logAsync.isLoading && data.orders.isEmpty
         ? const Center(child: CircularProgressIndicator())
-        : _error != null && _orders.isEmpty
-            ? LoadError(error: _error!, onRetry: () => _load())
+        : logAsync.hasError && data.orders.isEmpty
+            ? LoadError(
+                error: '${logAsync.error}',
+                onRetry: () => ref.invalidate(_orderLogProvider))
             : RefreshIndicator(
-                onRefresh: _load,
+                onRefresh: () async => ref.invalidate(_orderLogProvider),
                 child: ListView(
                   physics: const AlwaysScrollableScrollPhysics(),
                   padding: const EdgeInsets.fromLTRB(12, 8, 12, 20),
                   children: [
-                    _HeaderRow(count: _orders.length, onRefresh: _load),
+                    _HeaderRow(
+                        count: data.orders.length,
+                        onRefresh: () async {
+                          ref.invalidate(_orderLogProvider);
+                        }),
                     const SizedBox(height: 10),
                     _KpiStrip(
-                        data: _LogData(_orders, _tables),
+                        data: data,
                         roleKey: roleKey,
-                        stageAt: _stageAt),
+                        stageAt: (o, s) => _stageAt(data, o, s)),
                     const SizedBox(height: 12),
-                    if (_orders.isEmpty)
+                    if (data.orders.isEmpty)
                       const Padding(
                         padding: EdgeInsets.only(top: 80),
                         child: Center(
@@ -263,14 +291,14 @@ class _OrderLogScreenState extends ConsumerState<OrderLogScreen> {
                         ),
                       )
                     else
-                      for (final o in _orders)
+                      for (final o in data.orders)
                         Padding(
                           padding: const EdgeInsets.only(bottom: 8),
                           child: _OrderLogCard(
                             order: o,
-                            table: _tableFor(o),
-                            timeline: _timelineFor(o),
-                            stageAt: _stageAt,
+                            table: _tableFor(data, o),
+                            timeline: _timelineFor(data, o),
+                            stageAt: (o, s) => _stageAt(data, o, s),
                           ),
                         ),
                   ],
@@ -505,6 +533,15 @@ class _OrderLogCard extends StatelessWidget {
                 _Chip(
                   icon: Icons.groups_outlined,
                   text: '${table!.partySize} guests',
+                ),
+              // What the guest told the floor they would pay with, stamped at
+              // bill-request time — the cashier's heads-up on the log card.
+              if ((o.billMethod ?? '').isNotEmpty)
+                _Chip(
+                  icon: Icons.payment_outlined,
+                  text: 'Plans: ${o.billMethod}',
+                  fg: pal.primary,
+                  bg: pal.tintBg,
                 ),
               if (o.tip > 0)
                 _Chip(

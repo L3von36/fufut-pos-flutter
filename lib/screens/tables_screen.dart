@@ -58,6 +58,7 @@ import '../state/roles.dart';
 import '../state/session_providers.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
+import '../widgets/bill_request_sheet.dart' show showBillRequestSheet;
 import '../widgets/dashboard.dart' show LoadError;
 import 'checkout_sheet.dart' show PaymentResult, PaymentSheet;
 import 'orders_screen.dart' show OrderDetailSheet;
@@ -352,12 +353,18 @@ class _TablesScreenState extends ConsumerState<TablesScreen> {
   Future<String?> _requestBill(CafeTable t) async {
     final app = ref.read(appStateProvider);
     final messenger = ScaffoldMessenger.of(context);
+    // What the guest plans to pay with — the sheet also shows the venue's
+    // telebirr/bank accounts so the floor can tell the guest where to send
+    // the money. A request without a method still works (skip the sheet via
+    // a cancel), the till just learns nothing about the money up front.
+    final method = await showBillRequestSheet(context, ref);
+    if (method == null) return null;
     try {
-      await app.api.requestBill(t.id);
+      await app.api.requestBill(t.id, method: method);
       // Stamp the floor row so the chip stays up without waiting for the
       // next push (the web updates both the copy and the row).
       final stamp = DateTime.now().toUtc().toIso8601String();
-      _patchRow(t.id, billRequestedAt: stamp);
+      _patchRow(t.id, billRequestedAt: stamp, billMethod: method);
       return stamp;
     } on ApiError catch (e) {
       if (e.isAuthError) await app.sessionExpired();
@@ -374,7 +381,7 @@ class _TablesScreenState extends ConsumerState<TablesScreen> {
     final messenger = ScaffoldMessenger.of(context);
     try {
       await app.api.cancelBillRequest(t.id);
-      _patchRow(t.id, billRequestedAt: '');
+      _patchRow(t.id, billRequestedAt: '', billMethod: '');
       return '';
     } on ApiError catch (e) {
       if (e.isAuthError) await app.sessionExpired();
@@ -386,11 +393,11 @@ class _TablesScreenState extends ConsumerState<TablesScreen> {
     }
   }
 
-  void _patchRow(String id, {required String billRequestedAt}) {
+  void _patchRow(String id, {required String billRequestedAt, String? billMethod}) {
     for (final t in _tables) {
       if (t.id == id) {
-        ref.read(tablesFeedProvider.notifier).patchTableLocal(
-            t.copyWith(billRequestedAt: billRequestedAt));
+        ref.read(tablesFeedProvider.notifier).patchTableLocal(t.copyWith(
+            billRequestedAt: billRequestedAt, billMethod: billMethod));
         return;
       }
     }
@@ -1607,7 +1614,8 @@ class _TableCard extends StatelessWidget {
                         children: [
                           if ((table.payment ?? '').isNotEmpty)
                             _PayBadge(state: table.payment!),
-                          if (table.billRequested) _BillRequestedChip(),
+                          if (table.billRequested)
+                            _BillRequestedChip(method: table.billMethod),
                         ],
                       ),
                     ],
@@ -1803,6 +1811,11 @@ class _PayBadge extends StatelessWidget {
 /// The pulsing red "Bill Requested" chip — the floor plan and the cashier's
 /// screen must agree that somebody asked for the check.
 class _BillRequestedChip extends StatefulWidget {
+  /// What the guest plans to pay with — stamped at request time, read off
+  /// the table row. Null/empty keeps the bare "Bill Requested" copy.
+  final String? method;
+  const _BillRequestedChip({this.method});
+
   @override
   State<_BillRequestedChip> createState() => _BillRequestedChipState();
 }
@@ -1824,6 +1837,10 @@ class _BillRequestedChipState extends State<_BillRequestedChip>
 
   @override
   Widget build(BuildContext context) {
+    final method = widget.method;
+    final label = (method == null || method.isEmpty)
+        ? 'Bill Requested'
+        : 'Bill · ${method[0].toUpperCase()}${method.substring(1)}';
     return FadeTransition(
       opacity: _pulse,
       child: Container(
@@ -1834,8 +1851,8 @@ class _BillRequestedChipState extends State<_BillRequestedChip>
               : const Color(0xFFDC2626),
           borderRadius: BorderRadius.circular(4),
         ),
-        child: const Text('Bill Requested',
-            style: TextStyle(
+        child: Text(label,
+            style: const TextStyle(
                 fontFamily: kFontBody,
                 fontSize: 8.5,
                 fontWeight: FontWeight.w700,

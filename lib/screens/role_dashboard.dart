@@ -23,6 +23,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/models.dart';
+import '../api/api_client.dart';
 import '../state/app_state.dart';
 import '../state/catalog_providers.dart';
 import '../state/clock.dart';
@@ -33,6 +34,17 @@ import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/dashboard.dart';
 import 'manager_dashboard.dart';
+
+/// Every transfer still sitting at 'recorded' — the guest says the money is
+/// sent; the till has not confirmed it. The cashier's verify queue: check
+/// the telebirr / bank app, match the reference, tap Verify. Refreshed by
+/// pull-to-refresh and after every verify (the server's SSE does not push
+/// payment rows, so this stays a plain FutureProvider).
+final paymentsToVerifyProvider =
+    FutureProvider<List<FufutPayment>>((ref) async {
+  final app = ref.read(appStateProvider);
+  return app.api.paymentsToVerify();
+});
 
 /// The device-local `YYYY-MM-DD` stamp — server rows carry local-time
 /// strings, never UTC, so "today" is computed the same way the web's
@@ -524,6 +536,8 @@ class _CashierDashboardState extends ConsumerState<CashierDashboard> {
           const SizedBox(height: 10),
           _billRequestsCard(isManager),
           const SizedBox(height: 10),
+          _transfersToVerifyCard(),
+          const SizedBox(height: 10),
           Row(children: [
             Expanded(
               child: KpiCard(
@@ -714,7 +728,8 @@ class _CashierDashboardState extends ConsumerState<CashierDashboard> {
                         color: pal.heading),
                     children: [
                       TextSpan(
-                          text: '  ·  asked ${timeAgo(t.billRequestedAt)}',
+                          text:
+                              '  ·  asked ${timeAgo(t.billRequestedAt)}${(t.billMethod ?? '').isNotEmpty ? '  ·  ${t.billMethod}' : ''}',
                           style: TextStyle(
                               fontFamily: kFontBody,
                               fontSize: 11,
@@ -755,6 +770,111 @@ class _CashierDashboardState extends ConsumerState<CashierDashboard> {
                     ),
                   ),
                 ],
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
+  /// The verify queue — every transfer recorded but not yet confirmed.
+  /// This is the cashier's "did the money actually go through?" screen:
+  /// open the telebirr / bank app, find the matching amount and reference,
+  /// tap Verify. Verified here, the payment turns green on every device.
+  Widget _transfersToVerifyCard() {
+    final pal = Pal.of(context);
+    final async = ref.watch(paymentsToVerifyProvider);
+    final rows = async.value ?? const <FufutPayment>[];
+    if (!async.hasValue || rows.isEmpty) return const SizedBox.shrink();
+    return SectionCard(
+      title: 'Transfers to verify',
+      trailing: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+        decoration: BoxDecoration(
+            color: pal.warningBg, borderRadius: BorderRadius.circular(99)),
+        child: Text('${rows.length}',
+            style: TextStyle(
+                fontFamily: kFontMono,
+                fontSize: 10.5,
+                fontWeight: FontWeight.w700,
+                color: pal.warning)),
+      ),
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: 6),
+          child: Text(
+              'The guest says the money is sent. Check your telebirr or bank '
+              'app for the amount, then confirm it landed.',
+              style: TextStyle(
+                  fontFamily: kFontBody, fontSize: 11, color: pal.muted)),
+        ),
+        for (final p in rows)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Row(
+              children: [
+                Icon(Icons.phone_android_rounded,
+                    size: 15, color: pal.warning),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text.rich(
+                        TextSpan(
+                          text: '${_methodLabel(p.method)} · ${money(p.amount)}',
+                          style: TextStyle(
+                              fontFamily: kFontBody,
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w700,
+                              color: pal.heading),
+                          children: [
+                            TextSpan(
+                                text:
+                                    '  ·  check ${p.orderId.length > 8 ? p.orderId.substring(0, 8) : p.orderId}',
+                                style: TextStyle(
+                                    fontFamily: kFontMono,
+                                    fontSize: 10,
+                                    color: pal.muted)),
+                          ],
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      if ((p.reference ?? '').isNotEmpty)
+                        Text('Ref: ${p.reference}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                                fontFamily: kFontBody,
+                                fontSize: 10.5,
+                                color: pal.muted)),
+                    ],
+                  ),
+                ),
+                SizedBox(
+                  height: 30,
+                  child: AsyncButton(
+                    onPressed: () async {
+                      final app = ref.read(appStateProvider);
+                      final messenger = ScaffoldMessenger.of(context);
+                      try {
+                        await app.api.verifyPayment(p.id);
+                        ref.invalidate(paymentsToVerifyProvider);
+                        showInfoOn(messenger,
+                            'Confirmed — ${money(p.amount)} via ${_methodLabel(p.method)}');
+                      } on ApiError catch (e) {
+                        if (e.isAuthError) await app.sessionExpired();
+                        showErrorOn(messenger, e);
+                      } catch (e) {
+                        showErrorOn(messenger, e);
+                      }
+                    },
+                    icon: Icons.task_alt_rounded,
+                    label: 'Verify',
+                    height: 30,
+                  ),
+                ),
               ],
             ),
           ),

@@ -371,7 +371,13 @@ class PaymentSheet extends ConsumerStatefulWidget {
   /// already on the server; tip stays available, like the web settle flow).
   final double? fixedTotal;
 
-  const PaymentSheet({super.key, this.fixedTotal});
+  /// The method the GUEST said they would pay with, stamped on the check at
+  /// bill-request time. Preselects the grid so the sheet opens on the money
+  /// the guest is actually holding — cash opens the drawer, telebirr opens
+  /// the reference field (owner's friend, 2026-09-25).
+  final String? defaultMethod;
+
+  const PaymentSheet({super.key, this.fixedTotal, this.defaultMethod});
 
   @override
   ConsumerState<PaymentSheet> createState() => _PaymentSheetState();
@@ -422,10 +428,16 @@ class _PaymentSheetState extends ConsumerState<PaymentSheet> {
   @override
   void initState() {
     super.initState();
+    final dm = widget.defaultMethod;
     if (widget.fixedTotal == null) {
       final cart = ref.read(cartProvider);
       _method = cart.paymentMethod;
       _tender.text = cart.tendered > 0 ? cart.tendered.toStringAsFixed(0) : '';
+    } else if (dm != null &&
+        dm.isNotEmpty &&
+        _methods.any((m) => m.$1 == dm)) {
+      // A bill-requested check opens on the method the guest announced.
+      _method = dm;
     }
   }
 

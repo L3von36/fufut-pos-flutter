@@ -15,6 +15,17 @@ import '../widgets/common.dart';
 import 'checkout_sheet.dart' show PaymentResult, PaymentSheet;
 import 'order_history_screen.dart';
 
+/// The money rows on one check — method, amount, reference and the
+/// verification state. The cashier's answer to "the guest says they sent
+/// the money — did it land?": a transfer sits at 'recorded' with the SMS
+/// reference until somebody at the till confirms it (the Verify button),
+/// which is the moment the payment turns 'verified' on every device.
+final paymentsForOrderProvider =
+    FutureProvider.family<List<FufutPayment>, String>((ref, orderId) async {
+  final app = ref.read(appStateProvider);
+  return app.api.paymentsForOrder(orderId);
+});
+
 /// Order history + open checks — the waiter dashboard.
 ///
 /// One screen serves two nav destinations: *Orders* (today's tickets —
@@ -1376,6 +1387,10 @@ class OrderDetailSheet extends ConsumerWidget {
                 ),
               ),
             ),
+            // The money on this check — what the guest announced at bill
+            // time and every tender recorded against it, transfers flagged
+            // until a till confirms them.
+            _PaymentsSection(order: order),
             const SizedBox(height: 18),
             if (maySettle)
               AsyncButton(
@@ -1532,7 +1547,14 @@ class OrderDetailSheet extends ConsumerWidget {
           borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
       constraints: BoxConstraints(
           maxWidth: 680, maxHeight: MediaQuery.sizeOf(context).height * 0.9),
-      builder: (_) => PaymentSheet(fixedTotal: order.total),
+      builder: (_) => PaymentSheet(
+        fixedTotal: order.total,
+        // The guest's announced method rides the bill request — the sheet
+        // opens on it instead of defaulting to cash every time.
+        defaultMethod: (order.billMethod ?? '').isNotEmpty
+            ? order.billMethod
+            : null,
+      ),
     );
     if (result == null || !context.mounted) return;
     final line = result.primary;
@@ -1548,7 +1570,7 @@ class OrderDetailSheet extends ConsumerWidget {
       // Money moved: stamp the bill-cleared leg of the Order Log timeline.
       OrderJournal.instance.record(order.id, OrderStage.paid,
           by: app.user?.displayName,
-          note: '\${line.method} · \${money(line.amount)}');
+          note: '${line.method} · ${money(line.amount)}');
       onChanged?.call(); // the settled tab leaves the list behind the sheet
       // Money moved on THIS device — flip every surface now instead of
       // waiting for the push: the floor's pay badge, the pending panel and
@@ -1568,6 +1590,199 @@ class OrderDetailSheet extends ConsumerWidget {
     } finally {
       await hideOverlay();
     }
+  }
+}
+
+/// The money on one check: what the guest announced at bill time, every
+/// tender the till has recorded, and — for transfers sitting at 'recorded'
+/// — the Verify button that says the money actually landed. Hidden entirely
+/// for checks with no money story yet.
+class _PaymentsSection extends ConsumerWidget {
+  final FufutOrder order;
+  const _PaymentsSection({required this.order});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final pal = Pal.of(context);
+    final app = ref.watch(appStateProvider);
+    final canVerify = canCheckout(app.roleKey);
+    final paymentsAsync = ref.watch(paymentsForOrderProvider(order.id));
+    final billAsked = (order.billRequestedAt ?? '').isNotEmpty;
+    final billMethod = (order.billMethod ?? '').isNotEmpty ? order.billMethod : null;
+
+    // Nothing to say yet — no request, no money rows: stay invisible.
+    final rows = paymentsAsync.value ?? const <FufutPayment>[];
+    if (!billAsked && rows.isEmpty) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Money on this check',
+              style: TextStyle(
+                  fontFamily: kFontBody,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.4,
+                  color: pal.muted)),
+          const SizedBox(height: 6),
+          if (billAsked)
+            Row(
+              children: [
+                Icon(Icons.request_quote_rounded, size: 13, color: pal.gold),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    'Guest asked for the bill — plans to pay '
+                        '${billMethod ?? 'method not said'}',
+                    style: TextStyle(
+                        fontFamily: kFontBody,
+                        fontSize: 11.5,
+                        color: pal.body),
+                  ),
+                ),
+              ],
+            ),
+          for (final p in rows)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: _PaymentRow(
+                payment: p,
+                canVerify: canVerify && p.needsVerification,
+                onVerify: () async {
+                  final app = ref.read(appStateProvider);
+                  final messenger = ScaffoldMessenger.of(context);
+                  try {
+                    await app.api.verifyPayment(p.id);
+                    ref.invalidate(paymentsForOrderProvider(order.id));
+                    showInfoOn(
+                        messenger,
+                        'Verified — ${money(p.amount)} via ${p.method}');
+                  } on ApiError catch (e) {
+                    if (e.isAuthError) await app.sessionExpired();
+                    showErrorOn(messenger, e);
+                  } catch (e) {
+                    showErrorOn(messenger, e);
+                  }
+                },
+              ),
+            ),
+          if (paymentsAsync.isLoading && rows.isEmpty)
+            const Padding(
+              padding: EdgeInsets.only(top: 6),
+              child: Center(
+                  child: SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2))),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// One recorded tender: method, amount, reference, and the verification
+/// state — VERIFIED means the till has seen the money; AWAITING VERIFY
+/// means the guest says they sent it and the till has not confirmed.
+class _PaymentRow extends StatelessWidget {
+  final FufutPayment payment;
+  final bool canVerify;
+  final Future<void> Function() onVerify;
+  const _PaymentRow({
+    required this.payment,
+    required this.canVerify,
+    required this.onVerify,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = Pal.of(context);
+    final p = payment;
+    final (bg, fg, label) = p.needsVerification
+        ? (
+            const Color(0x1A3B82F6),
+            const Color(0xFF1D4ED8),
+            'AWAITING VERIFY',
+          )
+        : (
+            pal.successBg,
+            pal.success,
+            'VERIFIED',
+          );
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 7),
+      decoration: BoxDecoration(
+        color: pal.sunken,
+        borderRadius: BorderRadius.circular(9),
+        border: Border.all(color: pal.border),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Text(p.method,
+                        style: TextStyle(
+                            fontFamily: kFontMono,
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w700,
+                            color: pal.heading)),
+                    const SizedBox(width: 8),
+                    Text(money(p.amount),
+                        style: TextStyle(
+                            fontFamily: kFontMono,
+                            fontSize: 11.5,
+                            color: pal.body)),
+                  ],
+                ),
+                if ((p.reference ?? '').isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text('Ref: ${p.reference}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          fontFamily: kFontBody,
+                          fontSize: 10.5,
+                          color: pal.muted)),
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
+            decoration: BoxDecoration(
+              color: bg,
+              borderRadius: BorderRadius.circular(99),
+            ),
+            child: Text(label,
+                style: TextStyle(
+                    fontFamily: kFontBody,
+                    fontSize: 8.5,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.6,
+                    color: fg)),
+          ),
+          if (canVerify) ...[
+            const SizedBox(width: 8),
+            SizedBox(
+              height: 28,
+              child: AsyncButton(
+                onPressed: onVerify,
+                icon: Icons.task_alt_rounded,
+                label: 'Verify',
+                height: 28,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
   }
 }
 

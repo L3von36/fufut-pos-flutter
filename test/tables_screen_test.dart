@@ -399,17 +399,21 @@ void main() {
     // the same scripted fixture and shows the same ticket).
     expect(find.text('120 ETB'), findsNWidgets(3));
 
-    // Head-waiter may raise the bill request.
+    // Head-waiter may raise the bill request. The sheet comes first: the
+    // guest's intended method rides the request (owner's friend, 2026-09),
+    // so the test taps through it exactly like the floor does.
     routes['POST /tables/T2/request-bill'] =
         (200, {'ok': true, 'requestedAt': '2026-09-22T12:00:00Z'});
     await tester.tap(find.text('Ask for the Bill'));
     await settle(tester);
+    expect(find.textContaining('How will the guest pay?'), findsOneWidget);
+    await tester.tap(find.text('Request the bill · Cash'));
+    await settle(tester);
 
-    expect(
-      recorded.any((r) =>
-          r.method == 'POST' && r.path == '/tables/T2/request-bill'),
-      isTrue,
-    );
+    final billPost = recorded.firstWhere(
+        (r) => r.method == 'POST' && r.path == '/tables/T2/request-bill');
+    expect(billPost, isNotNull);
+    expect(jsonDecode(billPost.body!)['method'], 'cash');
     expect(find.textContaining('Bill requested for table 2'), findsOneWidget);
     // The sheet now offers the cancel side of the toggle.
     expect(find.text('Cancel Bill Request'), findsOneWidget);
