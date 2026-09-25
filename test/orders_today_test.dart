@@ -81,6 +81,7 @@ Map<String, Object?> _orderJson(
   String paymentStatus = 'unpaid',
   double total = 120,
   String? voidedAt,
+  String? byName,
 }) =>
     {
       'id': id,
@@ -90,6 +91,7 @@ Map<String, Object?> _orderJson(
       'payment_status': paymentStatus,
       'created': created ?? '${_todayKey()} 10:00:00',
       if (voidedAt != null) 'voided_at': voidedAt,
+      if (byName != null) 'created_by_name': byName,
       'items': [
         {'qty': 1, 'name': 'Macchiato'},
       ],
@@ -323,6 +325,61 @@ void main() {
       // The hidden count is surfaced so nothing silently vanishes.
       expect(find.textContaining('1 earlier ticket from previous days'),
           findsOneWidget);
+    });
+
+    testWidgets('lane cards carry the fired-by chip; nameless stay quiet',
+        (tester) async {
+      routes['GET /orders'] = (
+        200,
+        [
+          _orderJson('PN1', 'new', tableId: '3', byName: 'Solomon K.'),
+          _orderJson('PN2', 'preparing', tableId: '4'),
+        ]
+      );
+
+      tester.view.physicalSize = const Size(1366, 1200);
+      tester.view.devicePixelRatio = 1.0;
+      tester.view.padding =
+          const FakeViewPadding(top: 0, bottom: 0, left: 0, right: 0);
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            appStateProvider.overrideWith(() => AppStateNotifier(seed: app)),
+          ],
+          child: const MaterialApp(home: Scaffold(body: PipelineScreen())),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+      await settle(tester);
+
+      // The named ticket says whose it is — the board's bare-name pill.
+      expect(find.text('Solomon K.'), findsOneWidget);
+      // Exactly one person_rounded chip in the lanes: the nameless ticket
+      // renders none (never "by null").
+      expect(find.byIcon(Icons.person_rounded), findsOneWidget);
+      expect(find.textContaining('#PN2'), findsOneWidget);
+    });
+  });
+
+  group('fired-by attribution — the cards say whose ticket it is', () {
+    testWidgets('Open Checks tiles carry the chip; nameless tiles stay quiet',
+        (tester) async {
+      routes['GET /orders?open=1'] = (
+        200,
+        [
+          _orderJson('O-named', 'new', tableId: '4', byName: 'Hanna T.'),
+          _orderJson('O-blank', 'new', tableId: '5'),
+        ]
+      );
+
+      await pumpOrders(tester, openOnly: true);
+
+      expect(find.textContaining('O-named'), findsOneWidget);
+      expect(find.text('Hanna T.'), findsOneWidget);
+      // The nameless tab renders untouched — exactly one chip total.
+      expect(find.textContaining('O-blank'), findsOneWidget);
+      expect(find.byIcon(Icons.person_rounded), findsOneWidget);
     });
   });
 }

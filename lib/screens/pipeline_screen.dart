@@ -288,6 +288,11 @@ class _PipelineScreenState extends ConsumerState<PipelineScreen> {
   Widget _card(FufutOrder o, Pal pal, String lane) {
     final elapsed = _elapsed(o);
     final late = (int.tryParse(elapsed.replaceAll(RegExp(r'[^0-9]'), '')) ?? 0) > 10;
+    // Whose ticket this is — the server-stamped created_by_name. Nameless
+    // (legacy) orders keep the card exactly as it was.
+    final firedBy = (o.createdByName ?? '').trim().isEmpty
+        ? null
+        : (o.createdByName ?? '').trim();
     return InkWell(
       onTap: () => _detail(o),
       borderRadius: BorderRadius.circular(8),
@@ -324,12 +329,24 @@ class _PipelineScreenState extends ConsumerState<PipelineScreen> {
                       color: late ? pal.warning : pal.faint)),
             ]),
             const SizedBox(height: 2),
-            Text(
-                '${o.type ?? '—'}${o.tableNum != null ? ' · T${o.tableNum}' : ''} · ${o.customer ?? 'Walk-in'}',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                    fontFamily: kFontBody, fontSize: 10, color: pal.muted)),
+            // Meta row: type · table · customer, with the fired-by chip
+            // right-anchored — the same story the kitchen pass tells, so a
+            // ticket reads the same whichever card it sits on. Long names
+            // ellipsize inside the chip; the lane text yields first.
+            Row(children: [
+              Expanded(
+                child: Text(
+                    '${o.type ?? '—'}${o.tableNum != null ? ' · T${o.tableNum}' : ''} · ${o.customer ?? 'Walk-in'}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                        fontFamily: kFontBody, fontSize: 10, color: pal.muted)),
+              ),
+              if (firedBy != null) ...[
+                const SizedBox(width: 5),
+                Flexible(child: _firedByChip(firedBy, pal)),
+              ],
+            ]),
             const SizedBox(height: 4),
             Text(
                 o.items.isEmpty
@@ -350,4 +367,29 @@ class _PipelineScreenState extends ConsumerState<PipelineScreen> {
       ),
     );
   }
+
+  /// The tinted person-pill the kitchen board hangs on every ticket —
+  /// same shape, same colors, so "by NAME" reads identically in every
+  /// lane, pass and check. Never shown for a nameless order.
+  Widget _firedByChip(String name, Pal pal) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+        decoration: BoxDecoration(
+          color: pal.tintBg,
+          borderRadius: BorderRadius.circular(99),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(Icons.person_rounded, size: 11, color: pal.primary),
+          const SizedBox(width: 3),
+          Flexible(
+            child: Text(name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    fontFamily: kFontBody,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    color: pal.primary)),
+          ),
+        ]),
+      );
 }

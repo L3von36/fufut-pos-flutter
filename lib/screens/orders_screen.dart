@@ -960,6 +960,11 @@ class _OrderTile extends ConsumerWidget {
     final customer = order.customer != null && order.customer != 'Walk-in'
         ? order.customer!
         : '';
+    // Whose tab this is — the server-stamped created_by_name. Nameless
+    // (legacy) orders keep the tile exactly as it was.
+    final firedBy = (order.createdByName ?? '').trim().isEmpty
+        ? null
+        : (order.createdByName ?? '').trim();
 
     return InkWell(
       onTap: () => _openDetail(context),
@@ -1065,7 +1070,11 @@ class _OrderTile extends ConsumerWidget {
                         ],
                       ),
                       const SizedBox(height: 4),
-                      // Line 4: table · customer · date — with icons
+                      // Line 4: table · customer · date — with icons, and
+                      // the fired-by chip right-anchored: a check reads as
+                      // whose it is without opening it (the same story the
+                      // kitchen pass tells). The date yields last, so a
+                      // crowded row squeezes the flexible text first.
                       Row(
                         children: [
                           if (table.isNotEmpty) ...[
@@ -1097,12 +1106,46 @@ class _OrderTile extends ConsumerWidget {
                           if (order.created != null) ...[
                             Icon(Icons.schedule, size: 11, color: pal.faint),
                             const SizedBox(width: 3),
-                            Text(order.created!,
-                                style: TextStyle(
-                                    fontFamily: kFontBody,
-                                    fontSize: 10.5,
-                                    color: pal.faint)),
+                            Flexible(
+                              child: Text(order.created!,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                      fontFamily: kFontBody,
+                                      fontSize: 10.5,
+                                      color: pal.faint)),
+                            ),
                           ],
+                          const Spacer(),
+                          if (firedBy != null)
+                            Flexible(
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 7, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: pal.tintBg,
+                                  borderRadius: BorderRadius.circular(99),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.person_rounded,
+                                        size: 11, color: pal.primary),
+                                    const SizedBox(width: 3),
+                                    Flexible(
+                                      child: Text(firedBy,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                              fontFamily: kFontBody,
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.w700,
+                                              color: pal.primary)),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
                         ],
                       ),
                       // Line 5: Split | Move | Merge — open checks only,

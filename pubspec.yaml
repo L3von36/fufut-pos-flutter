@@ -1,7 +1,7 @@
 name: fufut_pos
 description: "Fufut Coffee POS — Android & desktop point of sale for the Fufut floor."
 publish_to: "none"
-version: 1.6.1+36
+version: 1.6.2+37
 
 environment:
   sdk: ">=3.5.0 <4.0.0"
