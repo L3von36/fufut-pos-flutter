@@ -31,6 +31,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/models.dart';
 import '../services/team_stats.dart';
 import '../state/app_state.dart';
+import '../state/app_time.dart' show fmtDay;
 import '../state/order_scope.dart' show localTodayKey;
 import '../theme.dart';
 import '../widgets/backoffice.dart';
@@ -116,8 +117,7 @@ class _TeamScreenState extends ConsumerState<TeamScreen> {
       lastDate: DateTime.now(),
     );
     if (picked != null) {
-      String two(int v) => v.toString().padLeft(2, '0');
-      setState(() => _day = '${picked.year}-${two(picked.month)}-${two(picked.day)}');
+      setState(() => _day = fmtDay(picked));
     }
   }
 

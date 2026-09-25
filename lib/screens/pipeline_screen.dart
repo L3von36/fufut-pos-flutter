@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/models.dart';
+import '../state/app_time.dart' show fmtDur, parseStamp;
 import '../state/clock.dart';
 import '../state/live_feeds.dart';
 import '../state/order_scope.dart';
@@ -158,13 +159,11 @@ class _PipelineScreenState extends ConsumerState<PipelineScreen> {
   }
 
   String _elapsed(FufutOrder o) {
-    final c = DateTime.tryParse(o.created ?? '');
+    final c = parseStamp(o.created);
     if (c == null) return '';
     final d = DateTime.now().difference(c);
     if (d.isNegative) return '';
-    final m = d.inMinutes;
-    if (m < 60) return '${m}m';
-    return '${d.inHours}h${m % 60}m';
+    return fmtDur(d);
   }
 
   @override

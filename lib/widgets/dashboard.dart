@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../state/app_state.dart';
+import '../state/app_time.dart' show fmtLongDate;
 import '../state/roles.dart';
 import '../theme.dart';
 
@@ -47,14 +48,8 @@ class GreetingHeader extends ConsumerWidget {
     );
   }
 
-  static const _wd = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-  static const _mo = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
-  ];
-
-  static String _fmtDate(DateTime d) =>
-      '${_wd[d.weekday - 1]}, ${_mo[d.month - 1]} ${d.day}, ${d.year}';
+  /// The long date under the greeting — app_time's one [fmtLongDate].
+  static String _fmtDate(DateTime d) => fmtLongDate(d);
 }
 
 /// One KPI tile — the web's `.kpi-card`: label eyebrow, big mono value,

@@ -21,6 +21,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../api/api_client.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
+import '../state/app_time.dart' show fmtClock, fmtDay;
 import '../state/catalog_providers.dart' show tablesOnceProvider;
 import '../state/floor_plan.dart' show paymentLabel;
 import '../theme.dart';
@@ -62,23 +63,18 @@ class _TablesHistoryScreenState extends ConsumerState<TablesHistoryScreen> {
     _openTableId = widget.initialTableId;
   }
 
-  String _dayKey(DateTime d) {
-    String two(int v) => v.toString().padLeft(2, '0');
-    return '${d.year}-${two(d.month)}-${two(d.day)}';
-  }
-
   (String, String) get _window {
     final now = DateTime.now();
     switch (_preset) {
       case 'yesterday':
         final y = now.subtract(const Duration(days: 1));
-        return (_dayKey(y), _dayKey(y));
+        return (fmtDay(y), fmtDay(y));
       case '7d':
-        return (_dayKey(now.subtract(const Duration(days: 7))), _dayKey(now));
+        return (fmtDay(now.subtract(const Duration(days: 7))), fmtDay(now));
       case '30d':
-        return (_dayKey(now.subtract(const Duration(days: 30))), _dayKey(now));
+        return (fmtDay(now.subtract(const Duration(days: 30))), fmtDay(now));
       default:
-        final k = _dayKey(now);
+        final k = fmtDay(now);
         return (k, k);
     }
   }
@@ -439,8 +435,7 @@ class _TablesHistoryScreenState extends ConsumerState<TablesHistoryScreen> {
   String _whenOf(FufutOrder o) {
     final c = DateTime.tryParse(o.created ?? '');
     if (c == null) return o.created ?? '';
-    String two(int v) => v.toString().padLeft(2, '0');
-    return '${_dayKey(c)}  ${two(c.hour)}:${two(c.minute)}';
+    return '${fmtDay(c)}  ${fmtClock(c)}';
   }
 
   Future<void> _openOrder(BuildContext context, FufutOrder o) async {

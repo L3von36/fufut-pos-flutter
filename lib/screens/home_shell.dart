@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../state/app_state.dart';
+import '../state/app_time.dart' show fmtLongDate;
 import '../state/clock.dart';
 import '../state/live_feeds.dart';
 import '../state/nav.dart';
@@ -393,14 +394,8 @@ class _TopBar extends ConsumerWidget {
     );
   }
 
-  static const _wd = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-  static const _mo = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
-  ];
-
-  String _fmt(DateTime d) =>
-      '${_wd[d.weekday - 1]}, ${_mo[d.month - 1]} ${d.day}, ${d.year}';
+  /// The topbar's long date — app_time's one [fmtLongDate].
+  String _fmt(DateTime d) => fmtLongDate(d);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -52,6 +52,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/models.dart';
 import '../services/order_journal.dart';
 import '../state/app_state.dart';
+import '../state/app_time.dart';
 import '../state/live_feeds.dart';
 import '../state/order_scope.dart';
 import '../theme.dart';
@@ -198,13 +199,9 @@ class _OrderLogScreenState extends ConsumerState<OrderLogScreen> {
 
   /// Server stamps come in two shapes: the order row's `created` is a local
   /// wall-clock string ("2026-08-06 01:55:46"), the stage columns are UTC ISO
-  /// ("2026-09-25T07:12:33.000Z"). Parse both; UTC converts to local.
-  DateTime? _serverStamp(String? s) {
-    if (s == null || s.isEmpty) return null;
-    final d = DateTime.tryParse(s.trim().replaceFirst(' ', 'T'));
-    if (d == null) return null;
-    return d.isUtc ? d.toLocal() : d;
-  }
+  /// ("2026-09-25T07:12:33.000Z"). app_time's [parseStamp] reads both; UTC
+  /// converts to local, so every clock here reads the venue's wall.
+  DateTime? _serverStamp(String? s) => parseStamp(s);
 
   /// When did [stage] happen on [o]? The journal's stamp first (this
   /// device's own action, or its echo), then the order row's own stage
@@ -343,9 +340,7 @@ class _OrderLogScreenState extends ConsumerState<OrderLogScreen> {
       lastDate: DateTime.now(),
     );
     if (picked != null) {
-      String two(int v) => v.toString().padLeft(2, '0');
-      setState(() =>
-          _day = '${picked.year}-${two(picked.month)}-${two(picked.day)}');
+      setState(() => _day = fmtDay(picked));
     }
   }
 }
@@ -503,11 +498,8 @@ class _KpiStrip extends StatelessWidget {
   static String _shortMoney(double v) =>
       v >= 1000 ? '${(v / 1000).toStringAsFixed(1)}k' : v.toStringAsFixed(0);
 
-  static String _fmtDur(Duration d) {
-    final m = d.inMinutes;
-    if (m < 60) return '${m}m';
-    return '${d.inHours}h${d.inMinutes % 60}m';
-  }
+  /// app_time's one elapsed shape — '42m' / '1h07m'.
+  static String _fmtDur(Duration d) => fmtDur(d);
 }
 
 class _KpiCard extends StatelessWidget {
@@ -707,11 +699,8 @@ class _OrderLogCard extends StatelessWidget {
     return (end.difference(start), seatedAt == null);
   }
 
-  static String _fmtDur(Duration d) {
-    final m = d.inMinutes;
-    if (m < 60) return '${m}m';
-    return '${d.inHours}h${d.inMinutes % 60}m';
-  }
+  /// app_time's one elapsed shape — '42m' / '1h07m'.
+  static String _fmtDur(Duration d) => fmtDur(d);
 }
 
 class _TimelineRow extends StatelessWidget {
@@ -736,9 +725,7 @@ class _TimelineRow extends StatelessWidget {
       OrderStage.tableCleared => pal.muted,
     };
 
-    final String time = o.done
-        ? '${o.at!.hour.toString().padLeft(2, '0')}:${o.at!.minute.toString().padLeft(2, '0')}'
-        : '—';
+    final String time = o.done ? fmtClock(o.at!) : '—';
     final leg = (o.done && prevAt != null && o.at!.isAfter(prevAt!))
         ? _fmtDur(o.at!.difference(prevAt!))
         : null;
@@ -781,11 +768,8 @@ class _TimelineRow extends StatelessWidget {
     );
   }
 
-  static String _fmtDur(Duration d) {
-    final m = d.inMinutes;
-    if (m < 60) return '${m}m';
-    return '${d.inHours}h${d.inMinutes % 60}m';
-  }
+  /// app_time's one elapsed shape — '42m' / '1h07m'.
+  static String _fmtDur(Duration d) => fmtDur(d);
 }
 
 class _Chip extends StatelessWidget {

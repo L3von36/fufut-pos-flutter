@@ -16,6 +16,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../api/api_client.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
+import '../state/app_time.dart' show todayKey;
 import '../state/catalog_providers.dart';
 import '../theme.dart';
 import '../widgets/backoffice.dart';
@@ -63,10 +64,7 @@ class _WasteScreenState extends ConsumerState<WasteScreen> {
   bool _isToday(WasteEntry w) {
     final d = w.date;
     if (d == null || d.length < 10) return false;
-    final now = DateTime.now();
-    String pad(int v) => v.toString().padLeft(2, '0');
-    final today = '${now.year}-${pad(now.month)}-${pad(now.day)}';
-    return d.substring(0, 10) == today;
+    return d.substring(0, 10) == todayKey();
   }
 
   List<WasteEntry> _filtered(List<WasteEntry> entries) {

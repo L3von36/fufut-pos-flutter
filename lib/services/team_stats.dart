@@ -28,31 +28,21 @@
 library;
 
 import '../models/models.dart';
+import '../state/app_time.dart' show parseStamp, stampDayKey;
 import '../state/order_scope.dart' show scopedLines;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Time helpers — two stamp shapes live in the data
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Parses both stamp shapes the API emits: the orders' naive local
-/// wall-clock ("2026-08-06 01:55:46") and the UTC ISO stamps
-/// ("2026-09-25T07:12:33.000Z" — audit rows, payments, the stage columns).
-/// UTC converts to local, so every duration is computed on one clock.
-DateTime? teamParseStamp(String? s) {
-  if (s == null || s.isEmpty) return null;
-  final d = DateTime.tryParse(s.trim().replaceFirst(' ', 'T'));
-  if (d == null) return null;
-  return d.isUtc ? d.toLocal() : d;
-}
+/// Parses both stamp shapes the API emits — delegated to [parseStamp] in
+/// `app_time.dart`, the one parser the whole app reads. The name stays for
+/// the tests and the call sites below.
+DateTime? teamParseStamp(String? s) => parseStamp(s);
 
 /// The local `YYYY-MM-DD` day key of any stamp — the same shape
 /// `localTodayKey` produces, so day windows compare as plain strings.
-String? teamDayKey(String? s) {
-  final d = teamParseStamp(s);
-  if (d == null) return null;
-  String two(int v) => v.toString().padLeft(2, '0');
-  return '${d.year}-${two(d.month)}-${two(d.day)}';
-}
+String? teamDayKey(String? s) => stampDayKey(s);
 
 /// Minutes between two stamps, or null when either leg never happened or
 /// runs backwards — a live ticket never drags an average negative.

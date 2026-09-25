@@ -20,6 +20,7 @@
 library;
 
 import '../models/models.dart';
+import 'app_time.dart' show todayKey;
 import 'roles.dart';
 
 import 'dart:convert' show jsonDecode;
@@ -259,11 +260,10 @@ String emptyOrdersHint(String? roleKey) {
 /// carry naive local-time stamps ("2026-08-06 01:55:46"), never UTC, so the
 /// day is the ten-character prefix of `created` — string-prefix matching is
 /// the established, timezone-safe pattern (role_dashboard, alerts, waste…).
-String localTodayKey([DateTime? now]) {
-  final n = now ?? DateTime.now();
-  String two(int v) => v.toString().padLeft(2, '0');
-  return '${n.year}-${two(n.month)}-${two(n.day)}';
-}
+///
+/// Delegates to [todayKey] in `app_time.dart` — the one clock the whole app
+/// reads. The name stays because five screens and two tests import it.
+String localTodayKey([DateTime? now]) => todayKey(now);
 
 /// True when the order was created today — the live service day. Operational
 /// screens (Orders, Pipeline, Open Checks) show today's tickets only; older

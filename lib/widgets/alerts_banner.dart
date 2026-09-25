@@ -32,6 +32,7 @@ import '../models/models.dart';
 import '../services/alerts_live.dart';
 import '../services/audio_alerts.dart';
 import '../state/app_state.dart';
+import '../state/app_time.dart' show fmtClockStamp;
 import '../state/audio_providers.dart';
 import '../state/live_feeds.dart';
 import '../theme.dart';
@@ -451,11 +452,5 @@ class _AlertRow extends StatelessWidget {
     );
   }
 
-  String _shortTime(String stamp) {
-    final t = DateTime.tryParse(stamp);
-    if (t == null) return '';
-    final local = t.toLocal();
-    String two(int n) => n.toString().padLeft(2, '0');
-    return '${two(local.hour)}:${two(local.minute)}';
-  }
+  String _shortTime(String stamp) => fmtClockStamp(stamp);
 }

@@ -25,6 +25,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/models.dart';
 import '../api/api_client.dart';
 import '../state/app_state.dart';
+import '../state/app_time.dart' show timeAgo, todayKey;
 import '../state/catalog_providers.dart';
 import '../state/clock.dart';
 import '../state/live_feeds.dart';
@@ -46,26 +47,9 @@ final paymentsToVerifyProvider =
   return app.api.paymentsToVerify();
 });
 
-/// The device-local `YYYY-MM-DD` stamp — server rows carry local-time
-/// strings, never UTC, so "today" is computed the same way the web's
-/// `TODAY()` does.
-String _today() {
-  final n = DateTime.now();
-  String two(int v) => v < 10 ? '0$v' : '$v';
-  return '${n.year}-${two(n.month)}-${two(n.day)}';
-}
-
-/// "asked 4m ago" / "3h ago" — the web's timeAgo, coarse-grained.
-String timeAgo(String? stamp) {
-  if (stamp == null || stamp.isEmpty) return '';
-  final t = DateTime.tryParse(stamp);
-  if (t == null) return stamp;
-  final d = DateTime.now().difference(t);
-  if (d.inMinutes < 1) return 'just now';
-  if (d.inMinutes < 60) return '${d.inMinutes}m ago';
-  if (d.inHours < 24) return '${d.inHours}h ago';
-  return '${d.inDays}d ago';
-}
+/// The device-local `YYYY-MM-DD` stamp — delegated to app_time's
+/// [todayKey]; "today" is computed the same way the web's `TODAY()` does.
+String _today() => todayKey();
 
 /// Entry point — dispatches on the signed-in role.
 class RoleDashboard extends ConsumerWidget {

@@ -8,6 +8,11 @@ library;
 
 import 'dart:convert' show jsonDecode;
 
+// The business-day key lives in state/app_time.dart now — re-exported here
+// so every existing `models.dart` import keeps reading `dayKey` untouched,
+// with the UTC-aware parsing instead of the raw string slice.
+export '../state/app_time.dart' show dayKey;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Menu
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2289,10 +2294,7 @@ const List<Map<String, String>> kAlertRules = [
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// The business-day key of any server stamp — '' when the stamp is missing
-/// or too short to hold one. Screens render '—' for ''; they never throw.
-String dayKey(String? stamp) =>
-    stamp == null || stamp.length < 10 ? '' : stamp.substring(0, 10);
+// (dayKey moved to state/app_time.dart — re-exported above.)
 
 /// Human summary text from structured line rows — "1x Latte, 2x Firfir".
 /// Used both for List items and, via FufutOrder.fromJson, for the JSON-array

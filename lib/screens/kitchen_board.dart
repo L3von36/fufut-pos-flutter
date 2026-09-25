@@ -46,6 +46,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/models.dart';
 import '../services/audio_alerts.dart';
 import '../state/app_state.dart';
+import '../state/app_time.dart' show parseStamp;
 import '../state/audio_providers.dart';
 import '../state/catalog_providers.dart';
 import '../state/clock.dart';
@@ -954,11 +955,10 @@ class _Ticket {
   const _Ticket({required this.order, required this.lines});
 
   static Duration elapsedOf(FufutOrder o) {
-    if (o.created == null) return Duration.zero;
-    final c = DateTime.tryParse(o.created!);
+    // app_time's parseStamp reads the server's shapes; the age is instant
+    // math, so Addis tickets never read 3h fresh.
+    final c = parseStamp(o.created);
     if (c == null) return Duration.zero;
-    // Server stamps are local-time strings; parse without zone and compare
-    // against local now so Addis tickets never read 3h fresh.
     final now = DateTime.now();
     var age = now.difference(c);
     if (age.isNegative) age = Duration.zero;
@@ -970,8 +970,7 @@ class _Ticket {
   /// falling back to created for legacy rows.
   static Duration readyElapsedOf(FufutOrder o) {
     final raw = (o.readyAt ?? '').isNotEmpty ? o.readyAt! : o.created;
-    if (raw == null) return Duration.zero;
-    final c = DateTime.tryParse(raw);
+    final c = parseStamp(raw);
     if (c == null) return Duration.zero;
     final now = DateTime.now();
     var age = now.difference(c);

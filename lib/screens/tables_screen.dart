@@ -49,6 +49,7 @@ import '../models/models.dart';
 import '../services/audio_alerts.dart';
 import '../services/order_journal.dart';
 import '../state/app_state.dart';
+import '../state/app_time.dart';
 import '../state/cart.dart';
 import '../state/clock.dart';
 import '../state/floor_plan.dart';
@@ -547,10 +548,8 @@ class _TablesScreenState extends ConsumerState<TablesScreen> {
           // seven days, any status — survives the party leaving.
           onLoadHistory: () async {
             final now = DateTime.now();
-            String two(int v) => v.toString().padLeft(2, '0');
-            final to = '${now.year}-${two(now.month)}-${two(now.day)}';
-            final fd = now.subtract(const Duration(days: 7));
-            final from = '${fd.year}-${two(fd.month)}-${two(fd.day)}';
+            final to = fmtDay(now);
+            final from = fmtDay(now.subtract(const Duration(days: 7)));
             final all = await app.api.orders(from: from, to: to, limit: 200);
             return all
                 .where((o) => o.tableNum == t.number || o.tableNum == t.id)
@@ -3067,13 +3066,7 @@ class _DetailOrders extends StatelessWidget {
     );
   }
 
-  static String _fmtTime(String? iso) {
-    if (iso == null || iso.isEmpty) return '';
-    final d = DateTime.tryParse(iso.trim().replaceFirst(' ', 'T'));
-    if (d == null) return '';
-    String two(int n) => n.toString().padLeft(2, '0');
-    return '${two(d.hour)}:${two(d.minute)}';
-  }
+  static String _fmtTime(String? iso) => fmtClockStamp(iso);
 }
 
 /// The table's history — every ticket it ran in the last seven days, any
@@ -3200,20 +3193,7 @@ class _DetailHistoryState extends State<_DetailHistory> {
     );
   }
 
-  static String _fmtHistoryTime(String? iso) {
-    if (iso == null || iso.isEmpty) return '';
-    final d = DateTime.tryParse(iso.trim().replaceFirst(' ', 'T')) ??
-        DateTime.tryParse(iso);
-    if (d == null) return iso;
-    String two(int n) => n.toString().padLeft(2, '0');
-    final now = DateTime.now();
-    final sameDay =
-        d.year == now.year && d.month == now.month && d.day == now.day;
-    final label = sameDay
-        ? '${two(d.hour)}:${two(d.minute)}'
-        : '${two(d.day)}/${two(d.month)} ${two(d.hour)}:${two(d.minute)}';
-    return label;
-  }
+  static String _fmtHistoryTime(String? iso) => fmtWhenStamp(iso);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

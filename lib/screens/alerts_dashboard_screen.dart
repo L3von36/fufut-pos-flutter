@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/models.dart';
+import '../state/app_time.dart' show fmtClockStamp, todayKey;
 import '../state/live_feeds.dart';
 import '../state/session_providers.dart';
 import '../theme.dart';
@@ -81,11 +82,8 @@ class _AlertsDashboardScreenState extends ConsumerState<AlertsDashboardScreen> {
     final pal = Pal.of(context);
     final rules = _rules;
     final criticals = _open.where((a) => a.severity == 'critical').length;
-    final today = DateTime.now();
-    final todayKey = '${today.year.toString().padLeft(4, '0')}-'
-        '${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
     final resolvedToday =
-        _resolved.where((a) => a.created.startsWith(todayKey)).length;
+        _resolved.where((a) => a.created.startsWith(todayKey())).length;
 
     return RefreshIndicator(
       onRefresh: _reload,
@@ -165,7 +163,7 @@ class _AlertsDashboardScreenState extends ConsumerState<AlertsDashboardScreen> {
                                     color: pal.heading)),
                             const SizedBox(height: 1),
                             Text(
-                                '${a.entityLabel} · ${a.created.length >= 16 ? a.created.substring(11, 16) : a.created} · ${a.ruleId}',
+                                '${a.entityLabel} · ${fmtClockStamp(a.created)} · ${a.ruleId}',
                                 style: TextStyle(
                                     fontFamily: kFontBody,
                                     fontSize: 10.5, color: pal.faint)),

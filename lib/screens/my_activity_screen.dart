@@ -15,6 +15,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../api/api_client.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
+import '../state/app_time.dart' show fmtClockStamp, fmtDay, todayKey;
 import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/dashboard.dart';
@@ -49,23 +50,18 @@ class _MyActivityScreenState extends ConsumerState<MyActivityScreen> {
 
   void _reload() => ref.invalidate(myActivityProvider(_from));
 
-  /// `from` for each range chip — local-time stamps, same as the web.
+  /// `from` for each range chip — local day keys, same as the web.
   String get _from {
     final n = DateTime.now();
-    String two(int v) => v < 10 ? '0$v' : '$v';
-    final today = '${n.year}-${two(n.month)}-${two(n.day)}';
     switch (_range) {
       case 'week':
-        final w = n.subtract(const Duration(days: 7));
-        return '${w.year}-${two(w.month)}-${two(w.day)}';
+        return fmtDay(n.subtract(const Duration(days: 7)));
       case 'month':
-        final m = DateTime(n.year, n.month - 1, n.day);
-        return '${m.year}-${two(m.month)}-${two(m.day)}';
+        return fmtDay(DateTime(n.year, n.month - 1, n.day));
       case 'year':
-        final y = DateTime(n.year - 1, n.month, n.day);
-        return '${y.year}-${two(y.month)}-${two(y.day)}';
+        return fmtDay(DateTime(n.year - 1, n.month, n.day));
       default:
-        return today;
+        return todayKey(n);
     }
   }
 
@@ -419,13 +415,7 @@ class _MyActivityScreenState extends ConsumerState<MyActivityScreen> {
     );
   }
 
-  static String _fmtTime(String? at) {
-    if (at == null || at.isEmpty) return '';
-    final t = DateTime.tryParse(at);
-    if (t == null) return at;
-    String two(int v) => v < 10 ? '0$v' : '$v';
-    return '${two(t.hour)}:${two(t.minute)}';
-  }
+  static String _fmtTime(String? at) => fmtClockStamp(at);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

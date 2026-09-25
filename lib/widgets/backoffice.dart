@@ -9,6 +9,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../state/app_time.dart' show fmtDay;
 import '../theme.dart';
 import 'common.dart';
 
@@ -299,10 +300,9 @@ class DateRangeRow extends StatelessWidget {
     required this.onTo,
   });
 
-  static String fmt(DateTime d) =>
-      '${d.year.toString().padLeft(4, '0')}-'
-      '${d.month.toString().padLeft(2, '0')}-'
-      '${d.day.toString().padLeft(2, '0')}';
+  /// The `yyyy-MM-dd` day key the API's from/to filters speak — delegated
+  /// to app_time's [dayKey], the one date format the whole app writes.
+  static String fmt(DateTime d) => fmtDay(d);
 
   Future<void> _pick(BuildContext context, String current,
       ValueChanged<String> on) async {

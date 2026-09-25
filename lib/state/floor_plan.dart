@@ -9,6 +9,7 @@
 library;
 
 import '../models/models.dart';
+import 'app_time.dart' show fmtClock, parseStamp;
 
 /// The venue's rule: a sitting lasts at most four hours. The server enforces
 /// it (its staleness sweep releases held tables); this constant only colors
@@ -164,15 +165,15 @@ String serverInitials(String? name) {
 
 /// "holding until 19:30" or "from 18:00" — whichever the waiter needs to
 /// know. Before the sitting starts the useful fact is when the guests are
-/// due; once it has started, it is when the table frees up.
+/// due; once it has started, it is when the table frees up. Stamps read
+/// through app_time's [parseStamp] — the venue's wall, not a UTC hour the
+/// `.toUtc()` used to leak into the label.
 String holdWindowLabel(String? startAt, String? endAt, {DateTime? now}) {
-  final start = DateTime.tryParse(startAt ?? '')?.toUtc();
-  final end = DateTime.tryParse(endAt ?? '')?.toUtc();
+  final start = parseStamp(startAt);
+  final end = parseStamp(endAt);
   if (start == null || end == null) return '';
-  String fmt(DateTime d) =>
-      '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
-  final n = (now ?? DateTime.now()).toUtc();
-  return n.isBefore(start) ? 'from ${fmt(start)}' : 'until ${fmt(end)}';
+  final n = now ?? DateTime.now();
+  return n.isBefore(start) ? 'from ${fmtClock(start)}' : 'until ${fmtClock(end)}';
 }
 
 /// The money state of a party's checks, word for word with the web.

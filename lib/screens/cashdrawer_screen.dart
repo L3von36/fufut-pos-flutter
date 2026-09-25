@@ -22,6 +22,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../api/api_client.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
+import '../state/app_time.dart' show fmtClockStamp;
 import '../state/roles.dart';
 import '../state/session_providers.dart';
 import '../theme.dart';
@@ -1186,13 +1187,7 @@ class _CashDrawerScreenState extends ConsumerState<CashDrawerScreen> {
     );
   }
 
-  static String _hhmm(String? stamp) {
-    if (stamp == null || stamp.isEmpty) return '—';
-    final t = DateTime.tryParse(stamp);
-    if (t == null) return stamp.length > 5 ? stamp.substring(0, 5) : stamp;
-    String two(int v) => v < 10 ? '0$v' : '$v';
-    return '${two(t.hour)}:${two(t.minute)}';
-  }
+  static String _hhmm(String? stamp) => fmtClockStamp(stamp, blank: '—');
 
   static double _totalFor(List<PayMethod>? methods, String m) {
     if (methods == null) return 0;

@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../api/api_client.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
+import '../state/app_time.dart' show fmtDay, fmtDayClock;
 import '../state/order_scope.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
@@ -82,39 +83,34 @@ class _OrderHistoryScreenState extends ConsumerState<OrderHistoryScreen> {
     super.dispose();
   }
 
-  String _dayKey(DateTime d) {
-    String two(int v) => v.toString().padLeft(2, '0');
-    return '${d.year}-${two(d.month)}-${two(d.day)}';
-  }
-
   DateTime _dayAgo(int n) => DateTime.now().subtract(Duration(days: n));
 
   String get _from {
     switch (_preset) {
       case 'today':
-        return _dayKey(DateTime.now());
+        return fmtDay(DateTime.now());
       case 'yesterday':
-        return _dayKey(_dayAgo(1));
+        return fmtDay(_dayAgo(1));
       case '7d':
-        return _dayKey(_dayAgo(7));
+        return fmtDay(_dayAgo(7));
       case '30d':
-        return _dayKey(_dayAgo(30));
+        return fmtDay(_dayAgo(30));
       default:
-        return _dayKey(_customFrom ?? _dayAgo(30));
+        return fmtDay(_customFrom ?? _dayAgo(30));
     }
   }
 
   String get _to {
     switch (_preset) {
       case 'today':
-        return _dayKey(DateTime.now());
+        return fmtDay(DateTime.now());
       case 'yesterday':
       case '7d':
       case '30d':
         // Windows end yesterday: today is the Orders screen's job.
-        return _dayKey(_dayAgo(1));
+        return fmtDay(_dayAgo(1));
       default:
-        return _dayKey(_customTo ?? _dayAgo(1));
+        return fmtDay(_customTo ?? _dayAgo(1));
     }
   }
 
@@ -581,8 +577,7 @@ class _HistoryTile extends StatelessWidget {
   String _stamp(BuildContext context) {
     final c = DateTime.tryParse(order.created ?? '');
     if (c == null) return order.created ?? '';
-    String two(int v) => v.toString().padLeft(2, '0');
-    return '${two(c.day)}/${two(c.month)} ${two(c.hour)}:${two(c.minute)}';
+    return fmtDayClock(c);
   }
 
   @override
