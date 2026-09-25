@@ -537,11 +537,16 @@ class _TablesScreenState extends ConsumerState<TablesScreen> {
           canFree: canFreeTable(app.roleKey),
           canServe: canMarkServed(app.roleKey),
           servers: _assignableServers(),
-          // The web's openDetail fetch: this table's open checks only.
+          // The web's openDetail fetch: this table's open checks only —
+          // and ONLY the current seating's (owner's 2026-09-25 rule). A
+          // freed party's leftover check (served but unpaid) drops into the
+          // history section below; the new customers' active list carries
+          // their own orders alone.
           onLoadOrders: () async {
             final all = await app.api.orders();
             return all
                 .where((o) => o.tableNum == t.number && isResumableCheck(o))
+                .where((o) => isCurrentSeatingOrder(o, t))
                 .toList();
           },
           // The table's memory: every ticket that touched it in the last

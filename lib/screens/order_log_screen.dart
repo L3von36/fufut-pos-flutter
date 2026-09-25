@@ -41,7 +41,11 @@
 ///
 /// Waiter data isolation applies: floor roles see only the orders they took
 /// or that sit on their assigned tables (`orderVisibleToRole`), so one
-/// waiter's log is never polluted by a colleague's section.
+/// waiter's log is never polluted by a colleague's section. The manager —
+/// and every whole-room role — reads EVERY order of the day and gets the
+/// staff filter on top: 'All staff' plus one chip per name the day carried,
+/// so the owner can read one waiter's day in isolation (owner's ask,
+/// 2026-09-25).
 library;
 
 import 'dart:async';
@@ -161,6 +165,13 @@ class _OrderLogScreenState extends ConsumerState<OrderLogScreen> {
   /// date one chip away (the owner's day-filter rule, 2026-09-25).
   String _day = localTodayKey();
 
+  /// The staff filter — whose orders the log shows (owner's 2026-09-25
+  /// ask: the manager reads every order AND filters by user). The value is
+  /// the order's `created_by` id; null shows everyone. Meaningless on a
+  /// waiter's own log (isolation already narrowed it), so the row renders
+  /// only where the whole room is in scope.
+  String? _userFilter;
+
   /// Live push — the same pattern the Orders screen rides: a change on any
   /// shared feed (a settle, a serve, a bill request, a new ticket anywhere
   /// in the building) debounces an invalidate of this screen's scoped GET.
@@ -273,6 +284,23 @@ class _OrderLogScreenState extends ConsumerState<OrderLogScreen> {
 
     final data = logAsync.value ??
         const _LogData([], {});
+    // The staff dimension: every name the day's orders carry, most active
+    // first. The manager (and every whole-room role) gets the filter; the
+    // waiter's log is already their own — isolation narrowed it.
+    final canFilterByUser = roleKey != 'head-waiter';
+    final staff = <String, String>{}; // id → display name
+    for (final o in data.orders) {
+      final id = o.createdById ?? '';
+      final name = (o.createdByName ?? '').trim();
+      if (id.isEmpty || name.isEmpty) continue;
+      staff[id] = name;
+    }
+    final staffIds = staff.keys.toList();
+    final shown = _userFilter == null || !staffIds.contains(_userFilter)
+        ? data.orders
+        : data.orders
+            .where((o) => (o.createdById ?? '') == _userFilter)
+            .toList();
     final body = logAsync.isLoading && data.orders.isEmpty
         ? const Center(child: CircularProgressIndicator())
         : logAsync.hasError && data.orders.isEmpty
@@ -290,32 +318,44 @@ class _OrderLogScreenState extends ConsumerState<OrderLogScreen> {
                       onDay: (d) => setState(() => _day = d),
                       onPick: _pickDay,
                     ),
+                    if (canFilterByUser && staff.length >= 2) ...[
+                      const SizedBox(height: 4),
+                      _UserFilterRow(
+                        staff: staff,
+                        selected: _userFilter,
+                        onChanged: (v) =>
+                            setState(() => _userFilter = v.isEmpty ? null : v),
+                      ),
+                    ],
                     const SizedBox(height: 4),
                     _HeaderRow(
                         day: _day,
-                        count: data.orders.length,
+                        count: shown.length,
                         onRefresh: () async {
                           ref.invalidate(_orderLogProvider);
                         }),
                     const SizedBox(height: 10),
                     _KpiStrip(
-                        data: data,
+                        data: _LogData(shown, data.tablesByNumber),
                         roleKey: roleKey,
                         stageAt: (o, s) => _stageAt(data, o, s)),
                     const SizedBox(height: 12),
-                    if (data.orders.isEmpty)
-                      const Padding(
-                        padding: EdgeInsets.only(top: 80),
+                    if (shown.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 80),
                         child: Center(
-                          child: Text('No orders on this day.',
-                              style: TextStyle(
+                          child: Text(
+                              _userFilter == null
+                                  ? 'No orders on this day.'
+                                  : 'No orders by ${staff[_userFilter] ?? 'this staff'} on this day.',
+                              style: const TextStyle(
                                   fontFamily: kFontBody,
                                   fontSize: 12.5,
                                   color: Colors.grey)),
                         ),
                       )
                     else
-                      for (final o in data.orders)
+                      for (final o in shown)
                         Padding(
                           padding: const EdgeInsets.only(bottom: 8),
                           child: _OrderLogCard(
@@ -385,6 +425,32 @@ class _DayFilterRow extends StatelessWidget {
           onPick();
         }
       },
+    );
+  }
+}
+
+/// The staff filter — 'All staff' plus every name the day's orders carry
+/// (owner's 2026-09-25 ask: the manager reads every order and filters by
+/// user). Client-side on purpose: the day's scoped list is already in hand,
+/// and the chip row disappears when a single person fired the day.
+class _UserFilterRow extends StatelessWidget {
+  final Map<String, String> staff; // created_by id → display name
+  final String? selected;
+  final ValueChanged<String> onChanged;
+  const _UserFilterRow(
+      {required this.staff, required this.selected, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    final entries = staff.entries.toList()
+      ..sort((a, b) => a.value.compareTo(b.value));
+    return ChipSelect(
+      value: selected ?? '',
+      options: [
+        ('', 'All staff'),
+        for (final e in entries) (e.key, e.value),
+      ],
+      onChanged: onChanged,
     );
   }
 }

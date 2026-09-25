@@ -16,16 +16,25 @@
 /// moment its derived status moves (the server recomputes the order status
 /// from its tracked lines on every line bump).
 ///
-/// **Per-line tracking** — the board also polls
-/// `GET /api/orders/items/active`, so each line carries its own status
-/// (new → preparing → ready) and advances on tap. A line tap fires
-/// `PUT /api/orders/:id/items/:itemId {status}` — the same endpoint the web
-/// uses, so the barista bumping drinks never drags food lines along. Lines
-/// END at ready: the handoff is a ticket-level act ("Picked up by waiter",
-/// ticket → fulfilled; owner's flow: the kitchen hands off, the floor
-/// serves, the board clears). Tickets with no tracked lines fall back to
-/// the whole-ticket `PUT /api/orders/:id {status}`. Bulk actions per card:
-/// "Start Cooking" (undoable) and "All Ready".
+/// **Per-line tracking, row-driven** — the board polls
+/// `GET /api/orders/items/active` and RENDERS THE TRACKED ROWS: a card's
+/// lines ARE the server's rows (real item ids, own status, own notes), the
+/// same architecture as the web `KitchenView.vue`. A line tap fires
+/// `PUT /api/orders/:id/items/:itemId {status}` on that row's id — no name
+/// matching, no positional guessing. This is the owner's 2026-09-25
+/// cross-talk report, final word: several tickets from one table (and one
+/// ticket carrying a second round) moved together when the old renderer
+/// guessed ids from the summary string and fell back to the whole-ticket
+/// `PUT /api/orders/:id {status}` — whose documented server semantics are
+/// "advance every line still behind the target" (handlers/orders.js). A
+/// tracked ticket can now NEVER take the whole-ticket path: if a row cannot
+/// be targeted the tap refreshes instead of guessing. The whole-ticket
+/// fallback remains ONLY for genuinely legacy tickets (no rows at all) —
+/// exactly the web's rule. Lines END at ready: the handoff is a
+/// ticket-level act ("Picked up by waiter", ticket → fulfilled; owner's
+/// flow: the kitchen hands off, the floor serves, the board clears). Bulk
+/// actions per card: "Start Cooking" (undoable) and "All Ready" — both
+/// per-line PUTs under the hood.
 ///
 /// **Today only** — the board is the service day's work surface. Open
 /// tickets stamped before today drop off; a count of the hidden earlier
@@ -107,28 +116,30 @@ class _KitchenBoardState extends ConsumerState<KitchenBoard> {
 
   List<FufutOrder> get _orders => ref.read(kitchenFeedProvider).orders;
 
-  /// orderId → itemId → status, from `GET /api/orders/items/active`
-  /// (via [kitchenLinesProvider] — refreshed with kitchen activity).
-  Map<String, Map<String, String>> get _lineStatus {
-    final items = ref.read(kitchenLinesProvider).value;
-    final lineMap = <String, Map<String, String>>{};
-    for (final it in items ?? const <ActiveOrderItem>[]) {
-      lineMap.putIfAbsent(it.orderId, () => {})[it.id] = it.status;
-    }
-    return lineMap;
-  }
-
-  /// orderId → tracked rows in line_no order — the safe line→id mapping
-  /// (name first, position second). The positional guess alone was the bug
-  /// that let one tap move a line the cook never touched.
+  /// orderId → tracked rows in line_no order, from
+  /// `GET /api/orders/items/active` (via [kitchenLinesProvider] — refreshed
+  /// with kitchen activity). The rows ARE the card's lines: real ids, own
+  /// status, own notes. Sorting by line_no keeps a second round (add-round
+  /// rows and merged-check rows both append) in the order the guest fired
+  /// them.
   Map<String, List<ActiveOrderItem>> get _activeItems {
     final items = ref.read(kitchenLinesProvider).value;
     final byOrder = <String, List<ActiveOrderItem>>{};
     for (final it in items ?? const <ActiveOrderItem>[]) {
       byOrder.putIfAbsent(it.orderId, () => []).add(it);
     }
+    for (final rows in byOrder.values) {
+      rows.sort((a, b) => a.lineNo.compareTo(b.lineNo));
+    }
     return byOrder;
   }
+
+  /// True when the server tracks this ticket's lines — a tracked ticket
+  /// never takes the whole-ticket write (the server's order-level PUT
+  /// advances EVERY line still behind the target, which is exactly the
+  /// cross-talk the owner reported).
+  bool _isTracked(FufutOrder order) =>
+      (_activeItems[order.id] ?? const <ActiveOrderItem>[]).isNotEmpty;
 
   /// name → category, the station router's lookup (shared menu provider;
   /// the session cache in AppState adopts the same copy).
@@ -221,11 +232,10 @@ class _KitchenBoardState extends ConsumerState<KitchenBoard> {
     }
   }
 
-  /// The station's lines of one ticket — FOOD only on the kitchen pass,
-  /// DRINKS only on the bar board. Category first (menu lookup), name as
-  /// the fallback for pre-category rows; the same rule the Orders screen
-  /// scopes by. A ticket nobody can classify fails OPEN: it renders whole
-  /// rather than silently hiding somebody's work behind a parse failure.
+  /// Legacy-summary station scoping — FOOD/DRINK lines of the summary
+  /// string, for a ticket the server tracks no rows for. A ticket nobody
+  /// can classify fails OPEN (renders whole) rather than silently hiding
+  /// somebody's work behind a parse failure.
   List<OrderItemLine> _stationLines(FufutOrder o) {
     final scoped = scopedLines(
         o, widget.baristaMode ? 'bar' : 'kitchen',
@@ -233,15 +243,63 @@ class _KitchenBoardState extends ConsumerState<KitchenBoard> {
     return scoped ?? boardLines(o);
   }
 
+  /// The pass's lines of one ticket, AS THE SERVER SEES THEM — tracked rows
+  /// first (real ids; each advances alone), the summary's lines only for a
+  /// genuinely legacy ticket with no rows at all. Station routing: FOOD on
+  /// the kitchen pass, DRINKS on the bar board, the same classifier the
+  /// summary path rides. A legacy ticket nobody can classify fails OPEN
+  /// (renders whole) rather than silently hiding somebody's work.
+  List<_PassLine> _passLines(FufutOrder o) {
+    final rows = _activeItems[o.id] ?? const <ActiveOrderItem>[];
+    if (rows.isNotEmpty) {
+      final wantDrink = widget.baristaMode;
+      final catByName = _catByName;
+      final mine = <_PassLine>[];
+      for (final r in rows) {
+        // Station router: the tracked row's own category first, the menu's
+        // category for rows written before categories were stamped (the
+        // same chain the summary lines ride — "Ginger with Honey" is a
+        // drink only through its HOT DRINKS category).
+        final cat = r.category.isNotEmpty
+            ? r.category
+            : (catByName[r.name.toLowerCase()] ?? '');
+        final isDrink = lineIsDrinkOf(cat, r.name);
+        if (isDrink != wantDrink) continue;
+        mine.add(_PassLine(
+          name: r.name,
+          qty: r.qty,
+          itemId: r.id,
+          status: r.status.toLowerCase(),
+          note: (r.notes?.trim().isEmpty ?? true) ? null : r.notes,
+        ));
+      }
+      // Every tracked row belongs to the other station — the rows PROVE the
+      // ticket is not ours (the summary path's rule, now on real rows).
+      return mine;
+    }
+    // Legacy ticket: no tracked rows — render the summary's lines, status
+    // from the order (the whole ticket moves as one, the web's rule too).
+    final summary = _stationLines(o);
+    return [
+      for (final l in summary)
+        _PassLine(
+          name: l.name,
+          qty: l.qty,
+          itemId: null,
+          status: o.status.toLowerCase(),
+          note: l.notes,
+        ),
+    ];
+  }
+
   /// The pass's lane for a ticket — derived from THIS STATION's lines, not
   /// the order's overall status (owner's cross-talk report, 2026-09): on a
   /// mixed ticket the bar bumping its drinks must not drag the kitchen's
   /// card across the pass. The lane is the least-advanced of this
-  /// station's lines; untracked tickets fall back to the order status.
+  /// station's lines; a ticket with no renderable lines reads 'new' (it is
+  /// filtered out of [_tickets] anyway).
   String _laneOf(_Ticket t) {
-    final statuses = t.lines
-        .map((l) => _statusOfLine(t, l).toLowerCase())
-        .toSet();
+    final statuses = t.lines.map((l) => l.status).toSet();
     if (statuses.isEmpty) {
       final s = t.order.status.toLowerCase();
       return (s == 'preparing' || s == 'ready') ? s : 'new';
@@ -273,7 +331,7 @@ class _KitchenBoardState extends ConsumerState<KitchenBoard> {
   bool _stationDone(_Ticket t) {
     const done = {'served', 'fulfilled'};
     return t.lines.isNotEmpty &&
-        t.lines.every((l) => done.contains(_statusOfLine(t, l).toLowerCase()));
+        t.lines.every((l) => done.contains(l.status));
   }
 
   List<_Ticket> get _tickets {
@@ -284,7 +342,7 @@ class _KitchenBoardState extends ConsumerState<KitchenBoard> {
       // ticket is fully with the floor: gone from every board.
       final s = o.status.toLowerCase();
       if (o.isClosed || s == 'fulfilled' || s == 'served') continue;
-      final lines = _stationLines(o);
+      final lines = _passLines(o);
       if (lines.isEmpty) continue;
       final ticket = _Ticket(order: o, lines: lines);
       if (_stationDone(ticket)) continue;
@@ -328,35 +386,51 @@ class _KitchenBoardState extends ConsumerState<KitchenBoard> {
   }
 
   /// Advance ONE line (`PUT /orders/:id/items/:itemId`). One tap moves one
-  /// line — the owner's 2026-09 report: tapping a single item must never
-  /// take its siblings with it. When the ticket HAS tracked rows but this
-  /// line cannot be matched to one, we refuse to guess with a whole-ticket
-  /// write (that is exactly the bug that moved both stations) — refresh
-  /// instead.
-  Future<void> _advanceLine(_Ticket t, OrderItemLine line, String to) async {
+  /// ROW — the owner's 2026-09-25 report: tapping a single item must never
+  /// take its siblings with it, and a second order on the same table must
+  /// never hear about it. The row's real id is on the pass line; a tracked
+  /// ticket can NEVER fall back to the whole-ticket write (the server's
+  /// order-level PUT advances every line still behind the target — that is
+  /// the cross-talk being ended here).
+  Future<void> _advanceLine(_Ticket t, _PassLine pl, String to) async {
     final app = ref.read(appStateProvider);
     final messenger = ScaffoldMessenger.of(context);
-    final lineKey = '${t.order.id}/${line.name}/${line.qty}';
+    final lineKey = '${t.order.id}/${pl.itemId ?? pl.name}/${pl.qty}';
     if (_busyLines.contains(lineKey) || _busyTicket != null) return;
-    final itemId = _itemIdFor(t.order, line);
-    final hasTracked = (_lineStatus[t.order.id] ?? {}).isNotEmpty;
-    if (hasTracked && itemId == null) {
-      showWarnOn(messenger, 'Could not target that line — refreshing the board');
-      await _reload();
+    final itemId = pl.itemId;
+    if (itemId == null) {
+      if (_isTracked(t.order)) {
+        // Tracked ticket, but this summary line cannot be matched to a row
+        // — refuse to guess with a whole-ticket write (that write is the
+        // bug), refresh to pick the rows up.
+        showWarnOn(messenger, 'Could not target that line — refreshing the board');
+        await _reload();
+        return;
+      }
+      // True legacy ticket (no tracked rows at all) — whole-ticket bump,
+      // scoped to this station.
+      _busyLines.add(lineKey);
+      if (mounted) setState(() {});
+      try {
+        HapticFeedback.selectionClick();
+        await app.api.updateStatus(t.order, to, station: _station);
+        showInfoOn(messenger, '${pl.name} → $to');
+        await _reload();
+        _followTicket(t.order.id);
+      } catch (e) {
+        showErrorOn(messenger, e);
+      } finally {
+        _busyLines.remove(lineKey);
+        if (mounted) setState(() {});
+      }
       return;
     }
     _busyLines.add(lineKey);
     if (mounted) setState(() {});
     try {
       HapticFeedback.selectionClick();
-      if (itemId != null) {
-        await app.api.advanceOrderItem(t.order.id, itemId, to);
-      } else {
-        // No tracked rows at all (true legacy ticket) — whole-ticket bump,
-        // scoped to this station.
-        await app.api.updateStatus(t.order, to, station: _station);
-      }
-      showInfoOn(messenger, '${line.name} → $to');
+      await app.api.advanceOrderItem(t.order.id, itemId, to);
+      showInfoOn(messenger, '${pl.name} → $to');
       await _reload();
       _followTicket(t.order.id);
     } catch (e) {
@@ -367,67 +441,15 @@ class _KitchenBoardState extends ConsumerState<KitchenBoard> {
     }
   }
 
-  /// Resolve the server-side item id of a cart line.
-  ///
-  /// Match by name (and quantity when names collide) first — the tracked
-  /// rows carry the same names the cart wrote — and fall back to position
-  /// among the ticket's FULL line list only when names cannot decide. The
-  /// station lines are a filtered subset (drinks stripped on the kitchen
-  /// pass), so a station-index never equals a row index; the drinks-first
-  /// ticket was the trap the positional guess fell into.
-  String? _itemIdFor(FufutOrder order, OrderItemLine line) {
-    final rows = _lineStatus[order.id];
-    if (rows == null || rows.isEmpty) return null;
-    final tracked = _activeItems[order.id];
-    if (tracked != null && tracked.isNotEmpty) {
-      final byName = tracked.where((it) => it.name == line.name).toList();
-      if (byName.length == 1) return byName.first.id;
-      final byNameQty =
-          byName.where((it) => it.qty == line.qty).toList();
-      if (byNameQty.length == 1) return byNameQty.first.id;
-    }
-    final allLines = boardLines(order);
-    final idx = allLines.indexOf(line);
-    if (idx < 0) return null;
-    final ids = rows.keys.toList();
-    if (idx < ids.length) return ids[idx];
-    return null;
-  }
-
-  String _statusOfLine(_Ticket t, OrderItemLine line) {
-    final itemId = _itemIdFor(t.order, line);
-    if (itemId != null) {
-      final s = _lineStatus[t.order.id]?[itemId];
-      if (s != null) return s;
-    }
-    return t.order.status.toLowerCase();
-  }
-
-  /// The line's note, read off the TRACKED row when the ticket's summary
-  /// lines carry none of their own — the summary string the server stores
-  /// (name/qty/price) never carries notes or allergens; the tracked rows
-  /// the boards already match by name do. Without this the amber note line
-  /// never rendered on a live ticket.
-  String? _notesFor(_Ticket t, OrderItemLine line) {
-    if (line.notes != null && line.notes!.trim().isNotEmpty) return line.notes;
-    final itemId = _itemIdFor(t.order, line);
-    if (itemId == null) return null;
-    for (final it in _activeItems[t.order.id] ?? const <ActiveOrderItem>[]) {
-      if (it.id == itemId) {
-        final n = it.notes?.trim() ?? '';
-        return n.isEmpty ? null : n;
-      }
-    }
-    return null;
-  }
-
   /// Bulk advance every line sitting at [from] to the next step — parallel
-  /// per-line PUTs, wholesale revert on failure, and an undo toast on Start
-  /// All. Lines stop at ready: the handoff is the ticket-level pickup.
+  /// per-line PUTs on the rows' real ids, wholesale revert on failure, and
+  /// an undo toast on Start All. Lines stop at ready: the handoff is the
+  /// ticket-level pickup.
   ///
-  /// When the ticket HAS tracked rows but none sit at [from], this is a
-  /// no-op with a hint — never the whole-ticket fallback (that fallback is
-  /// how a barista's card once dragged the kitchen's food forward).
+  /// Never the whole-ticket write while the server tracks rows: when rows
+  /// exist but none sit at [from], this is a no-op with a hint — that
+  /// fallback is how one tap once dragged a whole table's tickets forward
+  /// (owner's report, 2026-09-25).
   Future<void> _bulkAdvance(_Ticket t, String from, {bool undoable = false}) async {
     const flow = {'new': 'preparing', 'preparing': 'ready'};
     final to = flow[from]!;
@@ -435,16 +457,12 @@ class _KitchenBoardState extends ConsumerState<KitchenBoard> {
     final messenger = ScaffoldMessenger.of(context);
     if (_busyTicket != null) return;
 
-    // Lines currently at `from` (tracked rows preferred over the ticket's
-    // own status).
-    final targets = <String>[]; // item ids
+    // Rows currently at `from` — real ids off the pass lines.
+    final targets = <String>[];
     for (final l in t.lines) {
-      if (_statusOfLine(t, l) == from) {
-        final id = _itemIdFor(t.order, l);
-        if (id != null) targets.add(id);
-      }
+      if (l.status == from && l.itemId != null) targets.add(l.itemId!);
     }
-    final hasTracked = (_lineStatus[t.order.id] ?? {}).isNotEmpty;
+    final hasTracked = _isTracked(t.order);
     if (targets.isEmpty) {
       if (hasTracked) {
         showInfoOn(messenger, 'Nothing at "from" on this ticket');
@@ -595,8 +613,6 @@ class _KitchenBoardState extends ConsumerState<KitchenBoard> {
                               meta: _kLanes[i],
                               tickets: lanes[_kLanes[i].key]!,
                               baristaMode: barista,
-                              statusOfLine: _statusOfLine,
-                              notesOf: _notesFor,
                               busyLineKeys: _busyLines,
                               busyTicketId: _busyTicket,
                               onAdvanceLine: _advanceLine,
@@ -614,8 +630,6 @@ class _KitchenBoardState extends ConsumerState<KitchenBoard> {
                           _kLanes.where((m) => m.key == _lane).first,
                       tickets: lanes[_lane]!,
                       baristaMode: barista,
-                      statusOfLine: _statusOfLine,
-                      notesOf: _notesFor,
                       busyLineKeys: _busyLines,
                       busyTicketId: _busyTicket,
                       onAdvanceLine: _advanceLine,
@@ -839,11 +853,9 @@ class _LaneColumn extends StatelessWidget {
   final _LaneMeta meta;
   final List<_Ticket> tickets;
   final bool baristaMode;
-  final String Function(_Ticket, OrderItemLine) statusOfLine;
-  final String? Function(_Ticket, OrderItemLine) notesOf;
   final Set<String> busyLineKeys;
   final String? busyTicketId;
-  final Future<void> Function(_Ticket, OrderItemLine, String) onAdvanceLine;
+  final Future<void> Function(_Ticket, _PassLine, String) onAdvanceLine;
   final Future<void> Function(_Ticket, String, {bool undoable}) onBulk;
   final Future<void> Function(_Ticket) onPickup;
 
@@ -851,8 +863,6 @@ class _LaneColumn extends StatelessWidget {
     required this.meta,
     required this.tickets,
     required this.baristaMode,
-    required this.statusOfLine,
-    required this.notesOf,
     required this.busyLineKeys,
     required this.busyTicketId,
     required this.onAdvanceLine,
@@ -932,8 +942,6 @@ class _LaneColumn extends StatelessWidget {
                     ticket: tickets[i],
                     lane: meta.key,
                     baristaMode: baristaMode,
-                    statusOfLine: statusOfLine,
-                    notesOf: notesOf,
                     busyLineKeys: busyLineKeys,
                     busyTicketId: busyTicketId,
                     onAdvanceLine: onAdvanceLine,
@@ -949,9 +957,31 @@ class _LaneColumn extends StatelessWidget {
 
 // ── Ticket card ─────────────────────────────────────────────────────────────
 
+class _PassLine {
+  final String name;
+  final int qty;
+
+  /// The tracked row's server id — the tap target. Null only on a genuinely
+  /// legacy ticket (no tracked rows at all), where the whole ticket moves
+  /// as one (the web's rule).
+  final String? itemId;
+  final String status;
+  final String? note;
+  const _PassLine({
+    required this.name,
+    required this.qty,
+    required this.itemId,
+    required this.status,
+    this.note,
+  });
+
+  bool get done => const ['ready', 'served', 'fulfilled'].contains(status);
+  bool get tappable => status == 'new' || status == 'preparing';
+}
+
 class _Ticket {
   final FufutOrder order;
-  final List<OrderItemLine> lines;
+  final List<_PassLine> lines;
   const _Ticket({required this.order, required this.lines});
 
   static Duration elapsedOf(FufutOrder o) {
@@ -983,11 +1013,9 @@ class _TicketCard extends StatelessWidget {
   final _Ticket ticket;
   final String lane;
   final bool baristaMode;
-  final String Function(_Ticket, OrderItemLine) statusOfLine;
-  final String? Function(_Ticket, OrderItemLine) notesOf;
   final Set<String> busyLineKeys;
   final String? busyTicketId;
-  final Future<void> Function(_Ticket, OrderItemLine, String) onAdvanceLine;
+  final Future<void> Function(_Ticket, _PassLine, String) onAdvanceLine;
   final Future<void> Function(_Ticket, String, {bool undoable}) onBulk;
   final Future<void> Function(_Ticket) onPickup;
 
@@ -995,8 +1023,6 @@ class _TicketCard extends StatelessWidget {
     required this.ticket,
     required this.lane,
     required this.baristaMode,
-    required this.statusOfLine,
-    required this.notesOf,
     required this.busyLineKeys,
     required this.busyTicketId,
     required this.onAdvanceLine,
@@ -1026,10 +1052,7 @@ class _TicketCard extends StatelessWidget {
 
     // Cooking progress — done lines over total lines; the pass reads the
     // bar before it reads anything else.
-    final done = ticket.lines
-        .where((l) =>
-            const ['ready', 'served', 'fulfilled'].contains(statusOfLine(ticket, l)))
-        .length;
+    final done = ticket.lines.where((l) => l.done).length;
     final total = ticket.lines.length;
     final progress = total == 0 ? 0.0 : done / total;
     final allReady = done == total;
@@ -1038,8 +1061,7 @@ class _TicketCard extends StatelessWidget {
     // shows the handoff the moment every DRINK is ready, even while the
     // kitchen is still cooking.
     const doneSet = {'ready', 'served', 'fulfilled'};
-    final stationStatuses =
-        ticket.lines.map((l) => statusOfLine(ticket, l).toLowerCase()).toSet();
+    final stationStatuses = ticket.lines.map((l) => l.status).toSet();
     final laneStatus = stationStatuses.every(doneSet.contains)
         ? 'ready'
         : stationStatuses.any((s) => s != 'new')
@@ -1164,23 +1186,21 @@ class _TicketCard extends StatelessWidget {
                             color: allReady ? pal.success : pal.muted)),
                   ]),
                   const SizedBox(height: 7),
-                  // Lines — tap to advance, status per line. The card
-                  // shrink-wraps (lane lists scroll, the card never clips).
+                  // Lines — tap to advance ONE row (its own server id),
+                  // status per line. The card shrink-wraps (lane lists
+                  // scroll, the card never clips).
                   for (final l in ticket.lines)
                     _LineRow(
                       line: l,
-                      status: statusOfLine(ticket, l),
-                      note: notesOf(ticket, l),
                       busy: _busy ||
                           busyLineKeys.contains(
-                              '${ticket.order.id}/${l.name}/${l.qty}'),
+                              '${ticket.order.id}/${l.itemId ?? l.name}/${l.qty}'),
                       onTap: () {
                         const flow = {
                           'new': 'preparing',
                           'preparing': 'ready',
                         };
-                        final s = statusOfLine(ticket, l);
-                        final to = flow[s];
+                        final to = flow[l.status];
                         if (to != null) onAdvanceLine(ticket, l, to);
                       },
                     ),
@@ -1260,23 +1280,20 @@ class _TicketCard extends StatelessWidget {
 /// renders a check and ignores taps. The qty chip and 34px row keep every
 /// tap target kitchen-glove friendly.
 class _LineRow extends StatelessWidget {
-  final OrderItemLine line;
-  final String status;
-  final String? note;
+  final _PassLine line;
   final VoidCallback onTap;
   final bool busy;
 
   const _LineRow({
     required this.line,
-    required this.status,
     required this.onTap,
-    this.note,
     this.busy = false,
   });
 
   @override
   Widget build(BuildContext context) {
     final pal = Pal.of(context);
+    final status = line.status;
     final Color dotColor;
     switch (status) {
       case 'new':
@@ -1290,9 +1307,9 @@ class _LineRow extends StatelessWidget {
       default:
         dotColor = pal.faint;
     }
-    final done = status == 'ready' || status == 'served' || status == 'fulfilled';
-    final tappable = status == 'new' || status == 'preparing';
-    final hasNote = note != null && note!.trim().isNotEmpty;
+    final done = line.done;
+    final tappable = line.tappable;
+    final hasNote = line.note != null && line.note!.trim().isNotEmpty;
 
     final content = Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1364,7 +1381,7 @@ class _LineRow extends StatelessWidget {
                   size: 10, color: pal.warning),
               const SizedBox(width: 3),
               Expanded(
-                child: Text(note!,
+                child: Text(line.note!,
                     style: TextStyle(
                         fontFamily: kFontBody,
                         fontSize: 10.5,

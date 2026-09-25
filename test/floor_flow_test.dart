@@ -11,6 +11,7 @@ import 'package:fufut_pos/api/api_client.dart';
 import 'package:fufut_pos/api/fufut_api.dart';
 import 'package:fufut_pos/models/models.dart';
 import 'package:fufut_pos/screens/kitchen_board.dart';
+import 'package:fufut_pos/screens/order_log_screen.dart';
 import 'package:fufut_pos/screens/orders_screen.dart';
 import 'package:fufut_pos/state/app_state.dart';
 import 'package:fufut_pos/state/order_scope.dart';
@@ -478,6 +479,107 @@ void main() {
     });
   });
 
+  group('same-table cross-talk — one tap moves ONE ticket', () {
+    // The owner's 2026-09-25 report: two tickets from the SAME table, tap
+    // one and BOTH went preparing/ready. The board renders the tracked
+    // rows and taps fire per-row PUTs on the row's own id — the sibling
+    // ticket's rows are never touched, and no whole-ticket PUT is ever
+    // fired for a tracked ticket.
+    testWidgets('tapping a line on one ticket leaves the sibling untouched',
+        (tester) async {
+      routes['GET /orders?open=1'] = (200, [
+        _orderJson('K-aaaa', 'new', created: '${_todayKey()} 09:40:00'),
+        _orderJson('K-bbbb', 'new', created: '${_todayKey()} 09:42:00'),
+      ]);
+      // Both tickets on table 3, both tracked — the sibling is not a
+      // legacy ticket that could tempt a whole-ticket fallback.
+      routes['GET /orders/items/active'] = (200, [
+        {'id': 'it-a1', 'order_id': 'K-aaaa', 'name': 'Omelette',
+         'category': 'Breakfast', 'qty': 1, 'status': 'new'},
+        {'id': 'it-b1', 'order_id': 'K-bbbb', 'name': 'Shiro Wat',
+         'category': 'Ethiopian', 'qty': 1, 'status': 'new'},
+      ]);
+
+      await pumpBoard(tester);
+      await settle(tester);
+
+      // Tap the LINE on ticket #aaaa (its row is the tap target).
+      await tester.tap(find.text('Omelette'));
+      await settle(tester);
+
+      final puts = recorded
+          .where((r) => r.method == 'PUT')
+          .map((r) => '${r.method} ${r.path} ${r.body ?? ''}')
+          .toList();
+      expect(puts, ['PUT /orders/K-aaaa/items/it-a1 {"status":"preparing"}'],
+          reason: 'exactly one per-row PUT on the tapped ticket — the '
+              'sibling ticket hears nothing');
+    });
+
+    testWidgets('Start Cooking on one ticket never writes the sibling rows',
+        (tester) async {
+      routes['GET /orders?open=1'] = (200, [
+        // Oldest first: #aaaa renders above #bbbb, so its bulk button is
+        // the first on the lane.
+        _orderJson('K-aaaa', 'new', created: '${_todayKey()} 09:40:00'),
+        _orderJson('K-bbbb', 'new', created: '${_todayKey()} 09:42:00'),
+      ]);
+      routes['GET /orders/items/active'] = (200, [
+        {'id': 'it-a1', 'order_id': 'K-aaaa', 'name': 'Omelette',
+         'category': 'Breakfast', 'qty': 1, 'status': 'new'},
+        {'id': 'it-b1', 'order_id': 'K-bbbb', 'name': 'Shiro Wat',
+         'category': 'Ethiopian', 'qty': 1, 'status': 'new'},
+      ]);
+
+      await pumpBoard(tester);
+      await settle(tester);
+
+      await tester.tap(find.text('Start Cooking').first);
+      await settle(tester);
+
+      final putPaths = recorded
+          .where((r) => r.method == 'PUT')
+          .map((r) => r.path)
+          .toList();
+      expect(putPaths, ['/orders/K-aaaa/items/it-a1'],
+          reason: 'the sibling order is never written — the cross-talk is '
+              'ended at the tap');
+    });
+
+    testWidgets('a second round on one ticket shows BOTH rows, each its own tap',
+        (tester) async {
+      // The customer ordered Shiro Wat twice (add-round / merged check):
+      // two tracked rows with the SAME name on ONE order. The old renderer
+      // read the stale one-line summary — the second row was invisible and
+      // unfinishable. The row-driven card shows both, each with its id.
+      routes['GET /orders?open=1'] = (200, [
+        _orderJson('K-dupl', 'new', created: '${_todayKey()} 09:40:00'),
+      ]);
+      routes['GET /orders/items/active'] = (200, [
+        {'id': 'it-d1', 'order_id': 'K-dupl', 'name': 'Shiro Wat',
+         'category': 'Ethiopian', 'qty': 1, 'status': 'new'},
+        {'id': 'it-d2', 'order_id': 'K-dupl', 'name': 'Shiro Wat',
+         'category': 'Ethiopian', 'qty': 1, 'status': 'new'},
+      ]);
+
+      await pumpBoard(tester);
+      await settle(tester);
+
+      expect(find.text('Shiro Wat'), findsNWidgets(2),
+          reason: 'both rounds are visible — no silent second row');
+
+      // Tap the FIRST row: exactly it-d1 moves, it-d2 stays.
+      await tester.tap(find.text('Shiro Wat').first);
+      await settle(tester);
+      final putPaths = recorded
+          .where((r) => r.method == 'PUT')
+          .map((r) => r.path)
+          .toList();
+      expect(putPaths, ['/orders/K-dupl/items/it-d1'],
+          reason: 'one tap, one row — never the whole ticket');
+    });
+  });
+
   group('the three lanes', () {
     testWidgets('tickets sit in their lane; the selector moves between them',
         (tester) async {
@@ -500,6 +602,69 @@ void main() {
 
       expect(find.textContaining('#rddy'), findsOneWidget);
       expect(find.textContaining('#nnew'), findsNothing);
+    });
+  });
+
+  group('order log — the manager reads every order and filters by user', () {
+    // The owner's 2026-09-25 ask. Two staff fire the day; the manager's log
+    // shows both names as filter chips and one tap isolates a waiter's day.
+    Map<String, Object?> staffOrder(String id, String byId, String byName) =>
+        {
+          ..._orderJson(id, 'completed', created: '${_todayKey()} 10:00:00'),
+          'created_by': byId,
+          'created_by_name': byName,
+        };
+
+    testWidgets('All staff shows the whole day; a name chip isolates it',
+        (tester) async {
+      app.roleKey = 'manager';
+      routes['GET /menu'] = (200, []);
+      routes['GET /orders?from=${_todayKey()}&to=${_todayKey()}'] = (200, [
+        staffOrder('L-1', 'S6', 'Yonas Girmay'),
+        staffOrder('L-2', 'S1', 'Amanuel Fekadu'),
+        staffOrder('L-3', 'S6', 'Yonas Girmay'),
+      ]);
+      routes['GET /tables'] = (200, []);
+
+      tester.view.physicalSize = const Size(430, 2400);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            appStateProvider.overrideWith(() => AppStateNotifier(seed: app)),
+          ],
+          child: const MaterialApp(
+            home: Scaffold(body: OrderLogScreen()),
+          ),
+        ),
+      );
+      await settle(tester);
+      // Feed events keep invalidating the day's provider while the SSE
+      // channel settles — pump until the header reflects a finished fetch.
+      for (var i = 0;
+          i < 20 && find.text('3 orders').evaluate().isEmpty;
+          i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expect(find.text('3 orders'), findsOneWidget,
+          reason: 'the manager sees every order of the day');
+      expect(find.text('All staff'), findsOneWidget);
+      expect(find.text('Yonas Girmay'), findsOneWidget);
+      expect(find.text('Amanuel Fekadu'), findsOneWidget);
+
+      // One tap on a name — that waiter's day alone.
+      await tester.tap(find.text('Yonas Girmay'));
+      await settle(tester);
+
+      expect(find.text('2 orders'), findsOneWidget,
+          reason: 'the filter isolates one user without a refetch');
+      expect(find.text('All staff'), findsOneWidget);
+
+      // Back to the whole day.
+      await tester.tap(find.text('All staff'));
+      await settle(tester);
+      expect(find.text('3 orders'), findsOneWidget);
     });
   });
 }

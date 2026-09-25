@@ -309,4 +309,87 @@ void main() {
           'Large');
     });
   });
+
+  group('isCurrentSeatingOrder — active orders are the NEW customers only', () {
+    FufutOrder check(String id,
+        {String status = 'new',
+        String? clearedAt,
+        required String created}) {
+      return FufutOrder(
+        id: id,
+        status: status,
+        tableNum: 'T2',
+        paymentStatus: 'unpaid',
+        created: created,
+        clearedAt: clearedAt,
+        total: 10,
+      );
+    }
+
+    // Timezone-robust fixtures: `created` is a naive local stamp (the
+    // server's shape), seated_at a UTC ISO (the claiming device's shape) —
+    // both built from the local calendar so the test never pins UTC hours.
+    String seatedIso(DateTime local) => local.toUtc().toIso8601String();
+    String naiveLocal(DateTime local) =>
+        '${local.year.toString().padLeft(4, '0')}-'
+        '${local.month.toString().padLeft(2, '0')}-'
+        '${local.day.toString().padLeft(2, '0')} '
+        '${local.hour.toString().padLeft(2, '0')}:'
+        '${local.minute.toString().padLeft(2, '0')}:'
+        '${local.second.toString().padLeft(2, '0')}';
+
+    test('a freed party\u2019s leftover check is history, not active', () {
+      final seated = DateTime.now(); // party sat now
+      const t = CafeTable(id: 'T2', number: '2', status: 'occupied');
+      final tSeated = CafeTable(
+          id: 'T2',
+          number: '2',
+          status: 'occupied',
+          seatedAt: seatedIso(seated));
+      final old = check('O-old', clearedAt: '2026-09-25T12:16:33.000Z',
+          created: naiveLocal(seated.subtract(const Duration(hours: 2))));
+      // cleared_at alone decides — regardless of the seating clock.
+      expect(isCurrentSeatingOrder(old, t), isFalse);
+      expect(isCurrentSeatingOrder(old, tSeated), isFalse);
+    });
+
+    test('the new customers\u2019 orders ride the active list', () {
+      final seated = DateTime.now().subtract(const Duration(minutes: 30));
+      final t = CafeTable(
+          id: 'T2',
+          number: '2',
+          status: 'occupied',
+          seatedAt: seatedIso(seated));
+      final fresh = check('O-new',
+          created: naiveLocal(seated.add(const Duration(minutes: 5))));
+      expect(isCurrentSeatingOrder(fresh, t), isTrue);
+    });
+
+    test('an order created before the current party sat is a previous '
+        'party\u2019s — even with no clear stamp', () {
+      final seated = DateTime.now().subtract(const Duration(minutes: 10));
+      final t = CafeTable(
+          id: 'T2',
+          number: '2',
+          status: 'occupied',
+          seatedAt: seatedIso(seated));
+      final stale = check('O-stale',
+          status: 'served',
+          created: naiveLocal(seated.subtract(const Duration(hours: 3))));
+      expect(isCurrentSeatingOrder(stale, t), isFalse,
+          reason: 'quick-status turns bypass /free; the seating clock is '
+              'the fallback');
+    });
+
+    test('a table that never stamped seated_at leans on cleared_at alone',
+        () {
+      const t = CafeTable(id: 'T2', number: '2', status: 'occupied');
+      final fresh = check('O-fresh', created: naiveLocal(DateTime.now()));
+      expect(isCurrentSeatingOrder(fresh, t), isTrue);
+      final freed = check('O-freed',
+          clearedAt: '2026-09-25T12:16:33.000Z',
+          created: naiveLocal(DateTime.now()));
+      expect(isCurrentSeatingOrder(freed, t), isFalse);
+    });
+  });
 }

@@ -82,6 +82,31 @@ bool isResumableCheck(FufutOrder? order) {
   return (order.paymentStatus ?? '').toLowerCase() != 'paid';
 }
 
+/// Does this check belong to the table's CURRENT seating — the party
+/// sitting now?
+///
+/// The owner's rule (2026-09-25): the table's Active Orders are the NEW
+/// customers' orders only. When a party leaves and the table is freed, the
+/// server stamps every check it leaves behind with `cleared_at` — a freed
+/// party's leftover (typically served-but-unpaid money) belongs to the
+/// table's history, never to the next guests' bill. The seating clock
+/// (`seated_at`) is the fallback for turns that bypass the free endpoint
+/// (quick-status edits): an order created before the current party sat is
+/// a previous party's.
+///
+/// A 90-second tolerance absorbs clock skew — `seated_at` is the claiming
+/// device's clock, `created` is the server's.
+bool isCurrentSeatingOrder(FufutOrder? order, CafeTable? table) {
+  if (order == null || table == null) return true;
+  if ((order.clearedAt ?? '').isNotEmpty) return false;
+  final seated = parseStamp(table.seatedAt);
+  if (seated == null) return true;
+  final created = parseStamp(order.created);
+  if (created == null) return true;
+  return !created
+      .isBefore(seated.subtract(const Duration(seconds: 90)));
+}
+
 /// The open check a table's next action should attach to: the newest
 /// resumable order for that table number, or null when starting fresh.
 ///
