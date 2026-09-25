@@ -705,6 +705,15 @@ class FufutApi {
     return FufutPayment.listFrom(res);
   }
 
+  /// `GET /api/payments` — the till's ledger, newest first, server-capped
+  /// at 500 rows: enough for the day the Team screen reads, which then
+  /// day-filters client-side (the endpoint takes no date window — it is the
+  /// verify queue's endpoint, read wider here on purpose).
+  Future<List<FufutPayment>> recentPayments() async {
+    final res = await client.get('payments');
+    return FufutPayment.listFrom(res);
+  }
+
   /// `POST /api/payments/:id/verify` — the cashier has SEEN the money land
   /// (in the telebirr app, the bank statement) and confirms the transfer.
   /// Cashier or manager only; the server refuses anyone else.

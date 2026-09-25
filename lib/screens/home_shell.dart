@@ -42,6 +42,7 @@ import 'shifts_screen.dart';
 import 'stock_control_screen.dart';
 import 'suppliers_screen.dart';
 import 'tables_screen.dart';
+import 'team_screen.dart';
 import 'timeclock_screen.dart';
 import 'waste_screen.dart';
 
@@ -177,6 +178,8 @@ class _HomeShellState extends ConsumerState<HomeShell>
           return const OrdersScreen(openOnlyDefault: true);
         case NavKey.orderLog:
           return const OrderLogScreen();
+        case NavKey.team:
+          return const TeamScreen();
         case NavKey.pipeline:
           return const PipelineScreen();
         case NavKey.reservations:

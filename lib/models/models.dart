@@ -1364,7 +1364,10 @@ class PayrollMe {
   }
 }
 
-/// One audit row (`GET /api/audit?actor_id=…`) — the My Activity feed.
+/// One audit row (`GET /api/audit?actor_id=…`) — the My Activity feed, and
+/// since the per-person stage trail (fufut-api d89ed50) the Team screen's
+/// attribution source: a `status` row names the account that moved a
+/// ticket.
 class AuditEntry {
   final String id;
   final String at;
@@ -1374,6 +1377,7 @@ class AuditEntry {
   final String reason;
   final dynamic before;
   final dynamic after;
+  final String actorId;
   final String actorName;
   final String actorRole;
 
@@ -1386,6 +1390,7 @@ class AuditEntry {
     this.reason = '',
     this.before,
     this.after,
+    this.actorId = '',
     this.actorName = '',
     this.actorRole = '',
   });
@@ -1399,6 +1404,7 @@ class AuditEntry {
         reason: (j['reason'] ?? '').toString(),
         before: j['before'],
         after: j['after'],
+        actorId: (j['actor_id'] ?? j['actorId'] ?? '').toString(),
         actorName: (j['actor_name'] ?? j['actorName'] ?? '').toString(),
         actorRole: (j['actor_role'] ?? j['actorRole'] ?? '').toString(),
       );

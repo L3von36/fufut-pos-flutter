@@ -29,6 +29,7 @@ enum NavKey {
   orders,
   openChecks,
   orderLog, // today's order log — per-stage timestamps, role-scoped
+  team, // per-person performance: floor / kitchen / bar / till sections
   pipeline, // web /app/pipeline — the order kanban
   reservations,
   delivery,
@@ -79,6 +80,8 @@ const List<NavEntry> kAllNavEntries = [
       'Open Checks', section: 'Sales'),
   NavEntry(NavKey.orderLog, Icons.fact_check_outlined, Icons.fact_check,
       'Order Log', section: 'Operations'),
+  NavEntry(NavKey.team, Icons.groups_outlined, Icons.groups, 'Team',
+      section: 'Analytics'),
   NavEntry(NavKey.menuMgmt, Icons.restaurant_menu_outlined,
       Icons.restaurant_menu, 'Menu', section: 'Sales'),
   NavEntry(NavKey.menuView, Icons.menu_book_outlined, Icons.menu_book,
@@ -181,6 +184,7 @@ const Map<String, List<NavKey>> kRolePermissions = {
     // Analytics + system
     NavKey.reports,
     NavKey.analytics,
+    NavKey.team,
     NavKey.audit,
     NavKey.customers,
   ],
@@ -199,6 +203,9 @@ const Map<String, List<NavKey>> kRolePermissions = {
     NavKey.orderLog,
     NavKey.dashboard,
     NavKey.alertsDash,
+    // The kitchen's own numbers (owner's brief, 2026-09): the craft section
+    // of the Team screen — how many tickets ran, the pace, who fired what.
+    NavKey.team,
     // Pipeline left (owner's call, 2026-09): for the kitchen it duplicated
     // the board ticket-for-ticket — the board IS the kitchen's pipeline. The
     // kanban stays a manager's overview (served/cancelled lanes, cancel).
@@ -217,6 +224,7 @@ const Map<String, List<NavKey>> kRolePermissions = {
     NavKey.orderLog,
     NavKey.dashboard,
     NavKey.alertsDash,
+    NavKey.team, // the kitchen craft section, same as the head chef
     // Pipeline left with the head chef (same owner call — the board covers it).
     NavKey.tables,
     NavKey.inventory,
@@ -229,6 +237,7 @@ const Map<String, List<NavKey>> kRolePermissions = {
     NavKey.orders,
     NavKey.orderLog,
     NavKey.alertsDash,
+    NavKey.team, // the bar's craft section
     NavKey.waste,
     NavKey.recipes,
   ],
@@ -245,6 +254,7 @@ const Map<String, List<NavKey>> kRolePermissions = {
     NavKey.dashboard,
     NavKey.alertsDash,
     NavKey.reservations,
+    NavKey.team, // the floor craft section — who is running the room
   ],
   // The till: drawer home, menu view for walk-in sales, checks to settle, the
   // book. The floor plan left (owner's call, 2026-09) — running the tables is
@@ -263,6 +273,7 @@ const Map<String, List<NavKey>> kRolePermissions = {
     NavKey.dashboard,
     NavKey.alertsDash,
     NavKey.reservations,
+    NavKey.team, // the till craft section — money taken, transfers verified
   ],
   'delivery-staff': [
     NavKey.delivery,
@@ -462,6 +473,8 @@ String titleFor(NavKey key) {
       return 'Revenue';
     case NavKey.analytics:
       return 'Analytics';
+    case NavKey.team:
+      return 'Team Performance';
     case NavKey.reports:
       return 'Reports';
     case NavKey.inventory:

@@ -1,4 +1,8 @@
-/// Order Log — today's orders with the full pipeline timeline, per role.
+/// Order Log — one day's orders with the full pipeline timeline, per role.
+///
+/// ONE day per screen (owner's filter rule, 2026-09-25): a chip picks Today,
+/// Yesterday or any date, and the fetch rides the same window — today's
+/// tickets never share a screen with yesterday's.
 ///
 /// The per-stage times come from three sources merged here, most exact
 /// first:
@@ -51,6 +55,7 @@ import '../state/app_state.dart';
 import '../state/live_feeds.dart';
 import '../state/order_scope.dart';
 import '../theme.dart';
+import '../widgets/backoffice.dart' show ChipSelect;
 import '../widgets/common.dart';
 import '../widgets/dashboard.dart';
 
@@ -72,12 +77,18 @@ class _LogData {
   const _LogData(this.orders, this.tablesByNumber);
 }
 
-/// The role's scoped, day-windowed slice of today's service, refetched
-/// whenever the shared feeds push. Same rules the Orders screen applies:
-/// role scoping first (a waiter sees only their tables and tickets), then
-/// the station split (chefs cook food, the barista pours drinks), then the
-/// day window — all in one place so the screen owns no fetch of its own.
-final _orderLogProvider = FutureProvider<_LogData>((ref) async {
+/// The role's scoped slice of ONE day, refetched whenever the shared feeds
+/// push. Same rules the Orders screen applies: role scoping first (a waiter
+/// sees only their tables and tickets), then the station split (chefs cook
+/// food, the barista pours drinks), then the day window — all in one place
+/// so the screen owns no fetch of its own.
+///
+/// The provider is a family keyed by the day (`YYYY-MM-DD`): the owner's
+/// filter rule (2026-09-25) — today and yesterday never share a screen, the
+/// picker decides which day the log reads, and the server fetch rides the
+/// same window (`?from=&to=`).
+final _orderLogProvider =
+    FutureProvider.family<_LogData, String>((ref, dayKey) async {
   // READ, never watch: AppState has a single notify bell and this fetch
   // itself pings it — watching here would rebuild on the provider's echo.
   final app = ref.read(appStateProvider);
@@ -86,8 +97,8 @@ final _orderLogProvider = FutureProvider<_LogData>((ref) async {
   if (stationRole) await app.ensureCategories();
   final results = await Future.wait([
     app.api.orders(
-      from: localTodayKey(),
-      to: localTodayKey(),
+      from: dayKey,
+      to: dayKey,
     ),
     // The floor feeds the timeline's table columns (party size, seated-at)
     // for every role — best-effort: a role without a tables read still sees
@@ -102,7 +113,10 @@ final _orderLogProvider = FutureProvider<_LogData>((ref) async {
   final scoped = rows
       .where((o) => orderVisibleToRole(o, roleKey,
           myId: app.user?.id, myTables: myTables, catByName: catByName))
-      .where((o) => orderIsToday(o))
+      // The day rule is the ten-character prefix of the local wall-clock
+      // `created` stamp — the same string compare orderIsToday rides, one
+      // window per screen instead of a merged week.
+      .where((o) => (o.created ?? '').startsWith(dayKey))
       .where((o) => _orderBelongsToRole(o, roleKey, catByName))
       .toList()
     ..sort((a, b) => (b.created ?? '').compareTo(a.created ?? ''));
@@ -140,6 +154,10 @@ class OrderLogScreen extends ConsumerStatefulWidget {
 }
 
 class _OrderLogScreenState extends ConsumerState<OrderLogScreen> {
+  /// The day the log reads — Today by default, Yesterday and any picked
+  /// date one chip away (the owner's day-filter rule, 2026-09-25).
+  String _day = localTodayKey();
+
   /// Live push — the same pattern the Orders screen rides: a change on any
   /// shared feed (a settle, a serve, a bill request, a new ticket anywhere
   /// in the building) debounces an invalidate of this screen's scoped GET.
@@ -248,7 +266,7 @@ class _OrderLogScreenState extends ConsumerState<OrderLogScreen> {
     final pal = Pal.of(context);
     final app = ref.watch(appStateProvider);
     final roleKey = app.roleKey ?? '';
-    final logAsync = ref.watch(_orderLogProvider);
+    final logAsync = ref.watch(_orderLogProvider(_day));
     // Live push from every shared feed — the journal's own bell rides
     // initState's listener above.
     ref.listen(kitchenFeedProvider, (_, __) => _debouncedReload());
@@ -268,7 +286,14 @@ class _OrderLogScreenState extends ConsumerState<OrderLogScreen> {
                   physics: const AlwaysScrollableScrollPhysics(),
                   padding: const EdgeInsets.fromLTRB(12, 8, 12, 20),
                   children: [
+                    _DayFilterRow(
+                      day: _day,
+                      onDay: (d) => setState(() => _day = d),
+                      onPick: _pickDay,
+                    ),
+                    const SizedBox(height: 4),
                     _HeaderRow(
+                        day: _day,
                         count: data.orders.length,
                         onRefresh: () async {
                           ref.invalidate(_orderLogProvider);
@@ -283,7 +308,7 @@ class _OrderLogScreenState extends ConsumerState<OrderLogScreen> {
                       const Padding(
                         padding: EdgeInsets.only(top: 80),
                         child: Center(
-                          child: Text('No orders today yet.',
+                          child: Text('No orders on this day.',
                               style: TextStyle(
                                   fontFamily: kFontBody,
                                   fontSize: 12.5,
@@ -307,24 +332,86 @@ class _OrderLogScreenState extends ConsumerState<OrderLogScreen> {
 
     return Scaffold(backgroundColor: pal.bg, body: SafeArea(child: body));
   }
+
+  /// The calendar picker behind the 'Pick a day' chip — any day the venue
+  /// has served, never merged with its neighbours.
+  Future<void> _pickDay() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: DateTime.tryParse('${_day}T00:00:00') ?? DateTime.now(),
+      firstDate: DateTime.now().add(const Duration(days: -90)),
+      lastDate: DateTime.now(),
+    );
+    if (picked != null) {
+      String two(int v) => v.toString().padLeft(2, '0');
+      setState(() =>
+          _day = '${picked.year}-${two(picked.month)}-${two(picked.day)}');
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Widgets
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// The day filter — Today / Yesterday / Pick a day, one window per screen.
+/// The owner's rule (2026-09-25): a day's log reads that day alone.
+class _DayFilterRow extends StatelessWidget {
+  final String day;
+  final ValueChanged<String> onDay;
+  final VoidCallback onPick;
+  const _DayFilterRow(
+      {required this.day, required this.onDay, required this.onPick});
+
+  @override
+  Widget build(BuildContext context) {
+    final today = localTodayKey();
+    final yday = localTodayKey(DateTime.now().add(const Duration(days: -1)));
+    final value = day == today
+        ? 'today'
+        : day == yday
+            ? 'yday'
+            : 'pick';
+    return ChipSelect(
+      value: value,
+      options: const [
+        ('today', 'Today'),
+        ('yday', 'Yesterday'),
+        ('pick', 'Pick a day'),
+      ],
+      onChanged: (v) {
+        if (v == 'today') {
+          onDay(today);
+        } else if (v == 'yday') {
+          onDay(yday);
+        } else {
+          onPick();
+        }
+      },
+    );
+  }
+}
+
 class _HeaderRow extends StatelessWidget {
+  final String day;
   final int count;
   final Future<void> Function() onRefresh;
-  const _HeaderRow({required this.count, required this.onRefresh});
+  const _HeaderRow(
+      {required this.day, required this.count, required this.onRefresh});
 
   @override
   Widget build(BuildContext context) {
     final pal = Pal.of(context);
+    final today = localTodayKey();
+    final yday = localTodayKey(DateTime.now().add(const Duration(days: -1)));
+    final label = day == today
+        ? 'Today — ${DateTime.now().day}/${DateTime.now().month}'
+        : day == yday
+            ? 'Yesterday'
+            : '${day.substring(8, 10)}/${day.substring(5, 7)}';
     return Row(
       children: [
-        Text('Today — ${DateTime.now().day}/${DateTime.now().month}',
-            style: T.screenTitle.copyWith(color: pal.heading)),
+        Text(label, style: T.screenTitle.copyWith(color: pal.heading)),
         const SizedBox(width: 8),
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
