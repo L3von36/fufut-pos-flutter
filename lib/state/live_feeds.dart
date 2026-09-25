@@ -681,6 +681,7 @@ class TablesFeedNotifier extends Notifier<TablesFeedState> {
       final rows = await app.api.tables();
       if (!ref.mounted) return;
       _journalBillRequests(state.tables, rows);
+      _journalTableClears(state.tables, rows);
       state = state.copyWith(tables: rows, clearError: true);
     } on ApiError catch (e) {
       if (!ref.mounted) return;
@@ -728,6 +729,32 @@ class TablesFeedNotifier extends Notifier<TablesFeedState> {
       if (journal.hasStageSync(check.id, OrderStage.billRequested)) continue;
       journal.record(check.id, OrderStage.billRequested,
           approximate: true, note: 'Table ${t.number}');
+    }
+  }
+
+  /// The floor witnesses the table turning — journal tableCleared against
+  /// the table's newest resumable check so the Order Log's stay leg closes
+  /// even when another device did the freeing (stamped approximate). A
+  /// settled check has already left the floor feed, so this usually fires
+  /// only for the edge flows; the freeing device records the exact stamp.
+  void _journalTableClears(List<CafeTable> before, List<CafeTable> after) {
+    final journal = OrderJournal.instance;
+    final wasOccupied = {
+      for (final t in before)
+        if (t.status == 'occupied') t.number,
+    };
+    for (final t in after) {
+      if (t.status == 'occupied' || !wasOccupied.contains(t.number)) continue;
+      FufutOrder? check;
+      for (final o in state.orders) {
+        if (o.tableNum != t.number || !o.isResumableCheck) continue;
+        check = o; // the feed is newest-first; the first hit is the newest
+        break;
+      }
+      if (check == null) continue;
+      if (journal.hasStageSync(check.id, OrderStage.tableCleared)) continue;
+      journal.record(check.id, OrderStage.tableCleared,
+          approximate: true, note: 'Table ${t.number} turned');
     }
   }
 

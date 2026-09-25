@@ -113,6 +113,45 @@ void main() {
     });
   });
 
+  group('FufutOrder stage columns', () {
+    test('parses the server stage stamps and carries them through withStatus',
+        () {
+      // The server COALESCE-stamps these on the order row the first time a
+      // ticket enters each state; the Order Log falls back to them so every
+      // role sees every leg (the owner's pending report, 2026-09).
+      final o = FufutOrder.fromJson({
+        'id': 'O9',
+        'status': 'served',
+        'created': '2026-09-25 08:00:00',
+        'preparing_at': '2026-09-25T05:04:00.000Z',
+        'ready_at': '2026-09-25T05:12:00.000Z',
+        'picked_up_at': '2026-09-25T05:14:00.000Z',
+        'served_at': '2026-09-25T05:19:00.000Z',
+      });
+      expect(o.preparingAt, '2026-09-25T05:04:00.000Z');
+      expect(o.readyAt, '2026-09-25T05:12:00.000Z');
+      expect(o.pickedUpAt, '2026-09-25T05:14:00.000Z');
+      expect(o.servedAt, '2026-09-25T05:19:00.000Z');
+
+      final moved = o.withStatus('fulfilled');
+      expect(moved.preparingAt, o.preparingAt);
+      expect(moved.pickedUpAt, o.pickedUpAt);
+      expect(moved.servedAt, o.servedAt);
+    });
+
+    test('camelCase aliases parse too, absent stamps stay null', () {
+      final o = FufutOrder.fromJson({
+        'id': 'O10',
+        'status': 'ready',
+        'readyAt': '2026-09-25T05:12:00.000Z',
+      });
+      expect(o.readyAt, isNotNull);
+      expect(o.preparingAt, isNull);
+      expect(o.pickedUpAt, isNull);
+      expect(o.servedAt, isNull);
+    });
+  });
+
   group('CafeTable party size', () {
     test('guests value wins, capacity is the fallback', () {
       final t = const CafeTable(

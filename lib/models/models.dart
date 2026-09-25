@@ -228,7 +228,10 @@ class FufutOrder {
   final String? paymentStatus; // unpaid | paid
   final String? created; // "2026-08-06 01:55:46" style local stamp
   final String? updatedAt;
+  final String? preparingAt; // first time prep started — the kitchen clock
   final String? readyAt; // first time the ticket reached ready — the pass clock
+  final String? pickedUpAt; // first time the kitchen handed the ticket to the floor
+  final String? servedAt; // first time the floor served the guests
   final String? voidedAt; // set when the ticket was voided — history money rule
   final String? createdByName;
   final String? createdById; // the web's created_by — order scoping reads it
@@ -253,7 +256,10 @@ class FufutOrder {
     this.paymentStatus,
     this.created,
     this.updatedAt,
+    this.preparingAt,
     this.readyAt,
+    this.pickedUpAt,
+    this.servedAt,
     this.voidedAt,
     this.createdByName,
     this.createdById,
@@ -317,7 +323,10 @@ class FufutOrder {
         paymentStatus: paymentStatus,
         created: created,
         updatedAt: updatedAt,
+        preparingAt: preparingAt,
         readyAt: readyAt,
+        pickedUpAt: pickedUpAt,
+        servedAt: servedAt,
         voidedAt: voidedAt,
         createdByName: createdByName,
         createdById: createdById,
@@ -391,7 +400,10 @@ class FufutOrder {
       paymentStatus: j['payment_status'] as String?,
       created: j['created'] as String?,
       updatedAt: j['updated_at'] as String?,
+      preparingAt: (j['preparing_at'] ?? j['preparingAt']) as String?,
       readyAt: (j['ready_at'] ?? j['readyAt']) as String?,
+      pickedUpAt: (j['picked_up_at'] ?? j['pickedUpAt']) as String?,
+      servedAt: (j['served_at'] ?? j['servedAt']) as String?,
       voidedAt: (j['voided_at'] ?? j['voidedAt']) as String?,
       createdByName: j['created_by_name'] as String?,
       createdById: (j['created_by'] ?? j['created_by_id'])?.toString(),

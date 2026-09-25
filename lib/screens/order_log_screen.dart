@@ -1,13 +1,17 @@
 /// Order Log — today's orders with the full pipeline timeline, per role.
 ///
-/// The fufut-api carries only `created` / `updated_at` on an order, so the
-/// per-stage times come from two sources merged here:
+/// The per-stage times come from three sources merged here, most exact
+/// first:
 ///
 ///   * the **Order Journal** (`services/order_journal.dart`) — every device
 ///     records the stages it performs (till: taken/paid; boards: preparing/
-///     ready; floor: picked up / served) and echoes what it witnesses over
-///     SSE or the feeds (stamped approximate);
-///   * **server fields** — `order.created`, `order.updatedAt`, the table's
+///     ready; floor: picked up / served / table cleared) and echoes what it
+///     witnesses over SSE or the feeds (stamped approximate);
+///   * the **server's stage columns** — `preparing_at` / `ready_at` /
+///     `picked_up_at` / `served_at` are first-time COALESCE stamps on the
+///     order row itself, so every role sees every leg even when the action
+///     happened on another device (the pending gap the owner reported,
+///     2026-09); plus `order.created` / `order.updated_at` and the table's
 ///     `seated_at` / `bill_requested_at` / `guests`.
 ///
 /// What the screen answers, per role:
@@ -168,43 +172,61 @@ class _OrderLogScreenState extends ConsumerState<OrderLogScreen> {
   CafeTable? _tableFor(FufutOrder o) =>
       o.tableNum == null ? null : _tables[o.tableNum];
 
-  /// The order's pipeline timeline, journal first with server fallbacks.
-  List<_StageStamp> _timelineFor(FufutOrder o) {
-    final journal = OrderJournal.instance;
-    final table = _tableFor(o);
-    DateTime? server(String? s) =>
-        s == null || s.isEmpty ? null : DateTime.tryParse(s);
-
-    DateTime? journalAt(OrderStage stage) =>
-        journal.latestStageAtSync(o.id, stage);
-
-    // Created: journal stamp (exact) or the order's own created field.
-    final created = journalAt(OrderStage.created) ?? server(o.created);
-
-    // Paid: journal, else the order's last update once it reads as paid
-    // (updatedAt is stamped by the settle PUT).
-    final paid =
-        journalAt(OrderStage.paid) ?? (o.isPaid ? server(o.updatedAt) : null);
-
-    // Bill requested: journal, else the table's own request stamp.
-    final bill = journalAt(OrderStage.billRequested) ??
-        (table?.billRequested == true ? server(table!.billRequestedAt) : null);
-
-    return [
-      _StageStamp(OrderStage.created, created,
-          approximate: journalAt(OrderStage.created) == null),
-      _stamp(OrderStage.preparing, journalAt(OrderStage.preparing)),
-      _stamp(OrderStage.ready, journalAt(OrderStage.ready)),
-      _stamp(OrderStage.pickedUp, journalAt(OrderStage.pickedUp)),
-      _stamp(OrderStage.served, journalAt(OrderStage.served)),
-      _StageStamp(OrderStage.billRequested, bill),
-      _StageStamp(OrderStage.paid, paid,
-          approximate: journalAt(OrderStage.paid) == null && o.isPaid),
-      _stamp(OrderStage.tableCleared, journalAt(OrderStage.tableCleared)),
-    ];
+  /// Server stamps come in two shapes: the order row's `created` is a local
+  /// wall-clock string ("2026-08-06 01:55:46"), the stage columns are UTC ISO
+  /// ("2026-09-25T07:12:33.000Z"). Parse both; UTC converts to local.
+  DateTime? _serverStamp(String? s) {
+    if (s == null || s.isEmpty) return null;
+    final d = DateTime.tryParse(s.trim().replaceFirst(' ', 'T'));
+    if (d == null) return null;
+    return d.isUtc ? d.toLocal() : d;
   }
 
-  _StageStamp _stamp(OrderStage stage, DateTime? at) => _StageStamp(stage, at);
+  /// When did [stage] happen on [o]? The journal's stamp first (this
+  /// device's own action, or its echo), then the order row's own stage
+  /// column — the server stamps preparing/ready/picked-up/served the first
+  /// time a ticket enters each state, so EVERY role sees every leg instead
+  /// of waiting on the one device that performed it (the pending gap the
+  /// owner reported, 2026-09).
+  DateTime? _stageAt(FufutOrder o, OrderStage stage) {
+    final journalAt =
+        OrderJournal.instance.latestStageAtSync(o.id, stage);
+    if (journalAt != null) return journalAt;
+    switch (stage) {
+      case OrderStage.billRequested:
+        final t = _tableFor(o);
+        return t != null && t.billRequested ? _serverStamp(t.billRequestedAt) : null;
+      case OrderStage.tableCleared:
+        return null; // journal-only: freed on the floor, no server column
+      default:
+        return _serverStamp(switch (stage) {
+          OrderStage.created => o.created,
+          OrderStage.preparing => o.preparingAt,
+          OrderStage.ready => o.readyAt,
+          OrderStage.pickedUp => o.pickedUpAt,
+          OrderStage.served => o.servedAt,
+          OrderStage.paid => o.isPaid ? o.updatedAt : null,
+          _ => null,
+        });
+    }
+  }
+
+  /// The order's pipeline timeline — every stage resolved through
+  /// [_stageAt]. Only `paid` keeps an approximate flag: its server fallback
+  /// (`updated_at`) drifts with any later write, where the stage columns are
+  /// first-time COALESCE stamps.
+  List<_StageStamp> _timelineFor(FufutOrder o) {
+    final journal = OrderJournal.instance;
+    final paidJournal = journal.latestStageAtSync(o.id, OrderStage.paid);
+    final paidServer = o.isPaid ? _serverStamp(o.updatedAt) : null;
+    return [
+      for (final s in OrderStage.values)
+        s == OrderStage.paid
+            ? _StageStamp(OrderStage.paid, paidJournal ?? paidServer,
+                approximate: paidJournal == null && paidServer != null)
+            : _StageStamp(s, _stageAt(o, s)),
+    ];
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -225,7 +247,9 @@ class _OrderLogScreenState extends ConsumerState<OrderLogScreen> {
                     _HeaderRow(count: _orders.length, onRefresh: _load),
                     const SizedBox(height: 10),
                     _KpiStrip(
-                        data: _LogData(_orders, _tables), roleKey: roleKey),
+                        data: _LogData(_orders, _tables),
+                        roleKey: roleKey,
+                        stageAt: _stageAt),
                     const SizedBox(height: 12),
                     if (_orders.isEmpty)
                       const Padding(
@@ -246,6 +270,7 @@ class _OrderLogScreenState extends ConsumerState<OrderLogScreen> {
                             order: o,
                             table: _tableFor(o),
                             timeline: _timelineFor(o),
+                            stageAt: _stageAt,
                           ),
                         ),
                   ],
@@ -302,21 +327,19 @@ class _HeaderRow extends StatelessWidget {
 class _KpiStrip extends StatelessWidget {
   final _LogData data;
   final String roleKey;
-  const _KpiStrip({required this.data, required this.roleKey});
+  final DateTime? Function(FufutOrder, OrderStage) stageAt;
+  const _KpiStrip(
+      {required this.data, required this.roleKey, required this.stageAt});
 
   @override
   Widget build(BuildContext context) {
-    final journal = OrderJournal.instance;
     final orders = data.orders;
     Duration? between(OrderStage a, OrderStage b) {
       var total = Duration.zero;
       var n = 0;
       for (final o in orders) {
-        final ta = journal.latestStageAtSync(o.id, a) ??
-            (a == OrderStage.created
-                ? DateTime.tryParse(o.created ?? '')
-                : null);
-        final tb = journal.latestStageAtSync(o.id, b);
+        final ta = stageAt(o, a);
+        final tb = stageAt(o, b);
         if (ta == null || tb == null || !tb.isAfter(ta)) continue;
         total += tb.difference(ta);
         n++;
@@ -424,10 +447,12 @@ class _OrderLogCard extends StatelessWidget {
   final FufutOrder order;
   final CafeTable? table;
   final List<_StageStamp> timeline;
+  final DateTime? Function(FufutOrder, OrderStage) stageAt;
   const _OrderLogCard({
     required this.order,
     required this.table,
     required this.timeline,
+    required this.stageAt,
   });
 
   @override
@@ -547,13 +572,12 @@ class _OrderLogCard extends StatelessWidget {
   }
 
   (Duration, bool)? _stayDuration() {
-    final journal = OrderJournal.instance;
-    final end = journal.latestStageAtSync(order.id, OrderStage.paid) ??
-        journal.latestStageAtSync(order.id, OrderStage.tableCleared);
+    final end = stageAt(order, OrderStage.paid) ??
+        stageAt(order, OrderStage.tableCleared);
     if (end == null) return null;
     final seatedAt = DateTime.tryParse(table?.seatedAt ?? '');
     final start = seatedAt ??
-        journal.latestStageAtSync(order.id, OrderStage.created) ??
+        stageAt(order, OrderStage.created) ??
         DateTime.tryParse(order.created ?? '');
     if (start == null || !end.isAfter(start)) return null;
     return (end.difference(start), seatedAt == null);

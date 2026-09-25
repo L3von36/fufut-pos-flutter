@@ -47,6 +47,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../api/api_client.dart';
 import '../models/models.dart';
 import '../services/audio_alerts.dart';
+import '../services/order_journal.dart';
 import '../state/app_state.dart';
 import '../state/cart.dart';
 import '../state/clock.dart';
@@ -426,9 +427,34 @@ class _TablesScreenState extends ConsumerState<TablesScreen> {
   Future<String?> _freeTable(String id) async {
     final app = ref.read(appStateProvider);
     final messenger = ScaffoldMessenger.of(context);
+    // The Order Log's last leg: the party has gone and the table turns. The
+    // check this free closes was settled a moment ago, so it has already
+    // left the floor feed — resolve the table's number first, then stamp
+    // its newest ticket after the free lands (this device's clock, exact).
+    String? number;
+    for (final t in ref.read(tablesFeedProvider).tables) {
+      if (t.id == id) {
+        number = t.number;
+        break;
+      }
+    }
     try {
       await app.api.freeTable(id);
       showInfoOn(messenger, 'Table freed');
+      if (number != null) {
+        try {
+          final all = await app.api.orders();
+          for (final o in all) {
+            if ('${o.tableNum}' != number) continue;
+            OrderJournal.instance.record(o.id, OrderStage.tableCleared,
+                by: app.user?.displayName,
+                note: 'Table $number freed');
+            break; // newest-first: the first hit is the newest ticket
+          }
+        } catch (_) {
+          // A log leg is best-effort — the free itself already landed.
+        }
+      }
       await ref.read(tablesFeedProvider.notifier).refreshTables();
       return null;
     } on ApiError catch (e) {

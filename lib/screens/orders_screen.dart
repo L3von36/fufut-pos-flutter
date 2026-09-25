@@ -170,7 +170,10 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
 
   // ── KPI math — computed over the currently loaded scope ────────────────────
 
-  static const _openStatuses = {'new', 'preparing', 'ready', 'served'};
+  // 'fulfilled' counts as open: the kitchen handed the ticket off, but the
+  // floor has not served it and the money has not moved — the check is as
+  // alive as a ready one.
+  static const _openStatuses = {'new', 'preparing', 'ready', 'served', 'fulfilled'};
 
   bool _isOpen(FufutOrder o) => _openStatuses.contains(o.status.toLowerCase());
 
