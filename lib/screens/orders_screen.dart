@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../models/models.dart';
+import '../services/order_journal.dart';
 import '../state/app_state.dart';
 import '../state/live_feeds.dart';
 import '../state/order_scope.dart';
@@ -43,8 +44,8 @@ class OrdersScreen extends ConsumerStatefulWidget {
 /// Checks stays un-windowed (an unpaid tab is money owed whatever day it
 /// was run up). The kitchen feed's push debounces an invalidate — a settle
 /// on the till or a serve on the floor repaints this list within seconds.
-final ordersFeedProvider = FutureProvider.family<List<FufutOrder>, bool>(
-    (ref, openOnly) async {
+final ordersFeedProvider =
+    FutureProvider.family<List<FufutOrder>, bool>((ref, openOnly) async {
   // READ, never watch: AppState is one mutable object with a single
   // notify bell, and this fetch itself pings it (refreshTill) — watching
   // here would rebuild the provider on its own echo (infinite loop).
@@ -53,11 +54,8 @@ final ordersFeedProvider = FutureProvider.family<List<FufutOrder>, bool>(
   // (cheap public read) so an open/close elsewhere flips this screen too.
   app.refreshTill();
   final needsTables = app.roleKey == 'head-waiter';
-  final stationRole = const {
-    'barista',
-    'head-chef',
-    'assistant-chef'
-  }.contains(app.roleKey);
+  final stationRole =
+      const {'barista', 'head-chef', 'assistant-chef'}.contains(app.roleKey);
   if (stationRole) await app.ensureCategories();
   final todayKey = localTodayKey();
   final results = await Future.wait([
@@ -115,7 +113,13 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
       ref.read(ordersFeedProvider(_openOnly)).value ?? const <FufutOrder>[];
 
   static const _statuses = [
-    'all', 'new', 'preparing', 'ready', 'served', 'fulfilled', 'cancelled'
+    'all',
+    'new',
+    'preparing',
+    'ready',
+    'served',
+    'fulfilled',
+    'cancelled'
   ];
 
   /// Status → card accent color (the `.badge-*` hues).
@@ -371,8 +375,8 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
                                       children: [
                                         if (rows.isEmpty && older.isNotEmpty)
                                           Padding(
-                                            padding:
-                                                const EdgeInsets.only(bottom: 6),
+                                            padding: const EdgeInsets.only(
+                                                bottom: 6),
                                             child: Text(
                                               'No checks opened today — '
                                               '${older.length} older unpaid below.',
@@ -383,14 +387,14 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
                                           ),
                                         for (final o in rows)
                                           Padding(
-                                            padding:
-                                                const EdgeInsets.only(bottom: 8),
+                                            padding: const EdgeInsets.only(
+                                                bottom: 8),
                                             child: _OrderTile(
                                               order: o,
                                               accent:
                                                   _accentFor(context, o.status),
-                                              showCheckActions: _openOnly &&
-                                                  _isActionable(o),
+                                              showCheckActions:
+                                                  _openOnly && _isActionable(o),
                                               onSplit: () => _splitFlow(o),
                                               onMove: () => _moveFlow(o),
                                               onMerge: () => _mergeFlow(o),
@@ -441,9 +445,8 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
     );
   }
 
-  static String _cap(String s) => s.isEmpty
-      ? s
-      : '${s[0].toUpperCase()}${s.substring(1).toLowerCase()}';
+  static String _cap(String s) =>
+      s.isEmpty ? s : '${s[0].toUpperCase()}${s.substring(1).toLowerCase()}';
 
   void _openHistory() {
     Navigator.of(context)
@@ -500,10 +503,8 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
       constraints: BoxConstraints(
-          maxWidth: 680,
-          maxHeight: MediaQuery.sizeOf(context).height * 0.85),
-      builder: (_) => _MoveTableSheet(
-          order: order, tables: tables),
+          maxWidth: 680, maxHeight: MediaQuery.sizeOf(context).height * 0.85),
+      builder: (_) => _MoveTableSheet(order: order, tables: tables),
     );
     if (target == null || !mounted) return;
     final messenger = ScaffoldMessenger.of(context);
@@ -541,8 +542,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
       constraints: BoxConstraints(
-          maxWidth: 680,
-          maxHeight: MediaQuery.sizeOf(context).height * 0.85),
+          maxWidth: 680, maxHeight: MediaQuery.sizeOf(context).height * 0.85),
       builder: (_) => _MergeSheet(source: order, others: others),
     );
     if (target == null || !mounted) return;
@@ -550,8 +550,8 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
     final messenger = ScaffoldMessenger.of(context);
     try {
       await app.api.mergeChecks(order.id, target.id);
-      showInfoOn(
-          messenger, 'Check ${shortId(order.id)} merged into ${shortId(target.id)}');
+      showInfoOn(messenger,
+          'Check ${shortId(order.id)} merged into ${shortId(target.id)}');
       _reload();
     } on ApiError catch (e) {
       if (e.isAuthError && mounted) {
@@ -619,15 +619,12 @@ class _ScopeChip extends StatelessWidget {
         decoration: BoxDecoration(
           color: active ? pal.primary : pal.surface,
           borderRadius: BorderRadius.circular(99),
-          border: Border.all(
-              color: active ? pal.primary : pal.border),
+          border: Border.all(color: active ? pal.primary : pal.border),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon,
-                size: 13,
-                color: active ? Colors.white : pal.muted),
+            Icon(icon, size: 13, color: active ? Colors.white : pal.muted),
             const SizedBox(width: 5),
             Text(label,
                 style: TextStyle(
@@ -723,8 +720,7 @@ class _StatusFilterChip extends StatelessWidget {
         decoration: BoxDecoration(
           color: active ? pal.primary : pal.surface,
           borderRadius: BorderRadius.circular(99),
-          border: Border.all(
-              color: active ? pal.primary : pal.border),
+          border: Border.all(color: active ? pal.primary : pal.border),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -899,8 +895,8 @@ class _OlderGroupHeader extends StatelessWidget {
             AnimatedRotation(
               turns: expanded ? 0.5 : 0,
               duration: const Duration(milliseconds: 150),
-              child: Icon(Icons.expand_more_rounded,
-                  size: 18, color: pal.muted),
+              child:
+                  Icon(Icons.expand_more_rounded, size: 18, color: pal.muted),
             ),
           ],
         ),
@@ -944,8 +940,9 @@ class _OrderTile extends ConsumerWidget {
     final table = order.tableNum != null && order.tableNum!.isNotEmpty
         ? 'Table ${order.tableNum}'
         : '';
-    final customer =
-        order.customer != null && order.customer != 'Walk-in' ? order.customer! : '';
+    final customer = order.customer != null && order.customer != 'Walk-in'
+        ? order.customer!
+        : '';
 
     return InkWell(
       onTap: () => _openDetail(context),
@@ -989,8 +986,9 @@ class _OrderTile extends ConsumerWidget {
                         Text(
                           order.items.isNotEmpty
                               ? order.items
-                                  .map((l) =>
-                                      l.qty > 1 ? '${l.qty}× ${l.name}' : l.name)
+                                  .map((l) => l.qty > 1
+                                      ? '${l.qty}× ${l.name}'
+                                      : l.name)
                                   .join(', ')
                               : order.itemsRaw,
                           maxLines: 2,
@@ -1034,7 +1032,8 @@ class _OrderTile extends ConsumerWidget {
                                     fontFamily: kFontBody,
                                     fontSize: 11,
                                     color: pal.muted)),
-                          if ((order.payment ?? '').isNotEmpty && type.isNotEmpty)
+                          if ((order.payment ?? '').isNotEmpty &&
+                              type.isNotEmpty)
                             Text('  ·  ',
                                 style: TextStyle(
                                     fontFamily: kFontBody,
@@ -1079,8 +1078,7 @@ class _OrderTile extends ConsumerWidget {
                             const SizedBox(width: 8),
                           ],
                           if (order.created != null) ...[
-                            Icon(Icons.schedule,
-                                size: 11, color: pal.faint),
+                            Icon(Icons.schedule, size: 11, color: pal.faint),
                             const SizedBox(width: 3),
                             Text(order.created!,
                                 style: TextStyle(
@@ -1095,11 +1093,20 @@ class _OrderTile extends ConsumerWidget {
                       if (showCheckActions) ...[
                         const SizedBox(height: 8),
                         Row(children: [
-                          _CheckAction(icon: Icons.call_split, label: 'Split', onTap: onSplit),
+                          _CheckAction(
+                              icon: Icons.call_split,
+                              label: 'Split',
+                              onTap: onSplit),
                           const SizedBox(width: 6),
-                          _CheckAction(icon: Icons.open_with, label: 'Move', onTap: onMove),
+                          _CheckAction(
+                              icon: Icons.open_with,
+                              label: 'Move',
+                              onTap: onMove),
                           const SizedBox(width: 6),
-                          _CheckAction(icon: Icons.merge, label: 'Merge', onTap: onMerge),
+                          _CheckAction(
+                              icon: Icons.merge,
+                              label: 'Merge',
+                              onTap: onMerge),
                         ]),
                       ],
                     ],
@@ -1137,10 +1144,8 @@ class _OrderTile extends ConsumerWidget {
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
       constraints: BoxConstraints(
-          maxWidth: 680,
-          maxHeight: MediaQuery.sizeOf(context).height * 0.85),
-      builder: (_) =>
-          OrderDetailSheet(order: order, onChanged: onChanged),
+          maxWidth: 680, maxHeight: MediaQuery.sizeOf(context).height * 0.85),
+      builder: (_) => OrderDetailSheet(order: order, onChanged: onChanged),
     );
   }
 }
@@ -1161,8 +1166,8 @@ class _Tag extends StatelessWidget {
         borderRadius: BorderRadius.circular(99),
       ),
       child: Text(text,
-          style: T.mono.copyWith(
-              fontSize: 10, fontWeight: FontWeight.w700, color: fg)),
+          style: T.mono
+              .copyWith(fontSize: 10, fontWeight: FontWeight.w700, color: fg)),
     );
   }
 }
@@ -1196,9 +1201,7 @@ class OrderDetailSheet extends ConsumerWidget {
     // Chef work sits behind the chef grant — the waiter reads the ticket,
     // the kitchen moves it: "Start Prep" (new → preparing) and "Ready"
     // (preparing → ready) only to the two chef roles.
-    final prep = canAdvancePrep(app.roleKey)
-        ? _prepNext[status]
-        : null;
+    final prep = canAdvancePrep(app.roleKey) ? _prepNext[status] : null;
     // Owner's flow (2026-09): the kitchen hands off, the floor serves.
     //   ready → fulfilled is the chef's "picked up by waiter" — the pass is
     //   clear once the floor takes the tray;
@@ -1253,7 +1256,8 @@ class OrderDetailSheet extends ConsumerWidget {
                   order.customer!,
                 if (order.created != null) order.created!,
               ].join('  ·  '),
-              style: TextStyle(fontFamily: kFontBody, fontSize: 11, color: pal.faint),
+              style: TextStyle(
+                  fontFamily: kFontBody, fontSize: 11, color: pal.faint),
             ),
             const SizedBox(height: 10),
             Flexible(
@@ -1295,15 +1299,16 @@ class OrderDetailSheet extends ConsumerWidget {
                               ),
                               const SizedBox(width: 8),
                               Text(money(l.lineTotal),
-                                  style: T.mono.copyWith(
-                                      fontSize: 12, color: pal.body)),
+                                  style: T.mono
+                                      .copyWith(fontSize: 12, color: pal.body)),
                             ],
                           ),
                         )
                     else
-                      Text(order.itemsRaw.isEmpty
-                          ? 'No line detail (legacy order)'
-                          : order.itemsRaw,
+                      Text(
+                          order.itemsRaw.isEmpty
+                              ? 'No line detail (legacy order)'
+                              : order.itemsRaw,
                           style: TextStyle(
                               fontFamily: kFontBody,
                               fontSize: 11.5,
@@ -1350,8 +1355,7 @@ class OrderDetailSheet extends ConsumerWidget {
                     Container(
                       padding: const EdgeInsets.only(top: 10),
                       decoration: BoxDecoration(
-                          border:
-                              Border(top: BorderSide(color: pal.border))),
+                          border: Border(top: BorderSide(color: pal.border))),
                       child: Column(
                         children: [
                           _moneyRow(context, 'Subtotal', order.subtotal),
@@ -1426,9 +1430,8 @@ class OrderDetailSheet extends ConsumerWidget {
     );
   }
 
-  static String _title(String s) => s.isEmpty
-      ? s
-      : '${s[0].toUpperCase()}${s.substring(1).toLowerCase()}';
+  static String _title(String s) =>
+      s.isEmpty ? s : '${s[0].toUpperCase()}${s.substring(1).toLowerCase()}';
 
   /// "2x Macchiato [Extra shot] (no sugar)" — what the kitchen actually
   /// cooks, on one line.
@@ -1479,6 +1482,12 @@ class OrderDetailSheet extends ConsumerWidget {
       // whole-ticket by design.
       final station = canAdvancePrep(app.roleKey) ? 'kitchen' : null;
       await app.api.updateStatus(order, status, station: station);
+      // The acting device stamps the stage exactly — the Order Log's clock.
+      OrderJournal.instance.record(order.id, _journalStage(status),
+          by: app.user?.displayName,
+          note: (order.tableNum ?? '').isNotEmpty
+              ? 'Table ${order.tableNum}'
+              : null);
       onChanged?.call();
       navigator.pop();
       showInfoOn(messenger, 'Marked $status');
@@ -1489,6 +1498,21 @@ class OrderDetailSheet extends ConsumerWidget {
       showErrorOn(messenger, e);
     } catch (e) {
       showErrorOn(messenger, e);
+    }
+  }
+
+  static OrderStage _journalStage(String status) {
+    switch (status.toLowerCase()) {
+      case 'preparing':
+        return OrderStage.preparing;
+      case 'ready':
+        return OrderStage.ready;
+      case 'fulfilled':
+        return OrderStage.pickedUp;
+      case 'served':
+        return OrderStage.served;
+      default:
+        return OrderStage.created;
     }
   }
 
@@ -1504,8 +1528,7 @@ class OrderDetailSheet extends ConsumerWidget {
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
       constraints: BoxConstraints(
-          maxWidth: 680,
-          maxHeight: MediaQuery.sizeOf(context).height * 0.9),
+          maxWidth: 680, maxHeight: MediaQuery.sizeOf(context).height * 0.9),
       builder: (_) => PaymentSheet(fixedTotal: order.total),
     );
     if (result == null || !context.mounted) return;
@@ -1519,6 +1542,10 @@ class OrderDetailSheet extends ConsumerWidget {
     try {
       await app.api.settleOrder(order, line.method, line,
           tip: result.tip, breakdown: result.breakdown);
+      // Money moved: stamp the bill-cleared leg of the Order Log timeline.
+      OrderJournal.instance.record(order.id, OrderStage.paid,
+          by: app.user?.displayName,
+          note: '\${line.method} · \${money(line.amount)}');
       onChanged?.call(); // the settled tab leaves the list behind the sheet
       // Money moved on THIS device — flip every surface now instead of
       // waiting for the push: the floor's pay badge, the pending panel and
@@ -1559,8 +1586,8 @@ class _ErrorPane extends StatelessWidget {
             const SizedBox(height: 10),
             Text(message,
                 textAlign: TextAlign.center,
-                style:
-                    TextStyle(fontFamily: kFontBody, fontSize: 12.5, color: pal.body)),
+                style: TextStyle(
+                    fontFamily: kFontBody, fontSize: 12.5, color: pal.body)),
             const SizedBox(height: 12),
             OutlinedButton(onPressed: onRetry, child: const Text('Retry')),
           ],
@@ -1638,9 +1665,7 @@ class _SplitSheetState extends State<_SplitSheet> {
                 style: T.screenTitle.copyWith(color: pal.heading)),
             Text('${shortId(widget.order.id)} · ${money(widget.order.total)}',
                 style: TextStyle(
-                    fontFamily: kFontMono,
-                    fontSize: 11.5,
-                    color: pal.muted)),
+                    fontFamily: kFontMono, fontSize: 11.5, color: pal.muted)),
             const SizedBox(height: 14),
             Text('NUMBER OF SEATS / SPLITS',
                 style: TextStyle(
@@ -1750,9 +1775,7 @@ class _MoveTableSheet extends StatelessWidget {
             Text(
                 '${shortId(order.id)} · ${order.tableNum != null && order.tableNum!.isNotEmpty ? 'from Table ${order.tableNum}' : money(order.total)}',
                 style: TextStyle(
-                    fontFamily: kFontMono,
-                    fontSize: 11.5,
-                    color: pal.muted)),
+                    fontFamily: kFontMono, fontSize: 11.5, color: pal.muted)),
             const SizedBox(height: 12),
             Flexible(
               child: tables.isEmpty
@@ -1844,9 +1867,7 @@ class _MergeSheet extends StatelessWidget {
             Text(
                 'moves ${shortId(source.id)} (${money(source.total)}) onto the check you pick',
                 style: TextStyle(
-                    fontFamily: kFontBody,
-                    fontSize: 11,
-                    color: pal.muted)),
+                    fontFamily: kFontBody, fontSize: 11, color: pal.muted)),
             const SizedBox(height: 12),
             Flexible(
               child: ListView(
@@ -1860,8 +1881,7 @@ class _MergeSheet extends StatelessWidget {
                         padding: const EdgeInsets.symmetric(
                             vertical: 8, horizontal: 4),
                         child: Row(children: [
-                          Icon(Icons.credit_card,
-                              size: 15, color: pal.primary),
+                          Icon(Icons.credit_card, size: 15, color: pal.primary),
                           const SizedBox(width: 9),
                           Expanded(
                             child: Column(

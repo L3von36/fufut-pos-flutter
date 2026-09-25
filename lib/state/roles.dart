@@ -28,6 +28,7 @@ enum NavKey {
   menuMgmt, // web /app/menu-mgmt — catalogue CRUD + dish-86 toggle
   orders,
   openChecks,
+  orderLog, // today's order log — per-stage timestamps, role-scoped
   pipeline, // web /app/pipeline — the order kanban
   reservations,
   delivery,
@@ -76,6 +77,8 @@ const List<NavEntry> kAllNavEntries = [
       'Orders', section: 'Sales'),
   NavEntry(NavKey.openChecks, Icons.credit_card_outlined, Icons.credit_card,
       'Open Checks', section: 'Sales'),
+  NavEntry(NavKey.orderLog, Icons.fact_check_outlined, Icons.fact_check,
+      'Order Log', section: 'Operations'),
   NavEntry(NavKey.menuMgmt, Icons.restaurant_menu_outlined,
       Icons.restaurant_menu, 'Menu', section: 'Sales'),
   NavEntry(NavKey.menuView, Icons.menu_book_outlined, Icons.menu_book,
@@ -151,6 +154,7 @@ const Map<String, List<NavKey>> kRolePermissions = {
     // Sales
     NavKey.orders,
     NavKey.openChecks,
+    NavKey.orderLog,
     NavKey.menuMgmt,
     NavKey.menuView,
     // Operations
@@ -192,6 +196,7 @@ const Map<String, List<NavKey>> kRolePermissions = {
   'head-chef': [
     NavKey.kitchen,
     NavKey.orders,
+    NavKey.orderLog,
     NavKey.dashboard,
     NavKey.alertsDash,
     // Pipeline left (owner's call, 2026-09): for the kitchen it duplicated
@@ -209,6 +214,7 @@ const Map<String, List<NavKey>> kRolePermissions = {
   'assistant-chef': [
     NavKey.kitchen,
     NavKey.orders,
+    NavKey.orderLog,
     NavKey.dashboard,
     NavKey.alertsDash,
     // Pipeline left with the head chef (same owner call — the board covers it).
@@ -221,6 +227,7 @@ const Map<String, List<NavKey>> kRolePermissions = {
   'barista': [
     NavKey.barista,
     NavKey.orders,
+    NavKey.orderLog,
     NavKey.alertsDash,
     NavKey.waste,
     NavKey.recipes,
@@ -234,6 +241,7 @@ const Map<String, List<NavKey>> kRolePermissions = {
     NavKey.menuView,
     NavKey.orders,
     NavKey.openChecks,
+    NavKey.orderLog,
     NavKey.dashboard,
     NavKey.alertsDash,
     NavKey.reservations,
@@ -251,6 +259,7 @@ const Map<String, List<NavKey>> kRolePermissions = {
     NavKey.menuView,
     NavKey.orders,
     NavKey.openChecks,
+    NavKey.orderLog,
     NavKey.dashboard,
     NavKey.alertsDash,
     NavKey.reservations,
@@ -435,6 +444,8 @@ String titleFor(NavKey key) {
       return 'Orders';
     case NavKey.openChecks:
       return 'Open Checks';
+    case NavKey.orderLog:
+      return 'Order Log';
     case NavKey.pipeline:
       return 'Pipeline';
     case NavKey.reservations:

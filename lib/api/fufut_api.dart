@@ -43,11 +43,13 @@ class FufutApi {
     final res = await client.post('auth/login', body);
     if (res is! Map || res['ok'] != true) {
       throw ApiError(
-          (res is Map && res['error'] is String) ? res['error'] : 'Login failed',
+          (res is Map && res['error'] is String)
+              ? res['error']
+              : 'Login failed',
           401);
     }
-    final user = StaffUser.fromJson(
-        Map<String, dynamic>.from(res['user'] as Map));
+    final user =
+        StaffUser.fromJson(Map<String, dynamic>.from(res['user'] as Map));
     return SessionUser(user,
         mustChangePassword: res['mustChangePassword'] == true);
   }
@@ -81,8 +83,8 @@ class FufutApi {
   /// A manager-issued password must be replaced before the server answers
   /// anything else. Surfaces the same contract as the web POS change screen.
   Future<void> changePassword(String current, String next) async {
-    final res = await client
-        .post('auth/change-password', {'currentPassword': current, 'newPassword': next});
+    final res = await client.post('auth/change-password',
+        {'currentPassword': current, 'newPassword': next});
     if (res is Map && res['ok'] == false) {
       throw ApiError((res['error'] as String?) ?? 'Could not change password');
     }
@@ -117,12 +119,19 @@ class FufutApi {
   /// `newSeating: false` marks the PUT as a round added to a party already
   /// sitting (the web sends `newSeating: !isAddRound`) so the server does
   /// not treat the second batch as a fresh arrival.
-  Future<void> claimTable(CafeTable t, {bool newSeating = true}) async {
+  /// Seat a party: claim the table atomically, exactly like the web POS —
+  /// the conditional UPDATE means two waiters cannot both seat the table,
+  /// and an already-occupied table is simply left alone. [guests] carries
+  /// the party size so the floor plan and the Order Log show how many
+  /// people sat down.
+  Future<void> claimTable(CafeTable t,
+      {bool newSeating = true, int? guests}) async {
     await client.put('tables/${t.id}', {
       ...Map<String, dynamic>.from(_tableJson(t)),
       'status': 'occupied',
       'seated_at': DateTime.now().toUtc().toIso8601String(),
       'newSeating': newSeating,
+      if (guests != null && guests > 0) 'guests': guests,
     });
   }
 
@@ -205,7 +214,8 @@ class FufutApi {
       'tipType': 'none',
       'type': orderType,
       if (tableNum != null && tableNum.isNotEmpty) 'tableNum': tableNum,
-      'customer': (customer != null && customer.isNotEmpty) ? customer : 'Walk-in',
+      'customer':
+          (customer != null && customer.isNotEmpty) ? customer : 'Walk-in',
       if (customerPhone != null && customerPhone.isNotEmpty)
         'customerPhone': customerPhone,
       // The delivery job is built from `address`; on any other order type it
@@ -214,7 +224,8 @@ class FufutApi {
           deliveryAddress != null &&
           deliveryAddress.isNotEmpty)
         'address': deliveryAddress,
-      if (orderType == 'delivery' && deliveryFee > 0) 'deliveryFee': deliveryFee,
+      if (orderType == 'delivery' && deliveryFee > 0)
+        'deliveryFee': deliveryFee,
       if (notes != null && notes.trim().isNotEmpty) 'notes': notes.trim(),
     });
     final id = res is Map ? (res['id'] ?? res['orderId']) : null;
@@ -260,10 +271,12 @@ class FufutApi {
         'discountReason': discountReason,
       'type': orderType,
       if (tableNum != null && tableNum.isNotEmpty) 'tableNum': tableNum,
-      'customer': (customer != null && customer.isNotEmpty) ? customer : 'Walk-in',
+      'customer':
+          (customer != null && customer.isNotEmpty) ? customer : 'Walk-in',
       if (customerPhone != null && customerPhone.isNotEmpty)
         'customerPhone': customerPhone,
-      if (orderType == 'delivery' && deliveryFee > 0) 'deliveryFee': deliveryFee,
+      if (orderType == 'delivery' && deliveryFee > 0)
+        'deliveryFee': deliveryFee,
       if (notes != null && notes.trim().isNotEmpty) 'notes': notes.trim(),
     });
     final id = res is Map ? (res['id'] ?? res['orderId']) : null;
@@ -315,8 +328,8 @@ class FufutApi {
   /// Add a round to an open tab — `PATCH /api/orders/:id/items`. The lines
   /// ride the same `orderItems` envelope the web sends, so the kitchen sees
   /// the second batch on the original ticket instead of a duplicate one.
-  Future<void> addRound(String orderId, List<OrderItemLine> lines,
-      String itemsSummary) async {
+  Future<void> addRound(
+      String orderId, List<OrderItemLine> lines, String itemsSummary) async {
     await client.patch('orders/$orderId/items', {
       'orderItems': lines.map((l) => l.toJson()).toList(),
       'items': itemsSummary,
@@ -414,7 +427,9 @@ class FufutApi {
   /// `GET /api/cashdrawer` — active session + today's drawers.
   Future<CashDrawerState> cashdrawer() async {
     final res = await client.get('cashdrawer');
-    if (res is Map) return CashDrawerState.fromJson(Map<String, dynamic>.from(res));
+    if (res is Map) {
+      return CashDrawerState.fromJson(Map<String, dynamic>.from(res));
+    }
     return const CashDrawerState();
   }
 
@@ -460,12 +475,14 @@ class FufutApi {
 
   /// `POST /api/cashdrawer/paid-in {amount, reason}`.
   Future<void> paidIn(double amount, String reason) async {
-    await client.post('cashdrawer/paid-in', {'amount': _r2(amount), 'reason': reason});
+    await client
+        .post('cashdrawer/paid-in', {'amount': _r2(amount), 'reason': reason});
   }
 
   /// `POST /api/cashdrawer/paid-out {amount, reason}`.
   Future<void> paidOut(double amount, String reason) async {
-    await client.post('cashdrawer/paid-out', {'amount': _r2(amount), 'reason': reason});
+    await client
+        .post('cashdrawer/paid-out', {'amount': _r2(amount), 'reason': reason});
   }
 
   /// `POST /api/cashdrawer/pop {reason}` — pop the physical drawer.
@@ -541,8 +558,8 @@ class FufutApi {
   /// `POST /api/timeclock/clock-out` — refused while checks are open unless
   /// [force] (the manager override, `{force:true}` on the wire).
   Future<void> clockOut({bool force = false}) async {
-    final res = await client.post(
-        'timeclock/clock-out', force ? {'force': true} : {});
+    final res =
+        await client.post('timeclock/clock-out', force ? {'force': true} : {});
     if (res is Map && res['ok'] == false) {
       throw ApiError((res['error'] as String?) ?? 'Could not clock out');
     }
@@ -689,7 +706,8 @@ class FufutApi {
   /// (`orderStatus`), e.g. `fulfilled` once every line is served.
   Future<String?> advanceOrderItem(
       String orderId, String itemId, String status) async {
-    final res = await client.put('orders/$orderId/items/$itemId', {'status': status});
+    final res =
+        await client.put('orders/$orderId/items/$itemId', {'status': status});
     return res is Map ? res['orderStatus']?.toString() : null;
   }
 
@@ -757,9 +775,11 @@ class FufutApi {
   /// `PUT /api/menu/:id/availability {available}` — the dish-86 toggle,
   /// chef-permitted; the server stamps changedBy/changedAt.
   Future<void> setAvailability(String id, bool available) async {
-    final res = await client.put('menu/$id/availability', {'available': available});
+    final res =
+        await client.put('menu/$id/availability', {'available': available});
     if (res is Map && res['ok'] == false) {
-      throw ApiError((res['error'] as String?) ?? 'Could not change availability');
+      throw ApiError(
+          (res['error'] as String?) ?? 'Could not change availability');
     }
   }
 
@@ -814,10 +834,7 @@ class FufutApi {
     final res = await client.get('tables/sections');
     final list = res is Map ? res['sections'] : res;
     if (list is! List) return const [];
-    return list
-        .map((s) => '$s'.trim())
-        .where((s) => s.isNotEmpty)
-        .toList();
+    return list.map((s) => '$s'.trim()).where((s) => s.isNotEmpty).toList();
   }
 
   /// `POST /api/tables/:id/qr` — (re)generate the table's guest QR code
@@ -833,9 +850,7 @@ class FufutApi {
       throw ApiError('QR generation returned no URL');
     }
     final table = res['table'];
-    final num = table is Map
-        ? (table['number'] ?? '').toString()
-        : '';
+    final num = table is Map ? (table['number'] ?? '').toString() : '';
     return (url: res['url'].toString(), tableNumber: num);
   }
 
@@ -868,8 +883,7 @@ class FufutApi {
     if (cats is! List) return const [];
     return cats
         .whereType<Map>()
-        .map((m) => Map<String, dynamic>.from(m)
-          ..['sampled'] = sampled)
+        .map((m) => Map<String, dynamic>.from(m)..['sampled'] = sampled)
         .toList();
   }
 
@@ -947,7 +961,8 @@ class FufutApi {
       'date': date,
     });
     if (res is Map && res['ok'] == false) {
-      throw ApiError((res['error'] as String?) ?? 'Could not record the expense');
+      throw ApiError(
+          (res['error'] as String?) ?? 'Could not record the expense');
     }
   }
 
@@ -966,7 +981,8 @@ class FufutApi {
 
   /// `GET /api/customers[?q=]`.
   Future<List<Customer>> customers({String query = ''}) async {
-    final res = await client.get(query.isEmpty ? 'customers' : 'customers?q=$query');
+    final res =
+        await client.get(query.isEmpty ? 'customers' : 'customers?q=$query');
     final list = res is Map ? res['customers'] : res;
     if (list is! List) return const [];
     return list
@@ -1062,7 +1078,8 @@ class FufutApi {
 
   /// `POST /api/inventory/:id/adjust {newQty|qty, reason}` — the audited
   /// ledger adjustment. Returns the new stock level when the server says.
-  Future<double?> adjustInventory(String id, double newQty, String reason) async {
+  Future<double?> adjustInventory(
+      String id, double newQty, String reason) async {
     final res = await client.post('inventory/$id/adjust', {
       'newQty': newQty,
       'reason': reason.trim(),
@@ -1073,7 +1090,9 @@ class FufutApi {
     final s = res is Map ? res['stock'] : null;
     return s is num
         ? s.toDouble()
-        : s is String ? double.tryParse(s) : null;
+        : s is String
+            ? double.tryParse(s)
+            : null;
   }
 
   /// `DELETE /api/inventory/:id` (manager).
@@ -1093,9 +1112,9 @@ class FufutApi {
   }
 
   /// `GET /api/inventory/variance?from&to` — expected vs actual.
-  Future<List<VarianceRow>> inventoryVariance(String fromIso, String toIso) async {
-    final res =
-        await client.get('inventory/variance?from=$fromIso&to=$toIso');
+  Future<List<VarianceRow>> inventoryVariance(
+      String fromIso, String toIso) async {
+    final res = await client.get('inventory/variance?from=$fromIso&to=$toIso');
     final list = res is Map ? res['rows'] ?? res['items'] : res;
     if (list is! List) return const [];
     return list
@@ -1116,9 +1135,9 @@ class FufutApi {
   }
 
   /// `GET /api/inventory/forecast?from&to`.
-  Future<List<ForecastRow>> inventoryForecast(String fromIso, String toIso) async {
-    final res =
-        await client.get('inventory/forecast?from=$fromIso&to=$toIso');
+  Future<List<ForecastRow>> inventoryForecast(
+      String fromIso, String toIso) async {
+    final res = await client.get('inventory/forecast?from=$fromIso&to=$toIso');
     final list = res is Map ? res['rows'] ?? res['items'] : res;
     if (list is! List) return const [];
     return list
@@ -1270,7 +1289,8 @@ class FufutApi {
   Future<void> postSupplier(Map<String, dynamic> payload) async {
     final res = await client.post('suppliers', payload);
     if (res is Map && res['ok'] == false) {
-      throw ApiError((res['error'] as String?) ?? 'Could not save the supplier');
+      throw ApiError(
+          (res['error'] as String?) ?? 'Could not save the supplier');
     }
   }
 
@@ -1278,7 +1298,8 @@ class FufutApi {
   Future<void> updateSupplier(String id, Map<String, dynamic> payload) async {
     final res = await client.put('suppliers/$id', payload);
     if (res is Map && res['ok'] == false) {
-      throw ApiError((res['error'] as String?) ?? 'Could not save the supplier');
+      throw ApiError(
+          (res['error'] as String?) ?? 'Could not save the supplier');
     }
   }
 
@@ -1290,8 +1311,7 @@ class FufutApi {
       if (from != null && from.isNotEmpty) 'from=$from',
       if (to != null && to.isNotEmpty) 'to=$to',
     ].join('&');
-    final res =
-        await client.get(q.isEmpty ? 'purchases' : 'purchases?$q');
+    final res = await client.get(q.isEmpty ? 'purchases' : 'purchases?$q');
     if (res is! List) return const [];
     return res
         .whereType<Map>()
@@ -1326,7 +1346,8 @@ class FufutApi {
       if (notes.isNotEmpty) 'notes': notes,
     });
     if (res is Map && res['ok'] == false) {
-      throw ApiError((res['error'] as String?) ?? 'Could not record the purchase');
+      throw ApiError(
+          (res['error'] as String?) ?? 'Could not record the purchase');
     }
   }
 
@@ -1351,10 +1372,11 @@ class FufutApi {
 
   /// `POST /api/purchases/:id/pay {amount, method}` — pay a supplier.
   Future<void> payPurchase(String id, double amount, String method) async {
-    final res = await client.post(
-        'purchases/$id/pay', {'amount': _r2(amount), 'method': method});
+    final res = await client
+        .post('purchases/$id/pay', {'amount': _r2(amount), 'method': method});
     if (res is Map && res['ok'] == false) {
-      throw ApiError((res['error'] as String?) ?? 'Could not record the payment');
+      throw ApiError(
+          (res['error'] as String?) ?? 'Could not record the payment');
     }
   }
 
@@ -1413,7 +1435,8 @@ class FufutApi {
   // Alerts dashboard (`AlertsDashboardView.vue`) + audit log + reports extras
 
   /// `GET /api/alerts?status=<open|acknowledged|resolved>&limit=`.
-  Future<List<OpsAlert>> alertsByStatus(String status, {int limit = 100}) async {
+  Future<List<OpsAlert>> alertsByStatus(String status,
+      {int limit = 100}) async {
     final res = await client.get('alerts?status=$status&limit=$limit');
     final List rows;
     if (res is List) {

@@ -135,8 +135,7 @@ class PaymentLine {
         'amount': _r2(amount),
         if (tendered != null) 'tendered': _r2(tendered!),
         if (change != null) 'change': _r2(change!),
-        if (reference != null && reference!.isNotEmpty)
-          'reference': reference,
+        if (reference != null && reference!.isNotEmpty) 'reference': reference,
       };
 }
 
@@ -213,7 +212,8 @@ class OrderItemLine {
 /// creates it.
 class FufutOrder {
   final String id;
-  final String status; // new | preparing | ready | served | completed | cancelled
+  final String
+      status; // new | preparing | ready | served | completed | cancelled
   final String? type; // dine-in | takeaway | delivery
   final String? tableNum;
   final String? customer;
@@ -273,6 +273,29 @@ class FufutOrder {
     if (ps.isNotEmpty) return ps == 'paid';
     final pay = (payment ?? '').toLowerCase();
     return pay.isNotEmpty && pay != 'unpaid';
+  }
+
+  /// Tri-state pay state for the Order Log / floor chips: 'paid' | 'partial'
+  /// | 'unpaid'. The server stamps `payment: 'partial'` when some money is
+  /// down (split checks, a deposit) — that is NOT paid; the web floor plan
+  /// renders it "Partly Paid" and the check stays resumable.
+  String get payState {
+    final ps = (paymentStatus ?? '').toLowerCase();
+    if (ps == 'partial') return 'partial';
+    if (ps == 'paid') return 'paid';
+    final pay = (payment ?? '').toLowerCase();
+    if (pay == 'partial') return 'partial';
+    return isPaid ? 'paid' : 'unpaid';
+  }
+
+  /// Can this order still take rounds and be settled — the web
+  /// `isResumableCheck` (lib/openChecks.js): only cancellation, completion
+  /// or actual payment close a check. `served` unpaid is still open — food
+  /// being handed over is not the check being closed.
+  bool get isResumableCheck {
+    final s = status.toLowerCase();
+    if (s == 'cancelled' || s == 'completed') return false;
+    return !isPaid;
   }
 
   /// The same order with one status moved — the pipeline's optimistic drag
@@ -354,7 +377,8 @@ class FufutOrder {
       id: (j['id'] ?? '') as String,
       status: (j['status'] ?? 'new') as String,
       type: j['type'] as String?,
-      tableNum: (j['tableNum'] ?? j['table_number'] ?? j['table_id'])?.toString(),
+      tableNum:
+          (j['tableNum'] ?? j['table_number'] ?? j['table_id'])?.toString(),
       customer: (j['customer'] ?? j['name']) as String?,
       customerPhone: (j['customer_phone'] ?? j['phone']) as String?,
       notes: j['notes'] as String?,
@@ -497,7 +521,17 @@ class CafeTable {
     this.reservedHold,
   });
 
-  bool get billRequested => billRequestedAt != null && billRequestedAt!.isNotEmpty;
+  bool get billRequested =>
+      billRequestedAt != null && billRequestedAt!.isNotEmpty;
+
+  /// The party size currently seated: the live `guests` value when the floor
+  /// carries one, else the table's capacity. Drives the Order Log's
+  /// "people on the table" column.
+  int get partySize {
+    final g = int.tryParse(guests ?? '');
+    if (g != null && g > 0) return g;
+    return seats ?? 0;
+  }
 
   /// Guests as an int for sums (the status strip's "{n} guests").
   int get guestsCount => int.tryParse(guests ?? '') ?? 0;
@@ -505,7 +539,11 @@ class CafeTable {
   /// The tile's size word — same buckets as the web: ≤4 Small, ≤6 Medium, else Large.
   String get sizeLabel {
     final c = seats ?? 0;
-    return c <= 4 ? 'Small' : c <= 6 ? 'Medium' : 'Large';
+    return c <= 4
+        ? 'Small'
+        : c <= 6
+            ? 'Medium'
+            : 'Large';
   }
 
   factory CafeTable.fromJson(Map<String, dynamic> j) => CafeTable(
@@ -527,7 +565,8 @@ class CafeTable {
         seatedAt: (j['seated_at'] ?? j['seatedAt'])?.toString(),
         notes: j['notes']?.toString(),
         payment: j['payment']?.toString(),
-        billRequestedBy: (j['bill_requested_by'] ?? j['billRequestedBy'])?.toString(),
+        billRequestedBy:
+            (j['bill_requested_by'] ?? j['billRequestedBy'])?.toString(),
         reservedHold: j['reservedHold'] is Map
             ? TableHold.fromJson(
                 Map<String, dynamic>.from(j['reservedHold'] as Map))
@@ -573,7 +612,8 @@ class PayMethod {
   final String method;
   final int count;
   final double total;
-  const PayMethod({required this.method, required this.count, required this.total});
+  const PayMethod(
+      {required this.method, required this.count, required this.total});
 
   factory PayMethod.fromJson(Map<String, dynamic> j) => PayMethod(
         method: (j['method'] ?? 'other').toString(),
@@ -587,7 +627,8 @@ class CategoryRow {
   final String category;
   final int quantity;
   final double revenue;
-  const CategoryRow({required this.category, required this.quantity, required this.revenue});
+  const CategoryRow(
+      {required this.category, required this.quantity, required this.revenue});
 
   factory CategoryRow.fromJson(Map<String, dynamic> j) => CategoryRow(
         category: (j['category'] ?? 'Uncategorised').toString(),
@@ -636,9 +677,15 @@ class DashboardStats {
   });
 
   factory DashboardStats.fromJson(Map<String, dynamic> j) {
-    final sales = j['sales'] is Map ? Map<String, dynamic>.from(j['sales'] as Map) : const <String, dynamic>{};
-    final byType = j['byOrderType'] is Map ? Map<String, dynamic>.from(j['byOrderType'] as Map) : const <String, dynamic>{};
-    final ops = j['operations'] is Map ? Map<String, dynamic>.from(j['operations'] as Map) : const <String, dynamic>{};
+    final sales = j['sales'] is Map
+        ? Map<String, dynamic>.from(j['sales'] as Map)
+        : const <String, dynamic>{};
+    final byType = j['byOrderType'] is Map
+        ? Map<String, dynamic>.from(j['byOrderType'] as Map)
+        : const <String, dynamic>{};
+    final ops = j['operations'] is Map
+        ? Map<String, dynamic>.from(j['operations'] as Map)
+        : const <String, dynamic>{};
     int typeCount(String k) {
       final row = byType[k];
       return row is Map ? _asInt(row['orders']) : 0;
@@ -744,8 +791,7 @@ class DeliveryJob {
     this.created,
   });
 
-  bool get isPaid =>
-      (paymentStatus ?? '').toLowerCase() == 'paid';
+  bool get isPaid => (paymentStatus ?? '').toLowerCase() == 'paid';
 
   factory DeliveryJob.fromJson(Map<String, dynamic> j) => DeliveryJob(
         id: (j['id'] ?? '').toString(),
@@ -757,7 +803,8 @@ class DeliveryJob {
         driver: (j['driver'] ?? j['driver_name'])?.toString(),
         total: _asDouble(j['order_total'] ?? j['total']),
         itemsRaw: (j['order_items'] ?? j['items'])?.toString(),
-        paymentStatus: (j['order_payment_status'] ?? j['payment_status'])?.toString(),
+        paymentStatus:
+            (j['order_payment_status'] ?? j['payment_status'])?.toString(),
         created: (j['created'] ?? j['assigned_at'])?.toString(),
       );
 }
@@ -811,7 +858,8 @@ class DrawerSession {
         variance: _asDouble(j['variance']),
         opened: (j['opened'] ?? j['opened_at'])?.toString(),
         closed: (j['closed'] ?? j['closed_at'])?.toString(),
-        openedBy: (j['openedBy'] ?? j['opened_by'] ?? j['actor_name'])?.toString(),
+        openedBy:
+            (j['openedBy'] ?? j['opened_by'] ?? j['actor_name'])?.toString(),
       );
 }
 
@@ -840,7 +888,8 @@ class ZReportPayment {
   final String method;
   final int count;
   final double total;
-  const ZReportPayment({required this.method, required this.count, required this.total});
+  const ZReportPayment(
+      {required this.method, required this.count, required this.total});
 
   factory ZReportPayment.fromJson(Map<String, dynamic> j) => ZReportPayment(
         method: (j['method'] ?? 'other').toString(),
@@ -875,7 +924,8 @@ class ZReportCash {
         paidIn: _asDouble(j['paidIn'] ?? j['paid_in']),
         paidOut: _asDouble(j['paidOut'] ?? j['paid_out']),
         expected: _asDouble(j['expected']),
-        counted: _asDouble(j['counted'] ?? j['closingBal'] ?? j['closing_balance']),
+        counted:
+            _asDouble(j['counted'] ?? j['closingBal'] ?? j['closing_balance']),
         variance: _asDouble(j['variance']),
       );
 }
@@ -917,29 +967,31 @@ class ZReport {
         ? Map<String, dynamic>.from(j['grandTotals'] as Map)
         : const <String, dynamic>{};
     return ZReport(
-      zNumber: (j['header'] is Map
-              ? (j['header'] as Map)['zNumber']
-              : j['zNumber'])
-          ?.toString() ??
-          '',
+      zNumber:
+          (j['header'] is Map ? (j['header'] as Map)['zNumber'] : j['zNumber'])
+                  ?.toString() ??
+              '',
       drawerId: (j['header'] is Map
-              ? (j['header'] as Map)['drawerId']
-              : j['drawerId'])
-          ?.toString() ??
+                  ? (j['header'] as Map)['drawerId']
+                  : j['drawerId'])
+              ?.toString() ??
           '',
       openedAt: (j['header'] is Map
-              ? ((j['header'] as Map)['openedAt'] ?? (j['header'] as Map)['opened'])
+              ? ((j['header'] as Map)['openedAt'] ??
+                  (j['header'] as Map)['opened'])
               : j['openedAt'])
           ?.toString(),
       closedAt: (j['header'] is Map
-              ? ((j['header'] as Map)['closedAt'] ?? (j['header'] as Map)['closed'])
+              ? ((j['header'] as Map)['closedAt'] ??
+                  (j['header'] as Map)['closed'])
               : j['closedAt'])
           ?.toString(),
       status: (j['header'] is Map
               ? ((j['header'] as Map)['status'] ?? 'closed')
               : j['status'] ?? 'closed')
           .toString(),
-      cash: cashRaw.isEmpty ? const ZReportCash() : ZReportCash.fromJson(cashRaw),
+      cash:
+          cashRaw.isEmpty ? const ZReportCash() : ZReportCash.fromJson(cashRaw),
       payments: (j['paymentBreakdown'] as List? ?? const [])
           .whereType<Map>()
           .map((m) => ZReportPayment.fromJson(Map<String, dynamic>.from(m)))
@@ -1080,8 +1132,10 @@ class Handover {
   factory Handover.fromJson(Map<String, dynamic> j) => Handover(
         staffName: (j['staffName'] ?? j['staff_name'] ?? '').toString(),
         created: (j['created'] ?? '').toString(),
-        pendingOrders: (j['pending_orders'] ?? j['pendingOrders'] ?? '').toString(),
-        pendingTasks: (j['pending_tasks'] ?? j['pendingTasks'] ?? '').toString(),
+        pendingOrders:
+            (j['pending_orders'] ?? j['pendingOrders'] ?? '').toString(),
+        pendingTasks:
+            (j['pending_tasks'] ?? j['pendingTasks'] ?? '').toString(),
         cashInfo: (j['cash_info'] ?? j['cashInfo'] ?? '').toString(),
         problems: (j['problems'] ?? '').toString(),
         customerIssues:
@@ -1246,13 +1300,15 @@ class Reservation {
 
   factory Reservation.fromJson(Map<String, dynamic> j) => Reservation(
         id: (j['id'] ?? '').toString(),
-        name: (j['name'] ?? j['customer'] ?? j['guest_name'] ?? 'Guest').toString(),
+        name: (j['name'] ?? j['customer'] ?? j['guest_name'] ?? 'Guest')
+            .toString(),
         date: (j['date'] ?? j['reservation_date'])?.toString(),
         time: (j['time'] ?? j['reservation_time'])?.toString(),
         guests: _asInt(j['guests'] ?? j['party_size']),
         status: (j['status'] ?? '').toString(),
         phone: (j['phone'] ?? j['customer_phone'])?.toString(),
-        tableNum: (j['tableNum'] ?? j['table_number'] ?? j['table_id'])?.toString(),
+        tableNum:
+            (j['tableNum'] ?? j['table_number'] ?? j['table_id'])?.toString(),
         durationMin: _asInt(j['duration_min'] ?? j['durationMin'] ?? 0),
       );
 }
@@ -1391,7 +1447,10 @@ class InventoryItem {
         category: (j['category'] ?? 'Other').toString(),
         unit: (j['unit'] ?? '').toString(),
         stock: _asDouble(j['stock'] ?? j['quantity'] ?? j['qty']),
-        minLevel: _asDouble(j['minLevel'] ?? j['min_level'] ?? j['reorderPoint'] ?? j['reorder_point']),
+        minLevel: _asDouble(j['minLevel'] ??
+            j['min_level'] ??
+            j['reorderPoint'] ??
+            j['reorder_point']),
         cost: _asDouble(j['cost'] ?? j['avg_cost'] ?? j['avgCost']),
       );
 }
@@ -1439,8 +1498,10 @@ class Supplier {
         address: (j['address'] ?? '').toString(),
         supplies: (j['supplies'] ?? '').toString(),
         notes: (j['notes'] ?? '').toString(),
-        purchaseCount: _asInt(j['purchaseCount'] ?? j['purchase_count'] ?? j['purchases'] ?? 0),
-        total: _asDouble(j['total'] ?? j['totalPurchased'] ?? j['total_purchased']),
+        purchaseCount: _asInt(
+            j['purchaseCount'] ?? j['purchase_count'] ?? j['purchases'] ?? 0),
+        total: _asDouble(
+            j['total'] ?? j['totalPurchased'] ?? j['total_purchased']),
         paid: _asDouble(j['paid']),
       );
 }
@@ -1504,8 +1565,11 @@ class Purchase {
     return Purchase(
       id: (j['id'] ?? '').toString(),
       date: (j['date'] ?? j['created'])?.toString(),
-      supplierId: (j['supplierId'] ?? j['supplier_id'] ?? sup['id'] ?? '').toString(),
-      supplierName: (j['supplierName'] ?? j['supplier_name'] ?? sup['name'] ?? '').toString(),
+      supplierId:
+          (j['supplierId'] ?? j['supplier_id'] ?? sup['id'] ?? '').toString(),
+      supplierName:
+          (j['supplierName'] ?? j['supplier_name'] ?? sup['name'] ?? '')
+              .toString(),
       total: _asDouble(j['total']),
       paid: _asDouble(j['paid']),
       notes: (j['notes'] ?? '').toString(),
@@ -1541,7 +1605,8 @@ class PurchaseAnalyse {
             _asDouble(j['theoreticalServings'] ?? j['theoretical_servings']),
         ingredientCostPerServing: _asDouble(
             j['ingredientCostPerServing'] ?? j['ingredient_cost_per_serving']),
-        potentialRevenue: _asDouble(j['potentialRevenue'] ?? j['potential_revenue']),
+        potentialRevenue:
+            _asDouble(j['potentialRevenue'] ?? j['potential_revenue']),
         problems: (j['problems'] as List? ?? const [])
             .map((p) => p.toString())
             .toList(),
@@ -1572,7 +1637,8 @@ class Expense {
         description: (j['description'] ?? '').toString(),
         amount: _asDouble(j['amount']),
         date: (j['date'] ?? j['created'])?.toString(),
-        createdBy: (j['createdBy'] ?? j['created_by'] ?? j['actorName'])?.toString(),
+        createdBy:
+            (j['createdBy'] ?? j['created_by'] ?? j['actorName'])?.toString(),
       );
 }
 
@@ -1636,9 +1702,11 @@ class ShiftRow {
   factory ShiftRow.fromJson(Map<String, dynamic> j) => ShiftRow(
         id: (j['id'] ?? '').toString(),
         staffId: (j['staffId'] ?? j['staff_id'] ?? '').toString(),
-        staffName: (j['staffName'] ?? j['staff_name'] ?? j['name'] ?? '').toString(),
+        staffName:
+            (j['staffName'] ?? j['staff_name'] ?? j['name'] ?? '').toString(),
         role: (j['role'] ?? '').toString(),
-        shiftType: (j['shiftType'] ?? j['shift_type'] ?? j['type'] ?? '').toString(),
+        shiftType:
+            (j['shiftType'] ?? j['shift_type'] ?? j['type'] ?? '').toString(),
         date: (j['date'] ?? j['shift_date'])?.toString(),
         start: (j['start'] ?? j['start_time'])?.toString(),
         end: (j['end'] ?? j['end_time'])?.toString(),
@@ -1668,7 +1736,8 @@ class RecipeLineRow {
         name: (j['itemName'] ?? j['item_name'] ?? j['name'] ?? '').toString(),
         qty: _asDouble(j['qty'] ?? j['quantity']),
         unit: (j['unit'] ?? '').toString(),
-        isPackaging: (j['isPackaging'] ?? j['is_packaging'] ?? j['pkg']) == true,
+        isPackaging:
+            (j['isPackaging'] ?? j['is_packaging'] ?? j['pkg']) == true,
         cost: _asDouble(j['cost'] ?? j['lineCost'] ?? j['line_cost']),
       );
 }
@@ -1724,7 +1793,12 @@ class RecipeRow {
     return RecipeRow(
       id: (j['id'] ?? '').toString(),
       menuItemId: (j['menuItemId'] ?? j['menu_item_id'] ?? '').toString(),
-      menuItemName: (j['menuItemName'] ?? j['menu_item_name'] ?? j['item'] ?? j['name'] ?? '').toString(),
+      menuItemName: (j['menuItemName'] ??
+              j['menu_item_name'] ??
+              j['item'] ??
+              j['name'] ??
+              '')
+          .toString(),
       variant: (j['variant'] ?? '').toString(),
       name: (j['name'] ?? j['menuItemName'] ?? j['item'] ?? '').toString(),
       yieldQty: _asDouble(j['yieldQty'] ?? j['yield_qty'] ?? 1),
@@ -1762,8 +1836,10 @@ class RecipeVersion {
   factory RecipeVersion.fromJson(Map<String, dynamic> j) => RecipeVersion(
         version: _asInt(j['version'] ?? 1),
         status: (j['status'] ?? '').toString(),
-        createdAt: (j['createdAt'] ?? j['created_at'] ?? j['created'])?.toString(),
-        createdBy: (j['createdBy'] ?? j['created_by'] ?? j['actorName'])?.toString(),
+        createdAt:
+            (j['createdAt'] ?? j['created_at'] ?? j['created'])?.toString(),
+        createdBy:
+            (j['createdBy'] ?? j['created_by'] ?? j['actorName'])?.toString(),
         lines: (j['lines'] as List? ?? const [])
             .whereType<Map>()
             .map((m) => RecipeLineRow.fromJson(Map<String, dynamic>.from(m)))
@@ -1788,7 +1864,10 @@ class RecipeCapacity {
         servings: _asDouble(j['servings'] ?? j['capacity'] ?? j['canMake']),
         limitingIngredient:
             (j['limitingIngredient'] ?? j['limiting'] ?? '').toString(),
-        rows: (j['perIngredient'] as List? ?? j['rows'] as List? ?? j['lines'] as List? ?? const [])
+        rows: (j['perIngredient'] as List? ??
+                j['rows'] as List? ??
+                j['lines'] as List? ??
+                const [])
             .whereType<Map>()
             .map((m) => RecipeLineRow.fromJson(Map<String, dynamic>.from(m)))
             .toList(),
@@ -1825,10 +1904,18 @@ class ReorderRow {
         name: (j['name'] ?? '').toString(),
         stock: _asDouble(j['stock'] ?? j['inStock'] ?? j['in_stock']),
         unit: (j['unit'] ?? '').toString(),
-        reorderPoint: _asDouble(j['reorderPoint'] ?? j['reorder_point'] ?? j['minLevel'] ?? j['min_level']),
-        suggestedQty: _asDouble(j['suggestedQty'] ?? j['suggested_qty'] ?? j['suggested']),
+        reorderPoint: _asDouble(j['reorderPoint'] ??
+            j['reorder_point'] ??
+            j['minLevel'] ??
+            j['min_level']),
+        suggestedQty: _asDouble(
+            j['suggestedQty'] ?? j['suggested_qty'] ?? j['suggested']),
         estCost: _asDouble(j['estCost'] ?? j['est_cost'] ?? j['estimatedCost']),
-        preferredSupplier: (j['preferredSupplier'] ?? j['preferred_supplier'] ?? j['supplier'] ?? '').toString(),
+        preferredSupplier: (j['preferredSupplier'] ??
+                j['preferred_supplier'] ??
+                j['supplier'] ??
+                '')
+            .toString(),
         urgency: (j['urgency'] ?? 'ok').toString(),
       );
 }
@@ -1853,8 +1940,7 @@ class VarianceRow {
   });
 
   double get variance => actual - expected;
-  double get variancePct =>
-      expected != 0 ? (variance / expected) * 100 : 0;
+  double get variancePct => expected != 0 ? (variance / expected) * 100 : 0;
 
   factory VarianceRow.fromJson(Map<String, dynamic> j) => VarianceRow(
         id: (j['id'] ?? '').toString(),
@@ -1897,7 +1983,8 @@ class SnapshotRow {
         id: (j['id'] ?? '').toString(),
         name: (j['name'] ?? '').toString(),
         unit: (j['unit'] ?? '').toString(),
-        stockThen: _asDouble(j['stockThen'] ?? j['stock_then'] ?? j['stockAtDate']),
+        stockThen:
+            _asDouble(j['stockThen'] ?? j['stock_then'] ?? j['stockAtDate']),
         basis: (j['basis'] ?? 'estimated').toString(),
         stockNow: _asDouble(j['stockNow'] ?? j['stock_now']),
         bought: _asDouble(j['bought'] ?? j['purchased']),
@@ -1935,7 +2022,8 @@ class ForecastRow {
         name: (j['name'] ?? '').toString(),
         unit: (j['unit'] ?? '').toString(),
         stock: _asDouble(j['stock']),
-        dailyUsage: _asDouble(j['dailyUsage'] ?? j['daily_usage'] ?? j['avgDailyUsage']),
+        dailyUsage: _asDouble(
+            j['dailyUsage'] ?? j['daily_usage'] ?? j['avgDailyUsage']),
         daysLeft: _asDouble(j['daysLeft'] ?? j['days_left']),
         stockoutDate: (j['stockoutDate'] ?? j['stockout_date'])?.toString(),
         confidence: (j['confidence'] ?? '').toString(),

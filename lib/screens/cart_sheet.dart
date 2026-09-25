@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../models/models.dart';
+import '../services/order_journal.dart';
 import '../state/app_state.dart';
 import '../state/cart.dart';
 import '../state/catalog_providers.dart';
@@ -43,8 +44,7 @@ class CartPill extends ConsumerWidget {
             onTap: onOpenCart,
             child: Container(
               constraints: const BoxConstraints(minWidth: 220),
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
               decoration: BoxDecoration(
                 border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
                 borderRadius: BorderRadius.circular(18),
@@ -89,7 +89,10 @@ class CartPill extends ConsumerWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Text(cart.itemCount == 1 ? '1 ITEM' : '${cart.itemCount} ITEMS',
+                      Text(
+                          cart.itemCount == 1
+                              ? '1 ITEM'
+                              : '${cart.itemCount} ITEMS',
                           style: TextStyle(
                               fontFamily: kFontBody,
                               fontSize: 9.5,
@@ -97,7 +100,8 @@ class CartPill extends ConsumerWidget {
                               letterSpacing: 0.7,
                               color: Colors.white.withValues(alpha: 0.72))),
                       Text(money(cart.grandTotal()),
-                          style: T.price.copyWith(fontSize: 14, color: Colors.white)),
+                          style: T.price
+                              .copyWith(fontSize: 14, color: Colors.white)),
                     ],
                   ),
                   const SizedBox(width: 10),
@@ -153,10 +157,7 @@ class _CartPanelState extends ConsumerState<CartPanel> {
     return Padding(
       // Docked = inside the register body (host SafeArea handles insets).
       // Sheet mode = bottom-anchored modal → must clear the gesture bar.
-      padding: EdgeInsets.fromLTRB(
-          14,
-          widget.docked ? 12 : 0,
-          14,
+      padding: EdgeInsets.fromLTRB(14, widget.docked ? 12 : 0, 14,
           12 + (widget.docked ? 0 : MediaQuery.paddingOf(context).bottom)),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -204,15 +205,13 @@ class _CartPanelState extends ConsumerState<CartPanel> {
                 ),
               ),
               TextButton.icon(
-                onPressed: cart.isEmpty
-                    ? null
-                    : () => _confirmClear(context, cart),
+                onPressed:
+                    cart.isEmpty ? null : () => _confirmClear(context, cart),
                 style: TextButton.styleFrom(
                     padding: const EdgeInsets.symmetric(horizontal: 6),
                     minimumSize: const Size(40, 32)),
                 icon: Icon(Icons.delete_outline_rounded,
-                    size: 14,
-                    color: cart.isEmpty ? pal.faint : pal.danger),
+                    size: 14, color: cart.isEmpty ? pal.faint : pal.danger),
                 label: Text('Clear',
                     style: TextStyle(
                         fontFamily: kFontBody,
@@ -293,7 +292,8 @@ class _CartPanelState extends ConsumerState<CartPanel> {
                   ],
                   const SizedBox(height: 4),
                   _moneyRow('Total', money(cart.grandTotal()),
-                      style: T.price.copyWith(fontSize: 15, color: pal.heading)),
+                      style:
+                          T.price.copyWith(fontSize: 15, color: pal.heading)),
                 ],
               ),
             ),
@@ -315,7 +315,8 @@ class _CartPanelState extends ConsumerState<CartPanel> {
               onPressed: _sending || tillGate
                   ? null
                   : (dineIn || !mayCheckout ? _sendToKitchen : _openReview),
-              style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(44)),
+              style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(44)),
               icon: Icon(
                   dineIn || !mayCheckout
                       ? Icons.local_fire_department_rounded
@@ -331,7 +332,8 @@ class _CartPanelState extends ConsumerState<CartPanel> {
                 onPressed: _sending || tillGate
                     ? null
                     : (dineIn ? _openReview : _sendToKitchen),
-                style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(44)),
+                style: OutlinedButton.styleFrom(
+                    minimumSize: const Size.fromHeight(44)),
                 icon: Icon(
                     dineIn
                         ? Icons.payments_outlined
@@ -348,7 +350,8 @@ class _CartPanelState extends ConsumerState<CartPanel> {
                       ? 'Send to Kitchen opens a tab for this table — settle it when they leave.'
                       : 'Take Payment settles the bill immediately; the kitchen copy fires with it.',
               textAlign: TextAlign.center,
-              style: TextStyle(fontFamily: kFontBody, fontSize: 10, color: pal.muted),
+              style: TextStyle(
+                  fontFamily: kFontBody, fontSize: 10, color: pal.muted),
             ),
           ],
         ],
@@ -409,7 +412,8 @@ class _CartPanelState extends ConsumerState<CartPanel> {
                     : 'Dine-in · Table ${cart.tableNum}')
                 : '${cart.orderType == 'takeaway' ? 'Takeaway' : 'Delivery'}'
                     '${cart.customerName.isEmpty ? '' : ' · ${cart.customerName}'}',
-            style: TextStyle(fontFamily: kFontBody, fontSize: 11, color: pal.muted),
+            style: TextStyle(
+                fontFamily: kFontBody, fontSize: 11, color: pal.muted),
           ),
           children: [
             OrderContextEditor(cart: cart, tables: _tables),
@@ -447,8 +451,7 @@ class _CartPanelState extends ConsumerState<CartPanel> {
             children: [
               const SheetHandle(),
               const Text('🗑️',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 28)),
+                  textAlign: TextAlign.center, style: TextStyle(fontSize: 28)),
               const SizedBox(height: 8),
               Text('Clear All Items?',
                   textAlign: TextAlign.center,
@@ -490,7 +493,14 @@ class _CartPanelState extends ConsumerState<CartPanel> {
   Future<bool> _claimTableIfDineIn(ScaffoldMessengerState messenger) async {
     final cart = ref.read(cartProvider);
     final app = ref.read(appStateProvider);
-    if (cart.orderType != 'dine-in' || cart.tableNum.isEmpty) return true;
+    // A dine-in order REQUIRES a table — the guests are physically at one of
+    // them, and a ticket without a table lands nowhere on the floor plan,
+    // nowhere in the Order Log. Takeaway and delivery are exempt.
+    if (cart.orderType != 'dine-in') return true;
+    if (cart.tableNum.isEmpty) {
+      showInfoOn(messenger, 'Pick a table for dine-in orders');
+      return false;
+    }
     CafeTable? match;
     try {
       final tables = _tables.isEmpty ? await app.api.tables() : _tables;
@@ -509,7 +519,9 @@ class _CartPanelState extends ConsumerState<CartPanel> {
       // refusing it here would strand every second round (the web's
       // claimTable rule, verbatim).
       if (match.status.toLowerCase() == 'occupied') return true;
-      await app.api.claimTable(match, newSeating: !cart.addingRound);
+      await app.api.claimTable(match,
+          newSeating: !cart.addingRound,
+          guests: cart.guests > 0 ? cart.guests : null);
       if (mounted) {
         // Refresh the shared rows so a second round does not re-claim
         // (the claimed table reads back as occupied).
@@ -555,6 +567,11 @@ class _CartPanelState extends ConsumerState<CartPanel> {
           deliveryFee: cart.orderType == 'delivery' ? cart.deliveryFee : 0,
           notes: cart.notes,
         );
+        // The till stamps the ticket's birth — the Order Log's "what time
+        // the order was taken".
+        OrderJournal.instance.record(id, OrderStage.created,
+            by: app.user?.displayName,
+            note: cart.tableNum.isNotEmpty ? 'Table ${cart.tableNum}' : null);
         cart.clear();
         HapticFeedback.mediumImpact();
         navigator.pop();
@@ -581,8 +598,7 @@ class _CartPanelState extends ConsumerState<CartPanel> {
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
       constraints: BoxConstraints(
-          maxWidth: 680,
-          maxHeight: MediaQuery.sizeOf(context).height * 0.9),
+          maxWidth: 680, maxHeight: MediaQuery.sizeOf(context).height * 0.9),
       builder: (_) => const ReviewSheet(),
     );
   }
@@ -634,14 +650,17 @@ class _CartLineTile extends ConsumerWidget {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                        fontFamily: kFontBody, fontSize: 10.5, color: pal.muted),
+                        fontFamily: kFontBody,
+                        fontSize: 10.5,
+                        color: pal.muted),
                   ),
                 ],
                 const SizedBox(height: 1),
                 Row(
                   children: [
                     Text(money(line.unitPrice),
-                        style: T.mono.copyWith(fontSize: 10.5, color: pal.muted)),
+                        style:
+                            T.mono.copyWith(fontSize: 10.5, color: pal.muted)),
                     if (showCourse) ...[
                       const SizedBox(width: 6),
                       Container(
@@ -671,8 +690,7 @@ class _CartLineTile extends ConsumerWidget {
           ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 7),
-            child: Text('${line.qty}',
-                style: T.price.copyWith(fontSize: 13)),
+            child: Text('${line.qty}', style: T.price.copyWith(fontSize: 13)),
           ),
           _RoundStepper(
             icon: Icons.add_rounded,
@@ -706,7 +724,8 @@ class _RoundStepper extends StatelessWidget {
   final VoidCallback onTap;
   final bool danger;
 
-  const _RoundStepper({required this.icon, required this.onTap, this.danger = false});
+  const _RoundStepper(
+      {required this.icon, required this.onTap, this.danger = false});
 
   @override
   Widget build(BuildContext context) {
@@ -741,7 +760,8 @@ class OrderContextEditor extends StatefulWidget {
   final CartState cart;
   final List<CafeTable> tables;
 
-  const OrderContextEditor({super.key, required this.cart, required this.tables});
+  const OrderContextEditor(
+      {super.key, required this.cart, required this.tables});
 
   @override
   State<OrderContextEditor> createState() => OrderContextEditorState();
@@ -827,8 +847,7 @@ class OrderContextEditorState extends State<OrderContextEditor> {
         if (cart.orderType == 'dine-in') ...[
           if (widget.tables.isEmpty)
             TextField(
-              decoration: const InputDecoration(
-                  labelText: 'Table number'),
+              decoration: const InputDecoration(labelText: 'Table number'),
               controller: _table,
               onChanged: cart.setTable,
             )
@@ -850,6 +869,36 @@ class OrderContextEditorState extends State<OrderContextEditor> {
               ],
             ),
           const SizedBox(height: 8),
+          // Party size — rides the claim to the floor plan and shows up in
+          // the Order Log's "people on the table" column.
+          Row(
+            children: [
+              Text('Guests',
+                  style: TextStyle(
+                      fontFamily: kFontBody, fontSize: 11.5, color: pal.muted)),
+              const Spacer(),
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                onPressed: cart.guests > 0
+                    ? () => cart.setGuests(cart.guests - 1)
+                    : null,
+                icon: const Icon(Icons.remove_circle_outline, size: 20),
+              ),
+              Text(cart.guests > 0 ? '${cart.guests}' : '—',
+                  style: T.mono.copyWith(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: pal.heading)),
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                onPressed: cart.guests < 24
+                    ? () => cart.setGuests(cart.guests + 1)
+                    : null,
+                icon: const Icon(Icons.add_circle_outline, size: 20),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
           TextField(
             decoration:
                 const InputDecoration(labelText: 'Guest name (optional)'),
@@ -858,8 +907,8 @@ class OrderContextEditorState extends State<OrderContextEditor> {
           ),
         ] else if (cart.orderType == 'takeaway') ...[
           TextField(
-            decoration: const InputDecoration(
-                labelText: 'Customer name / call number'),
+            decoration:
+                const InputDecoration(labelText: 'Customer name / call number'),
             controller: _customer,
             onChanged: cart.setCustomer,
           ),
@@ -873,8 +922,7 @@ class OrderContextEditorState extends State<OrderContextEditor> {
           ),
         ] else ...[
           TextField(
-            decoration:
-                const InputDecoration(labelText: 'Customer name'),
+            decoration: const InputDecoration(labelText: 'Customer name'),
             controller: _customer,
             onChanged: cart.setCustomer,
           ),
@@ -887,17 +935,14 @@ class OrderContextEditorState extends State<OrderContextEditor> {
           ),
           const SizedBox(height: 8),
           TextField(
-            decoration:
-                const InputDecoration(labelText: 'Delivery address'),
+            decoration: const InputDecoration(labelText: 'Delivery address'),
             controller: _address,
             onChanged: cart.setDeliveryAddress,
           ),
           const SizedBox(height: 8),
           TextField(
-            decoration:
-                const InputDecoration(labelText: 'Delivery fee (ETB)'),
-            keyboardType:
-                const TextInputType.numberWithOptions(decimal: true),
+            decoration: const InputDecoration(labelText: 'Delivery fee (ETB)'),
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
             inputFormatters: [DecimalTextInputFormatter()],
             controller: _fee,
             onChanged: (v) => cart.setDeliveryFee(double.tryParse(v) ?? 0),
@@ -944,8 +989,7 @@ class _TableChip extends StatelessWidget {
         decoration: BoxDecoration(
           color: selected ? pal.primary : pal.surface,
           borderRadius: BorderRadius.circular(8),
-          border: Border.all(
-              color: selected ? pal.primary : pal.borderStrong),
+          border: Border.all(color: selected ? pal.primary : pal.borderStrong),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -961,9 +1005,7 @@ class _TableChip extends StatelessWidget {
               const SizedBox(width: 4),
               Icon(Icons.circle,
                   size: 6,
-                  color: selected
-                      ? Colors.white70
-                      : Pal.of(context).warning),
+                  color: selected ? Colors.white70 : Pal.of(context).warning),
             ],
           ],
         ),

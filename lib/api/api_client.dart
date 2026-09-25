@@ -42,7 +42,12 @@ class ApiError implements Exception {
 
 /// Returned when the device never reached the server at all.
 class NetworkError extends ApiError {
-  NetworkError(super.message);
+  NetworkError(super.message, {this.isTimeout = false});
+
+  /// The device never heard back in time. Writes are the painful case: the
+  /// kitchen's PUT may or may not have landed, so the message must send the
+  /// staff to CHECK THE BOARD instead of blind-retrying into a double order.
+  final bool isTimeout;
 }
 
 class ApiClient {
@@ -65,7 +70,11 @@ class ApiClient {
   /// construct a real client BEFORE the binding initializes and inject it
   /// here. Production code never sets it.
 
-  static const _timeout = Duration(seconds: 12);
+  // Reads stay quick (12s): a slow GET is re-fetchable for free. Writes get
+  // a longer window (20s) — Worker cold starts plus a D1 write on hotel Wi-Fi
+  // can brush 12s, and the "Put order timed out" toast was exactly that.
+  static const _readTimeout = Duration(seconds: 12);
+  static const _writeTimeout = Duration(seconds: 20);
   static const _maxRetries = 2;
   static const _retryable = {502, 503, 504, 429};
 
@@ -92,8 +101,8 @@ class ApiClient {
   // ── Verbs ─────────────────────────────────────────────────────────────────
 
   Future<dynamic> get(String endpoint) async {
-    final r = await _send(() => _http.get(_uri(endpoint), headers: _headers),
-        'GET', endpoint);
+    final r = await _send(
+        () => _http.get(_uri(endpoint), headers: _headers), 'GET', endpoint);
     return r;
   }
 
@@ -143,15 +152,30 @@ class ApiClient {
   http.Client? _lazyClient;
   http.Client get _http => _injectedClient ?? (_lazyClient ??= http.Client());
 
-  Future<dynamic> _send(
-      Future<http.Response> Function() doRequest, String method,
-      String endpoint,
+  Future<dynamic> _send(Future<http.Response> Function() doRequest,
+      String method, String endpoint,
       [int retriesLeft = _maxRetries]) async {
     http.Response r;
+    final isRead = method == 'GET' && !endpoint.startsWith('auth/');
     try {
-      r = await doRequest().timeout(_timeout);
+      r = await doRequest().timeout(isRead ? _readTimeout : _writeTimeout);
     } on TimeoutException {
-      throw NetworkError('$method $endpoint timed out');
+      // One silent retry for idempotent writes on a timeout: a status PUT is
+      // "set X", safe to replay; order-creating POSTs and line-adding PATCHes
+      // are NOT and fail fast instead. If the retry also dies, the caller
+      // gets the check-your-state message — never a raw "PUT ... timed out".
+      if (method == 'PUT' && retriesLeft > 0) {
+        try {
+          r = await doRequest().timeout(_writeTimeout);
+        } on TimeoutException {
+          throw NetworkError(_timeoutMessage, isTimeout: true);
+        } catch (e) {
+          throw NetworkError(
+              'Cannot reach the server (${e.toString().split('\n').first})');
+        }
+      } else {
+        throw NetworkError(_timeoutMessage, isTimeout: true);
+      }
     } catch (e) {
       // Network layer refused. Only reads retry automatically — the web POS
       // queues writes offline instead of replaying them, because a retried
@@ -163,7 +187,8 @@ class ApiClient {
             Duration(milliseconds: 500 * (_maxRetries - retriesLeft + 1)));
         return _send(doRequest, method, endpoint, retriesLeft - 1);
       }
-      throw NetworkError('Cannot reach the server (${e.toString().split('\n').first})');
+      throw NetworkError(
+          'Cannot reach the server (${e.toString().split('\n').first})');
     }
 
     onRequest?.call(method, endpoint, r.statusCode);
@@ -219,4 +244,11 @@ class ApiClient {
   /// `Set-Cookie` — some http stacks collapse headers; when the cookie never
   /// arrives we fall back to this being set by [_send] directly.
   void adoptSession(String token) => sessionToken = token;
+
+  /// What a dead-slow write says to the floor. "PUT orders/O123 timed out"
+  /// told nobody anything; the state that matters is "did it save?" — so the
+  /// message says exactly what to do about it.
+  static const _timeoutMessage =
+      'Network too slow — the change may not have saved. '
+      'Recheck the order/ticket, then try again.';
 }

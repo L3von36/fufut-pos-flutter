@@ -35,6 +35,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../api/api_client.dart';
 import '../api/sse/sse_channel.dart';
 import '../models/models.dart';
+import '../services/order_journal.dart';
 import '../services/kitchen_live.dart';
 import 'app_state.dart';
 import 'floor_plan.dart' show defaultSections, mergeSections;
@@ -98,7 +99,8 @@ class KitchenFeedState {
       quotaMode: quotaMode ?? this.quotaMode,
       loading: loading ?? this.loading,
       error: clearError ? null : (error ?? this.error),
-      lastNewOrderId: clearNewId ? null : (lastNewOrderId ?? this.lastNewOrderId),
+      lastNewOrderId:
+          clearNewId ? null : (lastNewOrderId ?? this.lastNewOrderId),
       lastReadyOrderId: lastReadyOrderId ?? this.lastReadyOrderId,
     );
   }
@@ -200,6 +202,24 @@ class KitchenFeedNotifier extends Notifier<KitchenFeedState> {
       lastNewOrderId: newId,
       lastReadyOrderId: readyId,
     );
+    // The kitchen feed WITNESSES stage moves (this device's own taps land
+    // exactly; pushes from other devices echo approximately). The Order Log
+    // assembles its per-stage times from these stamps.
+    _journalEcho(was, fresh, newId);
+  }
+
+  void _journalEcho(
+      List<FufutOrder> was, List<FufutOrder> fresh, String? newId) {
+    final journal = OrderJournal.instance;
+    if (newId != null && !journal.hasStageSync(newId, OrderStage.created)) {
+      journal.record(newId, OrderStage.created,
+          approximate: true, note: 'seen on the pass');
+    }
+    for (final (o, stage) in OrderJournal.statusDiffs(was, fresh)) {
+      if (stage == OrderStage.created) continue;
+      if (journal.hasStageSync(o.id, stage)) continue;
+      journal.record(o.id, stage, approximate: true, note: 'seen on the pass');
+    }
   }
 
   // ── Poll fallback ─────────────────────────────────────────────────────
@@ -227,8 +247,8 @@ class KitchenFeedNotifier extends Notifier<KitchenFeedState> {
     try {
       final rows = await app.api.orders();
       if (!ref.mounted) return;
-      state = state.copyWith(
-          orders: rows, loading: false, clearError: true);
+      _journalEcho(state.orders, rows, null); // correct from server truth
+      state = state.copyWith(orders: rows, loading: false, clearError: true);
       _bumpLines();
     } on ApiError catch (e) {
       if (!ref.mounted) return;
@@ -245,8 +265,7 @@ class KitchenFeedNotifier extends Notifier<KitchenFeedState> {
 
   /// Per-line status is NOT in the SSE payload — one GET refreshes it for
   /// every consumer of [kitchenLinesProvider] at once.
-  void _bumpLines() =>
-      ref.read(_kitchenLinesTickProvider.notifier).bump();
+  void _bumpLines() => ref.read(_kitchenLinesTickProvider.notifier).bump();
 
   /// The pipeline's optimistic drag: move one order locally, server truth
   /// follows on the next push/refresh (revert = [refresh]).
@@ -469,8 +488,8 @@ class OpsAlertsFeedNotifier extends Notifier<OpsAlertsFeedState> {
     final app = ref.read(appStateProvider);
     await app.api.acknowledgeAlert(a.id);
     // Optimistic removal — the poll/push corrects the rest.
-    state = state.copyWith(
-        open: state.open.where((x) => x.id != a.id).toList());
+    state =
+        state.copyWith(open: state.open.where((x) => x.id != a.id).toList());
   }
 
   Future<void> ackAll() async {
@@ -661,6 +680,7 @@ class TablesFeedNotifier extends Notifier<TablesFeedState> {
     try {
       final rows = await app.api.tables();
       if (!ref.mounted) return;
+      _journalBillRequests(state.tables, rows);
       state = state.copyWith(tables: rows, clearError: true);
     } on ApiError catch (e) {
       if (!ref.mounted) return;
@@ -680,12 +700,35 @@ class TablesFeedNotifier extends Notifier<TablesFeedState> {
     try {
       final all = await app.api.orders();
       if (!ref.mounted) return;
-      state = state.copyWith(
-          orders: all.where(_isFloorRelevant).toList());
+      state = state.copyWith(orders: all.where(_isFloorRelevant).toList());
     } on ApiError catch (e) {
       if (e.isAuthError) await app.sessionExpired();
       // The badges are allowed to fail on their own — the floor still renders.
     } catch (_) {}
+  }
+
+  /// The floor witnesses the party asking for the bill — journal it against
+  /// the table's newest resumable check so the Order Log can time
+  /// bill-asked → settled. Fires once per request (flag-set diff).
+  void _journalBillRequests(List<CafeTable> before, List<CafeTable> after) {
+    final journal = OrderJournal.instance;
+    final wasAsked = {
+      for (final t in before)
+        if (t.billRequested) t.number,
+    };
+    for (final t in after) {
+      if (!t.billRequested || wasAsked.contains(t.number)) continue;
+      FufutOrder? check;
+      for (final o in state.orders) {
+        if (o.tableNum != t.number || !o.isResumableCheck) continue;
+        check = o; // the feed is newest-first; the first hit is the newest
+        break;
+      }
+      if (check == null) continue;
+      if (journal.hasStageSync(check.id, OrderStage.billRequested)) continue;
+      journal.record(check.id, OrderStage.billRequested,
+          approximate: true, note: 'Table ${t.number}');
+    }
   }
 
   Future<void> _fetchSections() async {

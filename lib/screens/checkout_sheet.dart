@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
 import '../models/models.dart';
+import '../services/order_journal.dart';
 import '../state/app_state.dart';
 import '../state/cart.dart';
 import '../state/catalog_providers.dart';
@@ -139,8 +140,7 @@ class _ReviewSheetState extends ConsumerState<ReviewSheet> {
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
       constraints: BoxConstraints(
-          maxWidth: 680,
-          maxHeight: MediaQuery.sizeOf(context).height * 0.9),
+          maxWidth: 680, maxHeight: MediaQuery.sizeOf(context).height * 0.9),
       builder: (_) => const PaymentSheet(),
     );
     if (result == null || !mounted) return;
@@ -148,11 +148,17 @@ class _ReviewSheetState extends ConsumerState<ReviewSheet> {
 
     final app = ref.read(appStateProvider);
     final messenger = ScaffoldMessenger.of(context);
+    // Dine-in requires a table — the same gate the cart panel enforces on
+    // Send to Kitchen. Takeaway and delivery are exempt.
+    if (cart.orderType == 'dine-in' && cart.tableNum.isEmpty) {
+      showInfoOn(messenger, 'Pick a table for dine-in orders');
+      return;
+    }
     final navigator = Navigator.of(context);
     final overlay = Pal.of(context).overlay;
-    final effTotal =
-        (cart.grandTotal() + result.tip - result.discount)
-            .clamp(0, double.infinity).toDouble();
+    final effTotal = (cart.grandTotal() + result.tip - result.discount)
+        .clamp(0, double.infinity)
+        .toDouble();
     setState(() => _sending = true);
     try {
       await _claimTableIfDineIn(messenger);
@@ -173,6 +179,15 @@ class _ReviewSheetState extends ConsumerState<ReviewSheet> {
         breakdown: result.breakdown,
         discountReason: _discountReasonOf(result),
       );
+      // The till stamps both ends of the timeline: the ticket's birth and
+      // the settled bill (a charge-now order is born paid).
+      OrderJournal.instance.record(id, OrderStage.created,
+          by: app.user?.displayName,
+          note: cart.tableNum.isNotEmpty ? 'Table ${cart.tableNum}' : null);
+      OrderJournal.instance.record(id, OrderStage.paid,
+          by: app.user?.displayName,
+          note:
+              '${result.breakdown.map((p) => p.method).toSet().join('+')} · ${money(effTotal)}');
       cart.clear();
       // Close the review sheet, then raise the success state above the app.
       navigator.pop();
@@ -180,8 +195,7 @@ class _ReviewSheetState extends ConsumerState<ReviewSheet> {
         opaque: false,
         barrierDismissible: true,
         barrierColor: overlay,
-        pageBuilder: (_, __, ___) =>
-            SuccessSheet(orderId: id, total: effTotal),
+        pageBuilder: (_, __, ___) => SuccessSheet(orderId: id, total: effTotal),
         transitionsBuilder: (_, anim, __, child) =>
             FadeTransition(opacity: anim, child: child),
       ));
@@ -198,7 +212,9 @@ class _ReviewSheetState extends ConsumerState<ReviewSheet> {
   static String? _discountReasonOf(PaymentResult result) =>
       result.discount > 0 ? 'discount applied at checkout' : null;
 
-  /// Dine-in: claim the table first, same rule as the cart panel.
+  /// Dine-in: claim the table first, same rule as the cart panel — a free
+  /// table is claimed (with the party size); an occupied table is a round on
+  /// the existing check.
   Future<void> _claimTableIfDineIn(ScaffoldMessengerState messenger) async {
     final cart = ref.read(cartProvider);
     final app = ref.read(appStateProvider);
@@ -215,10 +231,11 @@ class _ReviewSheetState extends ConsumerState<ReviewSheet> {
       if (match == null) {
         throw ApiError('Table ${cart.tableNum} does not exist');
       }
-      if (match.status != 'available') {
-        throw ApiError('Table ${cart.tableNum} is not available');
-      }
-      await app.api.claimTable(match);
+      // Occupied: the party is already seated — the order rides their open
+      // check, no claim (a refused claim here would strand every round).
+      if (match.status.toLowerCase() == 'occupied') return;
+      await app.api
+          .claimTable(match, guests: cart.guests > 0 ? cart.guests : null);
     } on ApiError catch (e) {
       showErrorOn(messenger, e);
       rethrow;
@@ -259,8 +276,7 @@ class _ReviewLine extends ConsumerWidget {
                         fontWeight: FontWeight.w600,
                         color: pal.heading)),
                 Text('${money(line.unitPrice)} each',
-                    style:
-                        T.mono.copyWith(fontSize: 10.5, color: pal.muted)),
+                    style: T.mono.copyWith(fontSize: 10.5, color: pal.muted)),
               ],
             ),
           ),
@@ -270,8 +286,7 @@ class _ReviewLine extends ConsumerWidget {
           ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 5),
-            child: Text('${line.qty}',
-                style: T.price.copyWith(fontSize: 13)),
+            child: Text('${line.qty}', style: T.price.copyWith(fontSize: 13)),
           ),
           _MiniStepper(
             icon: Icons.add,
@@ -377,8 +392,7 @@ class PaymentResult {
     this.discount = 0,
   });
 
-  List<PaymentLine> get breakdown =>
-      splits.isNotEmpty ? splits : [primary];
+  List<PaymentLine> get breakdown => splits.isNotEmpty ? splits : [primary];
 }
 
 class _PaymentSheetState extends ConsumerState<PaymentSheet> {
@@ -403,8 +417,7 @@ class _PaymentSheetState extends ConsumerState<PaymentSheet> {
   bool _splitting = false;
   final List<(String, TextEditingController)> _splitLegs = [];
 
-  bool get _isManager =>
-      ref.read(appStateProvider).roleKey == 'manager';
+  bool get _isManager => ref.read(appStateProvider).roleKey == 'manager';
 
   @override
   void initState() {
@@ -412,8 +425,7 @@ class _PaymentSheetState extends ConsumerState<PaymentSheet> {
     if (widget.fixedTotal == null) {
       final cart = ref.read(cartProvider);
       _method = cart.paymentMethod;
-      _tender.text =
-          cart.tendered > 0 ? cart.tendered.toStringAsFixed(0) : '';
+      _tender.text = cart.tendered > 0 ? cart.tendered.toStringAsFixed(0) : '';
     }
   }
 
@@ -460,8 +472,8 @@ class _PaymentSheetState extends ConsumerState<PaymentSheet> {
     }
   }
 
-  double get _total => (_base + _tipValue - _discountValue)
-      .clamp(0, double.infinity).toDouble();
+  double get _total =>
+      (_base + _tipValue - _discountValue).clamp(0, double.infinity).toDouble();
 
   double get _tenderedValue => double.tryParse(_tender.text) ?? 0;
 
@@ -483,8 +495,7 @@ class _PaymentSheetState extends ConsumerState<PaymentSheet> {
     return true;
   }
 
-  double get _change =>
-      _tenderedValue > _total ? _tenderedValue - _total : 0;
+  double get _change => _tenderedValue > _total ? _tenderedValue - _total : 0;
 
   static double _r2(double v) => (v * 100).roundToDouble() / 100;
 
@@ -510,8 +521,7 @@ class _PaymentSheetState extends ConsumerState<PaymentSheet> {
                           color: pal.heading)),
                 ),
                 Text(money(_total),
-                    style: T.price.copyWith(
-                        fontSize: 14, color: pal.primary)),
+                    style: T.price.copyWith(fontSize: 14, color: pal.primary)),
               ],
             ),
             const SizedBox(height: 8),
@@ -543,7 +553,9 @@ class _PaymentSheetState extends ConsumerState<PaymentSheet> {
                 ],
               ),
               const SizedBox(height: 10),
-              if (_method == 'cash') ..._cashPanel(pal) else ...[
+              if (_method == 'cash')
+                ..._cashPanel(pal)
+              else ...[
                 if (_digitalMethods.contains(_method)) _referencePanel(pal),
                 Container(
                   padding: const EdgeInsets.symmetric(vertical: 14),
@@ -554,11 +566,8 @@ class _PaymentSheetState extends ConsumerState<PaymentSheet> {
                   ),
                   child: Column(
                     children: [
-                      Icon(_methods
-                          .firstWhere((m) => m.$1 == _method)
-                          .$3,
-                          size: 24,
-                          color: pal.primary),
+                      Icon(_methods.firstWhere((m) => m.$1 == _method).$3,
+                          size: 24, color: pal.primary),
                       const SizedBox(height: 6),
                       Text(
                         'Collect the ${_methods.firstWhere((m) => m.$1 == _method).$2.toLowerCase()} payment, '
@@ -599,7 +608,8 @@ class _PaymentSheetState extends ConsumerState<PaymentSheet> {
                         Text('Split the bill across methods',
                             style: TextStyle(
                                 fontFamily: kFontBody,
-                                fontSize: 11.5, color: pal.body)),
+                                fontSize: 11.5,
+                                color: pal.body)),
                         const Spacer(),
                         Text('SPLIT',
                             style: TextStyle(
@@ -620,7 +630,8 @@ class _PaymentSheetState extends ConsumerState<PaymentSheet> {
                 onPressed: _canPay ? () => _confirm(context) : null,
                 style: FilledButton.styleFrom(
                     backgroundColor: pal.primary,
-                    disabledBackgroundColor: pal.primary.withValues(alpha: 0.5)),
+                    disabledBackgroundColor:
+                        pal.primary.withValues(alpha: 0.5)),
                 child: Text('Process Payment — ${money(_total)}',
                     style: const TextStyle(
                         fontFamily: kFontBody,
@@ -647,8 +658,7 @@ class _PaymentSheetState extends ConsumerState<PaymentSheet> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(children: [
-            Icon(Icons.volunteer_activism_outlined,
-                size: 13, color: pal.gold),
+            Icon(Icons.volunteer_activism_outlined, size: 13, color: pal.gold),
             const SizedBox(width: 5),
             Text('TIP — GOES TO STAFF, NOT THE HOUSE',
                 style: TextStyle(
@@ -661,13 +671,16 @@ class _PaymentSheetState extends ConsumerState<PaymentSheet> {
             if (_tipValue > 0)
               Text('+${money(_tipValue)}',
                   style: T.mono.copyWith(
-                      fontSize: 11, fontWeight: FontWeight.w700,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
                       color: pal.gold)),
           ]),
           const SizedBox(height: 6),
           Row(children: [
             for (final (mode, label) in [
-              ('none', 'None'), ('p10', '10%'), ('p15', '15%'),
+              ('none', 'None'),
+              ('p10', '10%'),
+              ('p15', '15%'),
             ])
               Padding(
                 padding: const EdgeInsets.only(right: 6),
@@ -675,8 +688,8 @@ class _PaymentSheetState extends ConsumerState<PaymentSheet> {
                   onTap: () => setState(() => _tipMode = mode),
                   borderRadius: BorderRadius.circular(6),
                   child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 9, vertical: 4),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
                     decoration: BoxDecoration(
                       color: _tipMode == mode ? pal.gold : pal.sunken,
                       borderRadius: BorderRadius.circular(6),
@@ -686,8 +699,7 @@ class _PaymentSheetState extends ConsumerState<PaymentSheet> {
                             fontFamily: kFontBody,
                             fontSize: 10.5,
                             fontWeight: FontWeight.w700,
-                            color: _tipMode == mode
-                                ? Colors.white : pal.body)),
+                            color: _tipMode == mode ? Colors.white : pal.body)),
                   ),
                 ),
               ),
@@ -696,20 +708,20 @@ class _PaymentSheetState extends ConsumerState<PaymentSheet> {
               height: 26,
               child: TextField(
                 controller: _tipCustom,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
                 inputFormatters: [DecimalTextInputFormatter()],
                 onChanged: (_) => setState(() => _tipMode = 'fixed'),
                 style: T.mono.copyWith(fontSize: 11, color: pal.heading),
                 decoration: InputDecoration(
                     hintText: 'ETB fixed',
                     hintStyle: TextStyle(
-                        fontFamily: kFontMono,
-                        fontSize: 9.5, color: pal.faint),
+                        fontFamily: kFontMono, fontSize: 9.5, color: pal.faint),
                     isDense: true,
                     filled: true,
                     fillColor: pal.sunken,
-                    contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 7, vertical: 5)),
+                    contentPadding:
+                        const EdgeInsets.symmetric(horizontal: 7, vertical: 5)),
               ),
             ),
           ]),
@@ -745,13 +757,16 @@ class _PaymentSheetState extends ConsumerState<PaymentSheet> {
             if (_discountValue > 0)
               Text('−${money(_discountValue)}',
                   style: T.mono.copyWith(
-                      fontSize: 11, fontWeight: FontWeight.w700,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
                       color: pal.danger)),
           ]),
           const SizedBox(height: 6),
           Row(children: [
             for (final (mode, label) in [
-              ('none', 'None'), ('p10', '10%'), ('p20', '20%'),
+              ('none', 'None'),
+              ('p10', '10%'),
+              ('p20', '20%'),
             ])
               Padding(
                 padding: const EdgeInsets.only(right: 6),
@@ -759,8 +774,8 @@ class _PaymentSheetState extends ConsumerState<PaymentSheet> {
                   onTap: () => setState(() => _discountMode = mode),
                   borderRadius: BorderRadius.circular(6),
                   child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 9, vertical: 4),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
                     decoration: BoxDecoration(
                       color: _discountMode == mode ? pal.danger : pal.sunken,
                       borderRadius: BorderRadius.circular(6),
@@ -771,7 +786,8 @@ class _PaymentSheetState extends ConsumerState<PaymentSheet> {
                             fontSize: 10.5,
                             fontWeight: FontWeight.w700,
                             color: _discountMode == mode
-                                ? Colors.white : pal.body)),
+                                ? Colors.white
+                                : pal.body)),
                   ),
                 ),
               ),
@@ -780,20 +796,20 @@ class _PaymentSheetState extends ConsumerState<PaymentSheet> {
               height: 26,
               child: TextField(
                 controller: _discountC,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
                 inputFormatters: [DecimalTextInputFormatter()],
                 onChanged: (_) => setState(() => _discountMode = 'fixed'),
                 style: T.mono.copyWith(fontSize: 11, color: pal.heading),
                 decoration: InputDecoration(
                     hintText: 'ETB',
                     hintStyle: TextStyle(
-                        fontFamily: kFontMono,
-                        fontSize: 9.5, color: pal.faint),
+                        fontFamily: kFontMono, fontSize: 9.5, color: pal.faint),
                     isDense: true,
                     filled: true,
                     fillColor: pal.sunken,
-                    contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 7, vertical: 5)),
+                    contentPadding:
+                        const EdgeInsets.symmetric(horizontal: 7, vertical: 5)),
               ),
             ),
             const SizedBox(width: 6),
@@ -805,13 +821,12 @@ class _PaymentSheetState extends ConsumerState<PaymentSheet> {
                 decoration: InputDecoration(
                     hintText: 'Reason (audited)',
                     hintStyle: TextStyle(
-                        fontFamily: kFontBody,
-                        fontSize: 9.5, color: pal.faint),
+                        fontFamily: kFontBody, fontSize: 9.5, color: pal.faint),
                     isDense: true,
                     filled: true,
                     fillColor: pal.sunken,
-                    contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 7, vertical: 5)),
+                    contentPadding:
+                        const EdgeInsets.symmetric(horizontal: 7, vertical: 5)),
               ),
             ),
           ]),
@@ -848,8 +863,7 @@ class _PaymentSheetState extends ConsumerState<PaymentSheet> {
       decoration: BoxDecoration(
         color: pal.surface,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-            color: _splitValid ? pal.successBorder : pal.border),
+        border: Border.all(color: _splitValid ? pal.successBorder : pal.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -890,7 +904,8 @@ class _PaymentSheetState extends ConsumerState<PaymentSheet> {
                     dropdownColor: pal.surface,
                     style: TextStyle(
                         fontFamily: kFontBody,
-                        fontSize: 11, color: pal.heading),
+                        fontSize: 11,
+                        color: pal.heading),
                     decoration: InputDecoration(
                         isDense: true,
                         filled: true,
@@ -901,9 +916,8 @@ class _PaymentSheetState extends ConsumerState<PaymentSheet> {
                       for (final (value, label, _) in _methods)
                         DropdownMenuItem(value: value, child: Text(label)),
                     ],
-                    onChanged: (v) =>
-                        setState(() => _splitLegs[i] =
-                            (v ?? 'cash', _splitLegs[i].$2)),
+                    onChanged: (v) => setState(
+                        () => _splitLegs[i] = (v ?? 'cash', _splitLegs[i].$2)),
                   ),
                 ),
                 const SizedBox(width: 6),
@@ -912,17 +926,18 @@ class _PaymentSheetState extends ConsumerState<PaymentSheet> {
                     height: 30,
                     child: TextField(
                       controller: _splitLegs[i].$2,
-                      keyboardType: const TextInputType.numberWithOptions(
-                          decimal: true),
+                      keyboardType:
+                          const TextInputType.numberWithOptions(decimal: true),
                       inputFormatters: [DecimalTextInputFormatter()],
                       onChanged: (_) => setState(() {}),
-                      style: T.mono.copyWith(
-                          fontSize: 11.5, color: pal.heading),
+                      style:
+                          T.mono.copyWith(fontSize: 11.5, color: pal.heading),
                       decoration: InputDecoration(
                           hintText: 'Amount ETB',
                           hintStyle: TextStyle(
                               fontFamily: kFontMono,
-                              fontSize: 9.5, color: pal.faint),
+                              fontSize: 9.5,
+                              color: pal.faint),
                           isDense: true,
                           filled: true,
                           fillColor: pal.sunken),
@@ -937,15 +952,15 @@ class _PaymentSheetState extends ConsumerState<PaymentSheet> {
                     }),
                     child: Padding(
                       padding: const EdgeInsets.all(5),
-                      child: Icon(Icons.close,
-                          size: 13, color: pal.danger),
+                      child: Icon(Icons.close, size: 13, color: pal.danger),
                     ),
                   ),
               ]),
             ),
-          RowAction('+ Add leg',
-              () => setState(() => _splitLegs.add(
-                  ('cash', TextEditingController())))),
+          RowAction(
+              '+ Add leg',
+              () => setState(
+                  () => _splitLegs.add(('cash', TextEditingController())))),
           const SizedBox(height: 8),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
@@ -999,8 +1014,7 @@ class _PaymentSheetState extends ConsumerState<PaymentSheet> {
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
                     color: pal.body)),
-            Text(money(_total),
-                style: T.price.copyWith(fontSize: 15)),
+            Text(money(_total), style: T.price.copyWith(fontSize: 15)),
           ],
         ),
       ),
@@ -1026,8 +1040,8 @@ class _PaymentSheetState extends ConsumerState<PaymentSheet> {
                 padding: EdgeInsets.zero,
               ),
               child: Text(moneyGroup(quick).replaceFirst('ETB ', ''),
-                  style: T.mono.copyWith(
-                      fontSize: 12, fontWeight: FontWeight.w600)),
+                  style: T.mono
+                      .copyWith(fontSize: 12, fontWeight: FontWeight.w600)),
             ),
         ],
       ),
@@ -1080,8 +1094,7 @@ class _PaymentSheetState extends ConsumerState<PaymentSheet> {
                       letterSpacing: 0.8,
                       color: pal.muted)),
               Text(money(_change),
-                  style: T.price.copyWith(
-                      fontSize: 19, color: pal.success)),
+                  style: T.price.copyWith(fontSize: 19, color: pal.success)),
             ],
           ),
         )
@@ -1104,8 +1117,7 @@ class _PaymentSheetState extends ConsumerState<PaymentSheet> {
                       letterSpacing: 0.8,
                       color: pal.muted)),
               Text(money(_total - _tenderedValue),
-                  style: T.price.copyWith(
-                      fontSize: 19, color: pal.warning)),
+                  style: T.price.copyWith(fontSize: 19, color: pal.warning)),
             ],
           ),
         ),
@@ -1148,10 +1160,10 @@ class _PaymentSheetState extends ConsumerState<PaymentSheet> {
       change: _method == 'cash'
           ? (_tenderedValue > _total ? _tenderedValue - _total : 0)
           : null,
-      reference: _digitalMethods.contains(_method) &&
-              _reference.text.trim().isNotEmpty
-          ? _reference.text.trim()
-          : null,
+      reference:
+          _digitalMethods.contains(_method) && _reference.text.trim().isNotEmpty
+              ? _reference.text.trim()
+              : null,
     );
     if (widget.fixedTotal == null && context.mounted) {
       final cart = ref.read(cartProvider);
@@ -1210,9 +1222,7 @@ class _MethodCard extends StatelessWidget {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(icon,
-                      size: 18,
-                      color: active ? pal.primary : pal.body),
+                  Icon(icon, size: 18, color: active ? pal.primary : pal.body),
                   const SizedBox(height: 5),
                   Text(label,
                       textAlign: TextAlign.center,
@@ -1232,10 +1242,9 @@ class _MethodCard extends StatelessWidget {
                 child: Container(
                   width: 14,
                   height: 14,
-                  decoration: BoxDecoration(
-                      shape: BoxShape.circle, color: pal.primary),
-                  child: const Icon(Icons.check,
-                      size: 10, color: Colors.white),
+                  decoration:
+                      BoxDecoration(shape: BoxShape.circle, color: pal.primary),
+                  child: const Icon(Icons.check, size: 10, color: Colors.white),
                 ),
               ),
           ],
@@ -1278,8 +1287,7 @@ class SuccessSheet extends StatelessWidget {
                   color: pal.successBg,
                   border: Border.all(color: pal.success, width: 2.5),
                 ),
-                child:
-                    Icon(Icons.check, size: 32, color: pal.success),
+                child: Icon(Icons.check, size: 32, color: pal.success),
               ),
               const SizedBox(height: 12),
               Text('Order Confirmed!',

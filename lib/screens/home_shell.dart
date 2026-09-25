@@ -25,6 +25,7 @@ import 'kitchen_board.dart';
 import 'menu_mgmt_screen.dart';
 import 'my_activity_screen.dart';
 import 'my_payslips_screen.dart';
+import 'order_log_screen.dart';
 import 'orders_screen.dart';
 import 'pipeline_screen.dart';
 import 'pnl_screen.dart';
@@ -174,6 +175,8 @@ class _HomeShellState extends ConsumerState<HomeShell>
           return const OrdersScreen();
         case NavKey.openChecks:
           return const OrdersScreen(openOnlyDefault: true);
+        case NavKey.orderLog:
+          return const OrderLogScreen();
         case NavKey.pipeline:
           return const PipelineScreen();
         case NavKey.reservations:

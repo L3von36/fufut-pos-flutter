@@ -39,6 +39,7 @@ class CartState {
   // Order context
   String orderType = 'dine-in'; // dine-in | takeaway | delivery
   String tableNum = '';
+  int guests = 0; // party size for dine-in — rides the claim, feeds the log
   String customerName = '';
   String customerPhone = '';
   String deliveryAddress = '';
@@ -94,14 +95,14 @@ class CartState {
 
   List<CartLine> get items => List.unmodifiable(_items);
 
-  double get subtotal =>
-      _items.fold<double>(0, (s, l) => s + l.lineTotal);
+  double get subtotal => _items.fold<double>(0, (s, l) => s + l.lineTotal);
 
   /// What the guest actually pays: food plus the delivery fee the driver
   /// settles with the cashier. The fee is not discountable and never part of
   /// a tip base — same rule as the web POS.
   double grandTotal() =>
-      subtotal + (orderType == 'delivery' ? (deliveryFee > 0 ? deliveryFee : 0) : 0);
+      subtotal +
+      (orderType == 'delivery' ? (deliveryFee > 0 ? deliveryFee : 0) : 0);
 
   int get itemCount => _items.fold<int>(0, (s, l) => s + l.qty);
 
@@ -141,8 +142,7 @@ class CartState {
       int qty = 1,
       String course = 'main'}) {
     if (qty < 1) return;
-    final key = _dedupKey(
-        item.id, selected, '', item.name, item.price, course);
+    final key = _dedupKey(item.id, selected, '', item.name, item.price, course);
     CartLine? existing;
     for (final l in _items) {
       if (l.uid == key) {
@@ -210,6 +210,7 @@ class CartState {
     _items.clear();
     orderType = 'dine-in';
     tableNum = '';
+    guests = 0;
     customerName = '';
     customerPhone = '';
     deliveryAddress = '';
@@ -246,6 +247,12 @@ class CartState {
 
   void setTable(String num) {
     tableNum = num;
+    _persist();
+    _notifyListeners();
+  }
+
+  void setGuests(int n) {
+    guests = n < 0 ? 0 : n;
     _persist();
     _notifyListeners();
   }
@@ -335,20 +342,25 @@ class CartState {
         await prefs.remove(_kKey);
         return;
       }
-      await prefs.setString(_kKey, jsonEncode({
+      await prefs.setString(
+          _kKey,
+          jsonEncode({
             'savedAt': DateTime.now().millisecondsSinceEpoch,
-            'items': _items.map((l) => {
-                  'key': l.uid,
-                  'menuItemId': l.menuItemId,
-                  'name': l.name,
-                  'basePrice': l.basePrice,
-                  'qty': l.qty,
-                  'mods': l.modsToJson(),
-                  'notes': l.notes,
-                  'course': l.course,
-                }).toList(),
+            'items': _items
+                .map((l) => {
+                      'key': l.uid,
+                      'menuItemId': l.menuItemId,
+                      'name': l.name,
+                      'basePrice': l.basePrice,
+                      'qty': l.qty,
+                      'mods': l.modsToJson(),
+                      'notes': l.notes,
+                      'course': l.course,
+                    })
+                .toList(),
             'orderType': orderType,
             'tableNum': tableNum,
+            'guests': guests,
             'isAddRound': isAddRound,
             'activeOpenOrderId': activeOpenOrderId,
             'customerName': customerName,
@@ -369,7 +381,8 @@ class CartState {
       final saved = jsonDecode(raw) as Map<String, dynamic>;
       final at = saved['savedAt'] as int?;
       if (at == null ||
-          DateTime.now().millisecondsSinceEpoch - at > _kMaxAge.inMilliseconds) {
+          DateTime.now().millisecondsSinceEpoch - at >
+              _kMaxAge.inMilliseconds) {
         await prefs.remove(_kKey);
         return;
       }
@@ -396,6 +409,7 @@ class CartState {
       }
       orderType = (saved['orderType'] ?? 'dine-in') as String;
       tableNum = (saved['tableNum'] ?? '') as String;
+      guests = (saved['guests'] as num?)?.toInt() ?? 0;
       isAddRound = saved['isAddRound'] == true;
       final savedOpenId = saved['activeOpenOrderId']?.toString() ?? '';
       activeOpenOrderId = savedOpenId.isEmpty ? null : savedOpenId;
@@ -429,4 +443,5 @@ class CartNotifier extends Notifier<CartState> {
   }
 }
 
-final cartProvider = NotifierProvider<CartNotifier, CartState>(CartNotifier.new);
+final cartProvider =
+    NotifierProvider<CartNotifier, CartState>(CartNotifier.new);
