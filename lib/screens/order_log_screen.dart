@@ -108,7 +108,9 @@ final _orderLogProvider =
   ]);
   final rows = results[0] as List<FufutOrder>;
   final tables = results[1] as List<CafeTable>;
-  final myTables = {for (final t in tables) t.number.toString()};
+  // The waiter's own section (per-row assignment), not the whole room.
+  final myTables = assignedTableNumbers(tables,
+      myId: app.user?.id, myName: app.user?.displayName);
   final catByName = app.catByName;
   final roleKey = app.roleKey;
   final scoped = rows

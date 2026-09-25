@@ -31,15 +31,52 @@ import '../widgets/dashboard.dart';
 
 const _orderHistoryPageSize = 100;
 
+/// One history page as the screen sees it: the visible (role-scoped) rows
+/// plus the RAW row count the server returned for that page — the pager's
+/// next offset advances on raw rows, or a waiter's scoped page would skip
+/// colleagues' rows they never wanted to see.
+class HistoryPage {
+  final List<FufutOrder> rows;
+  final int rawCount;
+  const HistoryPage(this.rows, this.rawCount);
+}
+
+/// Fetch one page and apply the waiter rule on top.
+///
+/// The waiter rule rides here (2026-09-25): the Orders app bar opens this
+/// page for every role that has Orders, and history is a record of
+/// colleagues' days as much as their own — a head-waiter reads only their
+/// tickets and their section's, the same [orderVisibleToRole] rule the live
+/// screens apply. Manager roles pass through untouched.
+Future<HistoryPage> _fetchHistoryPage(
+  AppState app, {
+  required String from,
+  required String to,
+  required int offset,
+}) async {
+  final rows = await app.api.orders(
+      from: from, to: to, limit: _orderHistoryPageSize, offset: offset);
+  if ((app.roleKey ?? '').toLowerCase() != 'head-waiter') {
+    return HistoryPage(rows, rows.length);
+  }
+  final tables = await app.api.tables().catchError((_) => const <CafeTable>[]);
+  final myTables = assignedTableNumbers(tables,
+      myId: app.user?.id, myName: app.user?.displayName);
+  final visible = rows
+      .where((o) => orderVisibleToRole(o, app.roleKey,
+          myId: app.user?.id, myTables: myTables, catByName: app.catByName))
+      .toList();
+  return HistoryPage(visible, rows.length);
+}
+
 /// First page of a history window. Invalidate (pull-to-refresh, the refresh
 /// button, a preset change) refetches it; deeper pages belong to the screen.
-final orderHistoryPageProvider = FutureProvider.family<List<FufutOrder>,
+final orderHistoryPageProvider = FutureProvider.family<HistoryPage,
     ({String from, String to})>((ref, f) async {
   // Read, never watch: the fetch must not rebuild on its own session echo.
   final app = ref.read(appStateProvider);
   try {
-    return await app.api.orders(
-        from: f.from, to: f.to, limit: _orderHistoryPageSize, offset: 0);
+    return await _fetchHistoryPage(app, from: f.from, to: f.to, offset: 0);
   } on ApiError catch (e) {
     if (e.isAuthError) await app.sessionExpired();
     rethrow;
@@ -66,6 +103,12 @@ class _OrderHistoryScreenState extends ConsumerState<OrderHistoryScreen> {
   DateTime? _customTo;
   // Pagination beyond the provider's first page, owned by the screen.
   List<FufutOrder> _extra = [];
+
+  /// Raw rows consumed by pager pages so far — the server's offset counts
+  /// its unscoped list, while [_extra] holds only the role-scoped visible
+  /// rows (a waiter's colleagues' tickets are fetched, then filtered, never
+  /// shown). One number each, never mixed.
+  int _extraRaw = 0;
   bool _lastPageFull = false;
   bool _loadingMore = false;
   String _query = '';
@@ -127,6 +170,7 @@ class _OrderHistoryScreenState extends ConsumerState<OrderHistoryScreen> {
     // old run.
     setState(() {
       _extra = [];
+      _extraRaw = 0;
       _lastPageFull = false;
     });
     ref.invalidate(orderHistoryPageProvider((from: _from, to: _to)));
@@ -137,20 +181,20 @@ class _OrderHistoryScreenState extends ConsumerState<OrderHistoryScreen> {
     final messenger = ScaffoldMessenger.of(context);
     setState(() => _loadingMore = true);
     try {
-      final pageLen = ref
+      final firstRaw = ref
               .read(orderHistoryPageProvider((from: _from, to: _to)))
               .value
-              ?.length ??
+              ?.rawCount ??
           0;
-      final rows = await app.api.orders(
+      final page = await _fetchHistoryPage(app,
           from: _from,
           to: _to,
-          limit: _orderHistoryPageSize,
-          offset: pageLen + _extra.length);
+          offset: firstRaw + _extraRaw);
       if (!mounted) return;
       setState(() {
-        _extra = [..._extra, ...rows];
-        _lastPageFull = rows.length == _orderHistoryPageSize;
+        _extra = [..._extra, ...page.rows];
+        _extraRaw += page.rawCount;
+        _lastPageFull = page.rawCount == _orderHistoryPageSize;
         _loadingMore = false;
       });
     } catch (_) {
@@ -218,6 +262,7 @@ class _OrderHistoryScreenState extends ConsumerState<OrderHistoryScreen> {
         _customFrom = picked.start;
         _customTo = picked.end;
         _extra = [];
+        _extraRaw = 0;
         _lastPageFull = false;
       });
     }
@@ -228,12 +273,13 @@ class _OrderHistoryScreenState extends ConsumerState<OrderHistoryScreen> {
     final pal = Pal.of(context);
     final pageAsync =
         ref.watch(orderHistoryPageProvider((from: _from, to: _to)));
-    final page = pageAsync.value ?? const <FufutOrder>[];
+    final page = pageAsync.value?.rows ?? const <FufutOrder>[];
     final all = [...page, ..._extra];
     // "Load more" visibility: before any manual paging it follows the first
-    // page's fullness; after, the last fetch's.
+    // page's fullness (raw rows — a scoped-but-full page still has more);
+    // after, the last fetch's.
     final hasMore = _extra.isEmpty
-        ? page.length == _orderHistoryPageSize
+        ? (pageAsync.value?.rawCount ?? 0) == _orderHistoryPageSize
         : _lastPageFull;
     final rows = _filtered(all);
     return Scaffold(
@@ -281,6 +327,7 @@ class _OrderHistoryScreenState extends ConsumerState<OrderHistoryScreen> {
                           setState(() {
                             _preset = key;
                             _extra = [];
+                            _extraRaw = 0;
                             _lastPageFull = false;
                           });
                         },

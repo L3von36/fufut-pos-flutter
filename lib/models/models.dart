@@ -533,6 +533,7 @@ class CafeTable {
   final String? name;
   final String? shape; // round | square | long
   final String? server; // assigned staff display name
+  final String? serverId; // assigned staff id — the isolation match key
   final String? seatedAt; // ISO stamp when the party sat down
   final String? notes;
   final String? payment; // null | paid | partial | unpaid
@@ -551,6 +552,7 @@ class CafeTable {
     this.name,
     this.shape,
     this.server,
+    this.serverId,
     this.seatedAt,
     this.notes,
     this.payment,
@@ -600,6 +602,7 @@ class CafeTable {
         name: j['name']?.toString(),
         shape: j['shape']?.toString(),
         server: j['server']?.toString(),
+        serverId: (j['server_id'] ?? j['serverId'])?.toString(),
         seatedAt: (j['seated_at'] ?? j['seatedAt'])?.toString(),
         notes: j['notes']?.toString(),
         payment: j['payment']?.toString(),

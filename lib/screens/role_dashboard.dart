@@ -29,6 +29,7 @@ import '../state/app_time.dart' show timeAgo, todayKey;
 import '../state/catalog_providers.dart';
 import '../state/clock.dart';
 import '../state/live_feeds.dart';
+import '../state/order_scope.dart';
 import '../state/roles.dart';
 import 'cashdrawer_screen.dart' show cashDrawerFeedProvider;
 import '../theme.dart';
@@ -103,6 +104,31 @@ class _WaiterDashboardState extends ConsumerState<WaiterDashboard> {
   List<Reservation> get _reservations =>
       ref.read(reservationsProvider).value ?? const <Reservation>[];
 
+  /// The waiter's slice of the shared feeds — their tickets and their
+  /// section's, the same [orderVisibleToRole] rule the Orders screen and the
+  /// Order Log apply. A colleague's ready ticket is not this waiter's to
+  /// run; counting it on their dashboard would send them to a table that
+  /// isn't theirs (the multi-waiter isolation rule, 2026-09-25).
+  List<FufutOrder> get _myOrders {
+    final app = ref.read(appStateProvider);
+    final myTables = assignedTableNumbers(_tables,
+        myId: app.user?.id, myName: app.user?.displayName);
+    return _orders
+        .where((o) => orderVisibleToRole(o, app.roleKey,
+            myId: app.user?.id,
+            myTables: myTables,
+            catByName: app.catByName))
+        .toList();
+  }
+
+  List<CafeTable> get _myTables {
+    final app = ref.read(appStateProvider);
+    final mine = assignedTableNumbers(_tables,
+        myId: app.user?.id, myName: app.user?.displayName);
+    if (mine.length >= _tables.length) return _tables;
+    return _tables.where((t) => mine.contains(t.number.toString())).toList();
+  }
+
   void _refresh() {
     ref.invalidate(reservationsProvider);
   }
@@ -127,15 +153,18 @@ class _WaiterDashboardState extends ConsumerState<WaiterDashboard> {
     final today = _today();
 
     // The web head-waiter branch: Ready to Serve · Active Tables · Open
-    // Orders · Today Reservations.
+    // Orders · Today Reservations — counted over the waiter's own slice
+    // (their tickets + their section), not the whole room's.
+    final myOrders = _myOrders;
+    final myTables = _myTables;
     final readyToServe =
-        _orders.where((o) => o.status.toLowerCase() == 'ready').length;
+        myOrders.where((o) => o.status.toLowerCase() == 'ready').length;
     final activeTables =
-        _tables.where((t) => t.status != 'available').length;
-    final seatedGuests = _tables
+        myTables.where((t) => t.status != 'available').length;
+    final seatedGuests = myTables
         .where((t) => t.status == 'occupied')
         .fold<int>(0, (s, t) => s + (int.tryParse(t.guests ?? '') ?? 0));
-    final openOrders = _orders
+    final openOrders = myOrders
         .where((o) => !o.isClosed &&
             o.status.toLowerCase() != 'cancelled' &&
             !o.isPaid)
@@ -166,7 +195,7 @@ class _WaiterDashboardState extends ConsumerState<WaiterDashboard> {
             Expanded(
               child: KpiCard(
                 label: 'Active Tables',
-                value: '$activeTables/${_tables.length}',
+                value: '$activeTables/${myTables.length}',
                 icon: Icons.table_restaurant_outlined,
                 sub: seatedGuests > 0 ? '$seatedGuests guests seated' : null,
               ),

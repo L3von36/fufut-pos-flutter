@@ -80,7 +80,10 @@ final ordersFeedProvider =
   final rows = results[0] as List<FufutOrder>;
   final tables =
       needsTables ? results[1] as List<CafeTable> : const <CafeTable>[];
-  final myTables = {for (final t in tables) t.number.toString()};
+  // The waiter's section, matched against the floor's per-row assignment —
+  // not "every table the API returned" (the room rides whole to every role).
+  final myTables = assignedTableNumbers(tables,
+      myId: app.user?.id, myName: app.user?.displayName);
   return rows
       .where((o) => orderVisibleToRole(o, app.roleKey,
           myId: app.user?.id, myTables: myTables, catByName: app.catByName))

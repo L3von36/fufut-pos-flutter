@@ -181,12 +181,50 @@ List<OrderItemLine>? scopedLines(
   ];
 }
 
+/// The table numbers this head-waiter is assigned to run, read from the
+/// floor rows the server stamps with `server_id` / `server`.
+///
+/// The server sends the WHOLE room to every role (verified live,
+/// 2026-09-25: a head-waiter GET /api/tables returns all sections with the
+/// assigned server on each row) — narrowing to one waiter's section is this
+/// client's job, and matching is by id first, display name second (older
+/// floors carry only the name).
+///
+/// Migration guard: a floor where NO row carries an assignment is a venue
+/// that has never split sections — there, strict matching would blind the
+/// waiter to half the room, so the helper falls back to "the whole floor"
+/// (isolation then rests on `created_by` alone). The moment one row names a
+/// server, the strict rule applies.
+Set<String> assignedTableNumbers(
+  List<CafeTable> tables, {
+  String? myId,
+  String? myName,
+}) {
+  final id = (myId ?? '').trim();
+  final name = (myName ?? '').trim().toLowerCase();
+  final anyAssignment =
+      tables.any((t) => (t.serverId ?? '').isNotEmpty || (t.server ?? '').trim().isNotEmpty);
+  final mine = <String>{};
+  for (final t in tables) {
+    final tId = (t.serverId ?? '').trim();
+    final tName = (t.server ?? '').trim().toLowerCase();
+    final isMine =
+        (id.isNotEmpty && tId == id) || (name.isNotEmpty && tName == name);
+    if (isMine) mine.add(t.number.toString());
+  }
+  if (!anyAssignment) {
+    // Nobody is assigned anything — the room is shared; don't blind anyone.
+    return {for (final t in tables) t.number.toString()};
+  }
+  return mine;
+}
+
 /// Does this order belong on this role's Orders screen at all?
 ///
 /// [myId] is the signed-in staff id (orders stamp the creator's id
 /// server-side as created_by); [myTables] carries the table numbers the
-/// caller may work — for a head-waiter the server already narrows /api/tables
-/// to the tables assigned to them by name.
+/// caller may work — build it with [assignedTableNumbers], the client-side
+/// narrowing over the per-row `server` assignment.
 bool orderVisibleToRole(
   FufutOrder order,
   String? roleKey, {

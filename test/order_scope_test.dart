@@ -150,6 +150,88 @@ void main() {
     });
   });
 
+  group('assignedTableNumbers — the multi-waiter isolation rule', () {
+    // The floor rides whole to every role (verified live 2026-09-25: a
+    // head-waiter GET /api/tables returns every section with the assigned
+    // server on each row) — narrowing is the client's job, per-row matching
+    // on server_id first, display name second.
+    const floor = [
+      CafeTable(id: 't1', number: '1', status: 'available', server: 'Yonas Girmay', serverId: 'S6'),
+      CafeTable(id: 't2', number: '2', status: 'occupied', server: 'Yonas Girmay', serverId: 'S6'),
+      CafeTable(id: 't3', number: '3', status: 'available', server: 'Amanuel Fekadu', serverId: 'S9'),
+      CafeTable(id: 't4', number: '4', status: 'available', server: 'Amanuel Fekadu', serverId: 'S9'),
+    ];
+
+    test('a waiter gets only the tables assigned to them', () {
+      expect(
+        assignedTableNumbers(floor, myId: 'S6', myName: 'Yonas Girmay'),
+        {'1', '2'},
+      );
+      expect(
+        assignedTableNumbers(floor, myId: 'S9', myName: 'Amanuel Fekadu'),
+        {'3', '4'},
+      );
+    });
+
+    test('id match wins even when the display name drifted', () {
+      // Yonas got married; the floor still names the OLD name but the id
+      // column is updated first.
+      const renamed = [
+        CafeTable(id: 't1', number: '1', status: 'available',
+            server: 'Yonas Girmay', serverId: 'S6'),
+        CafeTable(id: 't2', number: '2', status: 'available',
+            server: 'Amanuel Fekadu', serverId: 'S9'),
+      ];
+      expect(assignedTableNumbers(renamed, myId: 'S6', myName: 'New Name'),
+          {'1'});
+    });
+
+    test('name match covers floors that carry no ids (legacy rows)', () {
+      const legacy = [
+        CafeTable(id: 't1', number: '1', status: 'available',
+            server: 'Yonas Girmay'),
+        CafeTable(id: 't2', number: '2', status: 'available',
+            server: 'Amanuel Fekadu'),
+      ];
+      expect(assignedTableNumbers(legacy, myId: 'S6', myName: 'Yonas Girmay'),
+          {'1'});
+    });
+
+    test('a floor nobody is assigned stays shared — nobody gets blinded', () {
+      const shared = [
+        CafeTable(id: 't1', number: '1', status: 'available'),
+        CafeTable(id: 't2', number: '2', status: 'available'),
+      ];
+      expect(assignedTableNumbers(shared, myId: 'S6', myName: 'Yonas Girmay'),
+          {'1', '2'});
+    });
+
+    test('the end-to-end slice: two waiters, one room, no overlap', () {
+      final o1 = _order(createdById: 'S6', tableNum: '1');
+      final o2 = _order(createdById: 'S9', tableNum: '3');
+      final o3 = _order(createdById: 'S9', tableNum: '2'); // on Yonas' table
+      final yonas = assignedTableNumbers(floor, myId: 'S6', myName: 'Yonas Girmay');
+      final amanuel =
+          assignedTableNumbers(floor, myId: 'S9', myName: 'Amanuel Fekadu');
+
+      // Yonas: his own ticket, plus the colleague's ticket ON HIS table.
+      expect(orderVisibleToRole(o1, 'head-waiter', myId: 'S6', myTables: yonas),
+          isTrue);
+      expect(orderVisibleToRole(o3, 'head-waiter', myId: 'S6', myTables: yonas),
+          isTrue);
+      // Amanuel's ticket on Amanuel's table stays Amanuel's.
+      expect(orderVisibleToRole(o2, 'head-waiter', myId: 'S6', myTables: yonas),
+          isFalse);
+      expect(
+          orderVisibleToRole(o2, 'head-waiter', myId: 'S9', myTables: amanuel),
+          isTrue);
+      // And the reverse leg: Yonas' ticket is invisible to Amanuel.
+      expect(
+          orderVisibleToRole(o1, 'head-waiter', myId: 'S9', myTables: amanuel),
+          isFalse);
+    });
+  });
+
   group('action grants', () {
     test('checkout: manager + cashier only — the floor never settles', () {
       expect(canCheckout('manager'), isTrue);
