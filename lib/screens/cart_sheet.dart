@@ -130,6 +130,12 @@ class _CartPanelState extends ConsumerState<CartPanel> {
   bool _sending = false;
   bool _detailsOpen = false;
 
+  /// Programmatic control of the details tile — the forced table pick
+  /// opens it when a tableless dine-in send is refused. (Rebuilding with
+  /// a new `initiallyExpanded` does nothing: that flag is read once, at
+  /// the tile's mount.)
+  final ExpansibleController _detailsController = ExpansibleController();
+
   /// The shared tables fetch — every picker in the app rides one provider
   /// (this panel used to keep a private copy, the seventh tables fetch).
   List<CafeTable> get _tables =>
@@ -308,6 +314,20 @@ class _CartPanelState extends ConsumerState<CartPanel> {
                   icon: Icons.lock_outline_rounded,
                 ),
               ),
+            // Service law 2 — forced table pick. A dine-in order without a
+            // table cannot leave the cart, and the waiter must see that
+            // BEFORE the tap: the old flow only said so after the send
+            // refused, and the picker sits inside a collapsed tile nobody
+            // had opened. The banner stands until a table is picked.
+            if (dineIn && cart.tableNum.isEmpty)
+              const Padding(
+                padding: EdgeInsets.only(bottom: 8),
+                child: InfoBanner(
+                  'Dine-in orders need a table — pick one in Order details.',
+                  severity: InfoSeverity.warning,
+                  icon: Icons.table_restaurant_outlined,
+                ),
+              ),
             // Dine-in: kitchen first, then checkout (checkout roles only).
             // Takeaway/delivery without the grant: kitchen only — the tab
             // lands unpaid and the cashier takes the money.
@@ -392,6 +412,7 @@ class _CartPanelState extends ConsumerState<CartPanel> {
       child: Theme(
         data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
         child: ExpansionTile(
+          controller: _detailsController,
           initiallyExpanded: _detailsOpen,
           onExpansionChanged: (v) => setState(() => _detailsOpen = v),
           tilePadding: const EdgeInsets.symmetric(horizontal: 10),
@@ -413,7 +434,13 @@ class _CartPanelState extends ConsumerState<CartPanel> {
                 : '${cart.orderType == 'takeaway' ? 'Takeaway' : 'Delivery'}'
                     '${cart.customerName.isEmpty ? '' : ' · ${cart.customerName}'}',
             style: TextStyle(
-                fontFamily: kFontBody, fontSize: 11, color: pal.muted),
+                fontFamily: kFontBody,
+                fontSize: 11,
+                // An unpicked dine-in table is a gate, not a preference —
+                // the subtitle says so in the warning color.
+                color: cart.orderType == 'dine-in' && cart.tableNum.isEmpty
+                    ? pal.warning
+                    : pal.muted),
           ),
           children: [
             OrderContextEditor(cart: cart, tables: _tables),
@@ -498,6 +525,10 @@ class _CartPanelState extends ConsumerState<CartPanel> {
     // nowhere in the Order Log. Takeaway and delivery are exempt.
     if (cart.orderType != 'dine-in') return true;
     if (cart.tableNum.isEmpty) {
+      // Force the pick, not just refuse it: open the details tile so the
+      // table chips are on screen when the toast names what is missing —
+      // no hunting for the collapsed editor.
+      if (mounted) _detailsController.expand();
       showInfoOn(messenger, 'Pick a table for dine-in orders');
       return false;
     }
@@ -591,6 +622,15 @@ class _CartPanelState extends ConsumerState<CartPanel> {
 
   /// Checkout → the web's review step, then payment, then the success state.
   Future<void> _openReview() async {
+    // Same law on the till path — no table, no review sheet. Expanding
+    // the details lands the waiter one tap from the fix.
+    final cart = ref.read(cartProvider);
+    if (cart.orderType == 'dine-in' && cart.tableNum.isEmpty) {
+      _detailsController.expand();
+      showInfoOn(
+          ScaffoldMessenger.of(context), 'Pick a table for dine-in orders');
+      return;
+    }
     await showModalBottomSheet(
       context: context,
       isScrollControlled: true,
